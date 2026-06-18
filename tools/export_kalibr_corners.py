@@ -43,7 +43,12 @@ def _corner_ids(obs, count):
 
 
 def _timestamp_ns(obs):
-    return int(round(float(obs.time().toSec()) * 1_000_000_000.0))
+    timestamp = obs.time()
+    if hasattr(timestamp, "secs") and hasattr(timestamp, "nsecs"):
+        return int(timestamp.secs) * 1_000_000_000 + int(timestamp.nsecs)
+    if hasattr(timestamp, "to_nsec"):
+        return int(timestamp.to_nsec())
+    return int(round(float(timestamp.toSec()) * 1_000_000_000.0))
 
 
 def export(corner_pkl, corners_csv, poses_csv=None):

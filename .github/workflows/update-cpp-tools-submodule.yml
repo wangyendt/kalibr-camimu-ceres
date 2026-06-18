@@ -1,0 +1,44 @@
+name: Update cpp_tools submodule
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 2 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Configure sparse checkout
+        run: ./tools/update_cpp_tools_sparse_submodule.sh
+
+      - name: Update cpp_tools to latest main
+        run: |
+          git -C third_party/cpp_tools fetch origin main
+          git -C third_party/cpp_tools checkout origin/main
+          git -C third_party/cpp_tools sparse-checkout init --cone
+          git -C third_party/cpp_tools sparse-checkout set cv/apriltag_detection cv/camera_models
+          git add third_party/cpp_tools .gitmodules
+
+      - name: Create update PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bot/update-cpp-tools-submodule
+          commit-message: "chore: update cpp_tools sparse submodule"
+          title: "chore: update cpp_tools sparse submodule"
+          body: |
+            Automated update of the cpp_tools submodule used by the native EuRoC input converter.
+
+            Sparse paths:
+            - cv/apriltag_detection
+            - cv/camera_models
+          labels: dependencies

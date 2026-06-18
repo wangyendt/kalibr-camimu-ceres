@@ -41,6 +41,10 @@ def _corner_ids(obs, count):
 
 
 def _timestamp_ns(timestamp):
+    if hasattr(timestamp, "secs") and hasattr(timestamp, "nsecs"):
+        return int(timestamp.secs) * 1000000000 + int(timestamp.nsecs)
+    if hasattr(timestamp, "to_nsec"):
+        return int(timestamp.to_nsec())
     return int(round(float(timestamp.toSec()) * 1000000000.0))
 
 

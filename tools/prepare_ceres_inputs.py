@@ -2,8 +2,9 @@
 """Prepare ceres_cam_imu CSV inputs from pkl, bag, or EuRoC-style data.
 
 The C++ calibration binary intentionally consumes neutral CSV files.  This
-wrapper runs the Kalibr Docker image only for decoding Kalibr pickle objects,
-ROS bags, or EuRoC image folders into those CSV files.
+wrapper runs Kalibr Docker for Kalibr pickle objects and ROS bags.  EuRoC image
+folders are exported natively by default through cpp_tools apriltag detection;
+the old Kalibr Docker EuRoC path remains available as a baseline backend.
 """
 
 import argparse
@@ -14,7 +15,9 @@ import subprocess
 import sys
 
 
-KALIBR_IMAGE = "kalibr-camera-calibration:20.04"
+KALIBR_LOCAL_IMAGE = "kalibr-camera-calibration:20.04"
+KALIBR_DOCKERHUB_IMAGE = "wang121ye/kalibr-camera-calibration:20.04"
+KALIBR_IMAGE = KALIBR_LOCAL_IMAGE
 
 DEFAULT_CALIBRATION_FLAGS = [
     "--corner-defaults",
@@ -47,6 +50,30 @@ def run(command, print_only=False):
     if print_only:
         return 0
     return subprocess.call(command)
+
+
+def docker_image_exists(image):
+    result = subprocess.run(
+        ["docker", "image", "inspect", image],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def resolve_kalibr_image(args):
+    if args.print_only:
+        if args.image == KALIBR_LOCAL_IMAGE:
+            return args.remote_image
+        return args.image
+    if docker_image_exists(args.image):
+        return args.image
+    pull_image = args.remote_image if args.image == KALIBR_LOCAL_IMAGE else args.image
+    print(f"local Docker image not found: {args.image}; pulling {pull_image}", flush=True)
+    rc = run(["docker", "pull", pull_image], print_only=False)
+    if rc != 0:
+        raise RuntimeError(f"failed to pull Docker image: {pull_image}")
+    return pull_image
 
 
 def has_option(tokens, option):
@@ -102,10 +129,11 @@ def prepare_pkl(args):
         raise ValueError("--corner-pkl is required for --source-type pkl")
     out_dir = pathlib.Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    image = resolve_kalibr_image(args)
     for index, corner_pkl in enumerate(args.corner_pkl):
         command = base_docker_command(args, out_dir)
         (container_pkl,) = add_path_mounts(command, [corner_pkl])
-        command.extend([args.image, "/bin/bash", "-lc"])
+        command.extend([image, "/bin/bash", "-lc"])
         corners_name = f"cam{index}_corners.csv"
         script = [
             "python3",
@@ -135,11 +163,12 @@ def prepare_bag(args):
             raise ValueError(f"{name} is required for --source-type bag")
     out_dir = pathlib.Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    image = resolve_kalibr_image(args)
     command = base_docker_command(args, out_dir)
     container_bag, container_cams, container_imu, container_target = add_path_mounts(
         command, [args.bag, args.cams, args.imu, args.target]
     )
-    command.extend([args.image, "/bin/bash", "-lc"])
+    command.extend([image, "/bin/bash", "-lc"])
     script = [
         "python3",
         "/repo/tools/export_kalibr_bag_to_ceres.py",
@@ -164,7 +193,7 @@ def prepare_bag(args):
     return run(command, args.print_only)
 
 
-def prepare_euroc(args):
+def validate_euroc_args(args):
     for name, value in [
         ("--euroc-dir", args.euroc_dir),
         ("--cams", args.cams),
@@ -181,14 +210,57 @@ def prepare_euroc(args):
         raise ValueError(f"EuRoC cam0 data directory not found under {mav0}")
     if not (mav0 / "imu0" / "data.csv").is_file():
         raise ValueError(f"EuRoC imu0/data.csv not found under {mav0}")
+    return mav0
 
+
+def prepare_euroc_native(args):
+    validate_euroc_args(args)
     out_dir = pathlib.Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        str(repo_dir() / "tools" / "export_euroc_native_to_ceres.py"),
+        "--euroc-dir",
+        str(pathlib.Path(args.euroc_dir).expanduser().resolve()),
+        "--cams",
+        str(pathlib.Path(args.cams).expanduser().resolve()),
+        "--target",
+        str(pathlib.Path(args.target).expanduser().resolve()),
+        "--out-dir",
+        str(out_dir),
+        "--cpp-tools-root",
+        str(pathlib.Path(args.cpp_tools_root).expanduser().resolve()),
+        "--tag-family",
+        args.tag_family,
+        "--tag-black-border",
+        str(args.tag_black_border),
+        "--max-hamming",
+        str(args.max_hamming),
+        "--imu-index",
+        str(args.imu_index),
+        "--min-pnp-corners",
+        str(args.min_pnp_corners),
+        "--corner-id-mode",
+        args.corner_id_mode,
+    ]
+    if args.max_extraction_frames:
+        command.extend(["--max-frames", str(args.max_extraction_frames)])
+    if args.corner_permutation:
+        command.append("--corner-permutation")
+        command.extend(str(value) for value in args.corner_permutation)
+    return run(command, args.print_only)
+
+
+def prepare_euroc_kalibr_docker(args):
+    mav0 = validate_euroc_args(args)
+    out_dir = pathlib.Path(args.out_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    image = resolve_kalibr_image(args)
     command = base_docker_command(args, out_dir)
     container_mav0, container_cams, container_imu, container_target = add_path_mounts(
         command, [mav0, args.cams, args.imu, args.target]
     )
-    command.extend([args.image, "/bin/bash", "-lc"])
+    command.extend([image, "/bin/bash", "-lc"])
     bag_name = pathlib.PurePosixPath(args.output_bag or "euroc_input.bag").name
     cam1_stage = ""
     if (mav0 / "cam1" / "data").is_dir():
@@ -227,6 +299,14 @@ def prepare_euroc(args):
     )
     command.append(script)
     return run(command, args.print_only)
+
+
+def prepare_euroc(args):
+    if args.euroc_backend == "native":
+        return prepare_euroc_native(args)
+    if args.euroc_backend == "kalibr-docker":
+        return prepare_euroc_kalibr_docker(args)
+    raise ValueError(f"unsupported EuRoC backend: {args.euroc_backend}")
 
 
 def camera_count_from_camchain(cams_path):
@@ -301,6 +381,8 @@ def run_calibration(args, passthrough_args):
     ]
     for corner_path in corner_paths:
         command.extend(["--corners", str(corner_path)])
+    if corner_count > 1 and "--init-from-camchain" not in passthrough_args:
+        command.append("--init-from-camchain")
     command.extend(
         [
             "--corner-poses",
@@ -356,6 +438,8 @@ def run_two_stage_calibration(args, passthrough_args):
     ]
     for corner_path in corner_paths:
         command.extend(["--corners", str(corner_path)])
+    if corner_count > 1 and "--init-from-camchain" not in passthrough_args:
+        command.append("--init-from-camchain")
     command.extend(
         [
             "--corner-poses",
@@ -389,12 +473,38 @@ def parse_args(argv=None):
     parser.add_argument("--source-type", choices=["pkl", "bag", "euroc"], required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--image", default=KALIBR_IMAGE)
+    parser.add_argument(
+        "--remote-image",
+        default=KALIBR_DOCKERHUB_IMAGE,
+        help=(
+            "DockerHub image to pull when the default local Kalibr image is absent"
+        ),
+    )
     parser.add_argument("--platform", default="linux/amd64")
     parser.add_argument("--print-only", action="store_true")
     parser.add_argument("--corner-pkl", action="append", default=[])
     parser.add_argument("--bag")
     parser.add_argument("--euroc-dir")
     parser.add_argument("--output-bag")
+    parser.add_argument(
+        "--euroc-backend",
+        choices=["native", "kalibr-docker"],
+        default="native",
+        help="EuRoC converter backend; native avoids Kalibr Docker",
+    )
+    parser.add_argument(
+        "--cpp-tools-root",
+        default=str(repo_dir() / "third_party" / "cpp_tools"),
+        help="cpp_tools checkout used by the native EuRoC converter",
+    )
+    parser.add_argument("--tag-family", default="tag36h11")
+    parser.add_argument("--tag-black-border", type=int, default=2)
+    parser.add_argument("--max-hamming", type=int, default=-1)
+    parser.add_argument("--imu-index", type=int, default=0)
+    parser.add_argument("--max-extraction-frames", type=int, default=0)
+    parser.add_argument("--min-pnp-corners", type=int, default=12)
+    parser.add_argument("--corner-permutation", type=int, nargs=4, default=[0, 1, 2, 3])
+    parser.add_argument("--corner-id-mode", choices=["kalibr", "tag"], default="kalibr")
     parser.add_argument("--cams")
     parser.add_argument("--imu")
     parser.add_argument("--imu-data")
