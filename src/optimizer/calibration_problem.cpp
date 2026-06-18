@@ -55,6 +55,35 @@ Mat4 cameraExtrinsicToMatrix(const CameraExtrinsicBlock &pose) {
   return ceres_cam_imu::pose6ToMatrix(p);
 }
 
+class KalibrMEstimatorLoss final : public ceres::LossFunction {
+public:
+  KalibrMEstimatorLoss(const RobustLossType type, const double width)
+      : type_(type), width_(width) {}
+
+  void Evaluate(const double s, double rho[3]) const override {
+    double weight = 1.0;
+    if (type_ == RobustLossType::kCauchy) {
+      weight = 1.0 / (1.0 + s / width_);
+    } else if (type_ == RobustLossType::kHuber) {
+      const double threshold_s = width_ * width_;
+      weight = s < threshold_s ? 1.0 : width_ / std::sqrt(std::max(s, 1e-300));
+    }
+
+    // Kalibr's aslam_backend treats M-estimators as an iteratively reweighted
+    // least-squares factor: both residuals and Jacobians are scaled by
+    // sqrt(weight). It does not use the derivative of the weight function in
+    // the Hessian. Setting rho' to weight and rho'' to zero matches that
+    // linearization in Ceres while keeping the reported cost weighted.
+    rho[0] = weight * s;
+    rho[1] = weight;
+    rho[2] = 0.0;
+  }
+
+private:
+  RobustLossType type_ = RobustLossType::kNone;
+  double width_ = 1.0;
+};
+
 std::unique_ptr<ceres::LossFunction> makeLoss(const RobustLossType type,
                                               const double width) {
   if (width <= 0.0) {
@@ -63,16 +92,9 @@ std::unique_ptr<ceres::LossFunction> makeLoss(const RobustLossType type,
   if (type == RobustLossType::kNone) {
     return nullptr;
   }
-  if (type == RobustLossType::kHuber) {
-    return std::unique_ptr<ceres::LossFunction>(new ceres::HuberLoss(width));
-  }
-  if (type == RobustLossType::kCauchy) {
-    // Kalibr's CauchyMEstimator stores the squared-error denominator
-    // directly: w(s) = 1 / (1 + s / sigma2). Ceres CauchyLoss uses a
-    // scale `a` with rho'(s) = 1 / (1 + s / a^2), so the matching scale
-    // is sqrt(sigma2).
+  if (type == RobustLossType::kHuber || type == RobustLossType::kCauchy) {
     return std::unique_ptr<ceres::LossFunction>(
-        new ceres::CauchyLoss(std::sqrt(width)));
+        new KalibrMEstimatorLoss(type, width));
   }
   return nullptr;
 }
@@ -123,47 +145,339 @@ bool usesSizeEffect(const ImuCalibrationModel model) {
 }
 
 void addImuIntrinsicParameterBlocks(const CalibrationOptions &options,
-                                    CalibrationState *state,
+                                    ImuIntrinsicBlocks *intrinsics,
                                     ceres::Problem *problem) {
   if (!usesScaleMisalignment(options.imu_model)) {
     return;
   }
-  problem->AddParameterBlock(dataPtr(state->imu_intrinsics.accel_M),
+  problem->AddParameterBlock(dataPtr(intrinsics->accel_M),
                              LowerTriangularMatrixBlock::kSize);
-  problem->AddParameterBlock(dataPtr(state->imu_intrinsics.gyro_M),
+  problem->AddParameterBlock(dataPtr(intrinsics->gyro_M),
                              LowerTriangularMatrixBlock::kSize);
   problem->AddParameterBlock(
-      dataPtr(state->imu_intrinsics.gyro_accel_sensitivity),
+      dataPtr(intrinsics->gyro_accel_sensitivity),
       Matrix3Block::kSize);
   problem->AddParameterBlock(
-      dataPtr(state->imu_intrinsics.gyro_sensing_rotation),
+      dataPtr(intrinsics->gyro_sensing_rotation),
       Vector3Block::kSize);
   if (options.fix_imu_intrinsics) {
-    problem->SetParameterBlockConstant(dataPtr(state->imu_intrinsics.accel_M));
-    problem->SetParameterBlockConstant(dataPtr(state->imu_intrinsics.gyro_M));
+    problem->SetParameterBlockConstant(dataPtr(intrinsics->accel_M));
+    problem->SetParameterBlockConstant(dataPtr(intrinsics->gyro_M));
     problem->SetParameterBlockConstant(
-        dataPtr(state->imu_intrinsics.gyro_accel_sensitivity));
+        dataPtr(intrinsics->gyro_accel_sensitivity));
     problem->SetParameterBlockConstant(
-        dataPtr(state->imu_intrinsics.gyro_sensing_rotation));
+        dataPtr(intrinsics->gyro_sensing_rotation));
   }
   if (!usesSizeEffect(options.imu_model)) {
     return;
   }
-  problem->AddParameterBlock(dataPtr(state->imu_intrinsics.accel_axis_rx_i),
+  problem->AddParameterBlock(dataPtr(intrinsics->accel_axis_rx_i),
                              Vector3Block::kSize);
-  problem->AddParameterBlock(dataPtr(state->imu_intrinsics.accel_axis_ry_i),
+  problem->AddParameterBlock(dataPtr(intrinsics->accel_axis_ry_i),
                              Vector3Block::kSize);
-  problem->AddParameterBlock(dataPtr(state->imu_intrinsics.accel_axis_rz_i),
+  problem->AddParameterBlock(dataPtr(intrinsics->accel_axis_rz_i),
                              Vector3Block::kSize);
   if (options.fix_imu_intrinsics || options.fix_accel_size_effect_rx) {
     problem->SetParameterBlockConstant(
-        dataPtr(state->imu_intrinsics.accel_axis_rx_i));
+        dataPtr(intrinsics->accel_axis_rx_i));
   }
   if (options.fix_imu_intrinsics) {
     problem->SetParameterBlockConstant(
-        dataPtr(state->imu_intrinsics.accel_axis_ry_i));
+        dataPtr(intrinsics->accel_axis_ry_i));
     problem->SetParameterBlockConstant(
-        dataPtr(state->imu_intrinsics.accel_axis_rz_i));
+        dataPtr(intrinsics->accel_axis_rz_i));
+  }
+}
+
+void ensureMultiImuStateSize(CalibrationState *state,
+                             const std::size_t imu_count) {
+  if (!state) {
+    return;
+  }
+  if (imu_count == 0) {
+    return;
+  }
+  if (state->imu_extrinsics.size() < imu_count) {
+    const std::size_t old_size = state->imu_extrinsics.size();
+    state->imu_extrinsics.resize(imu_count);
+    if (old_size == 0) {
+      state->imu_extrinsics[0] = state->imu_extrinsic;
+    }
+  }
+  if (state->imu_intrinsics_by_imu.size() < imu_count) {
+    const std::size_t old_size = state->imu_intrinsics_by_imu.size();
+    state->imu_intrinsics_by_imu.resize(imu_count);
+    if (old_size == 0) {
+      state->imu_intrinsics_by_imu[0] = state->imu_intrinsics;
+    }
+  }
+  if (state->gyro_bias_controls_by_imu.size() < imu_count) {
+    const std::size_t old_size = state->gyro_bias_controls_by_imu.size();
+    state->gyro_bias_controls_by_imu.resize(imu_count);
+    for (std::size_t i = old_size; i < imu_count; ++i) {
+      state->gyro_bias_controls_by_imu[i] = state->gyro_bias_controls;
+    }
+    if (old_size == 0) {
+      state->gyro_bias_controls_by_imu[0] = state->gyro_bias_controls;
+    }
+  }
+  if (state->accel_bias_controls_by_imu.size() < imu_count) {
+    const std::size_t old_size = state->accel_bias_controls_by_imu.size();
+    state->accel_bias_controls_by_imu.resize(imu_count);
+    for (std::size_t i = old_size; i < imu_count; ++i) {
+      state->accel_bias_controls_by_imu[i] = state->accel_bias_controls;
+    }
+    if (old_size == 0) {
+      state->accel_bias_controls_by_imu[0] = state->accel_bias_controls;
+    }
+  }
+}
+
+ImuExtrinsicBlock &imuExtrinsicFor(CalibrationState *state,
+                                   const std::size_t imu_index) {
+  if (imu_index == 0) {
+    return state->imu_extrinsic;
+  }
+  return state->imu_extrinsics.at(imu_index);
+}
+
+ImuIntrinsicBlocks &imuIntrinsicsFor(CalibrationState *state,
+                                     const std::size_t imu_index) {
+  if (imu_index == 0) {
+    return state->imu_intrinsics;
+  }
+  return state->imu_intrinsics_by_imu.at(imu_index);
+}
+
+std::vector<BiasControlBlock> &gyroBiasControlsFor(
+    CalibrationState *state, const std::size_t imu_index) {
+  if (imu_index == 0) {
+    return state->gyro_bias_controls;
+  }
+  return state->gyro_bias_controls_by_imu.at(imu_index);
+}
+
+std::vector<BiasControlBlock> &accelBiasControlsFor(
+    CalibrationState *state, const std::size_t imu_index) {
+  if (imu_index == 0) {
+    return state->accel_bias_controls;
+  }
+  return state->accel_bias_controls_by_imu.at(imu_index);
+}
+
+void addImuParameterBlocksForIndex(const std::size_t imu_index,
+                                   const CalibrationOptions &options,
+                                   CalibrationState *state,
+                                   ceres::Problem *problem) {
+  ImuExtrinsicBlock &imu_extrinsic = imuExtrinsicFor(state, imu_index);
+  problem->AddParameterBlock(dataPtr(imu_extrinsic), 6);
+  if (imu_index == 0 && options.fix_reference_imu_extrinsic) {
+    problem->SetParameterBlockConstant(dataPtr(imu_extrinsic));
+  }
+
+  ImuIntrinsicBlocks &imu_intrinsics = imuIntrinsicsFor(state, imu_index);
+  addImuIntrinsicParameterBlocks(options, &imu_intrinsics, problem);
+
+  for (BiasControlBlock &control : gyroBiasControlsFor(state, imu_index)) {
+    problem->AddParameterBlock(dataPtr(control), 3);
+    if (options.fix_bias_controls) {
+      problem->SetParameterBlockConstant(dataPtr(control));
+    }
+  }
+  for (BiasControlBlock &control : accelBiasControlsFor(state, imu_index)) {
+    problem->AddParameterBlock(dataPtr(control), 3);
+    if (options.fix_bias_controls) {
+      problem->SetParameterBlockConstant(dataPtr(control));
+    }
+  }
+}
+
+void addImuResidualBlocksForIndex(
+    const std::size_t imu_index, const ImuObservationDataset &imu,
+    const CalibrationOptions &options, CalibrationState *state,
+    ceres::Problem *problem, std::vector<char> *active_pose_segments,
+    CalibrationBuildSummary *summary) {
+  ImuExtrinsicBlock &imu_extrinsic = imuExtrinsicFor(state, imu_index);
+  ImuIntrinsicBlocks &imu_intrinsics = imuIntrinsicsFor(state, imu_index);
+  std::vector<BiasControlBlock> &gyro_bias_controls =
+      gyroBiasControlsFor(state, imu_index);
+  std::vector<BiasControlBlock> &accel_bias_controls =
+      accelBiasControlsFor(state, imu_index);
+
+  int added_imu = 0;
+  const int stride = std::max(1, options.imu_stride);
+  for (std::size_t i = 0; i < imu.samples.size();
+       i += static_cast<std::size_t>(stride)) {
+    if (options.max_imu_residuals > 0 &&
+        added_imu >= options.max_imu_residuals) {
+      break;
+    }
+    const ImuSample &sample = imu.samples[i];
+    if (!state->pose_spline.isValidTime(sample.timestamp_s) ||
+        !state->gyro_bias_spline.isValidTime(sample.timestamp_s) ||
+        !state->accel_bias_spline.isValidTime(sample.timestamp_s)) {
+      ++summary->skipped_imu_samples;
+      continue;
+    }
+    const SplineSegmentMeta6 pose_meta =
+        state->pose_spline.segmentMeta6(sample.timestamp_s);
+    const SplineSegmentMeta6 gyro_bias_meta =
+        state->gyro_bias_spline.segmentMeta6(sample.timestamp_s);
+    const SplineSegmentMeta6 accel_bias_meta =
+        state->accel_bias_spline.segmentMeta6(sample.timestamp_s);
+    markActiveSegment(pose_meta, active_pose_segments);
+
+    std::unique_ptr<ceres::LossFunction> gyro_loss =
+        makeLoss(options.gyro_loss_type, options.gyro_loss_width);
+    if (usesScaleMisalignment(options.imu_model)) {
+      problem->AddResidualBlock(
+          createScaleMisalignedGyroscopeResidual(sample, imu.noise, pose_meta,
+                                                 gyro_bias_meta),
+          gyro_loss.release(), dataPtr(imu_extrinsic),
+          dataPtr(state->gravity),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 0)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 1)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 2)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 3)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 4)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 5)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 0)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 1)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 2)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 3)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 4)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 5)),
+          dataPtr(imu_intrinsics.gyro_sensing_rotation),
+          dataPtr(imu_intrinsics.gyro_M),
+          dataPtr(imu_intrinsics.gyro_accel_sensitivity));
+    } else {
+      problem->AddResidualBlock(
+          createGyroscopeResidual(sample, imu.noise, pose_meta,
+                                  gyro_bias_meta),
+          gyro_loss.release(), dataPtr(imu_extrinsic),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 0)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 1)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 2)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 3)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 4)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 5)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 0)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 1)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 2)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 3)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 4)),
+          dataPtr(gyro_bias_controls.at(gyro_bias_meta.coeff_start + 5)));
+    }
+    ++summary->gyro_residuals;
+
+    std::unique_ptr<ceres::LossFunction> accel_loss =
+        makeLoss(options.accel_loss_type, options.accel_loss_width);
+    if (usesSizeEffect(options.imu_model)) {
+      problem->AddResidualBlock(
+          createSizeEffectAccelerometerResidual(sample, imu.noise, pose_meta,
+                                                accel_bias_meta),
+          accel_loss.release(), dataPtr(imu_extrinsic),
+          dataPtr(state->gravity),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 0)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 1)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 2)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 3)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 4)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 5)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 0)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 1)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 2)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 3)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 4)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 5)),
+          dataPtr(imu_intrinsics.accel_M),
+          dataPtr(imu_intrinsics.accel_axis_rx_i),
+          dataPtr(imu_intrinsics.accel_axis_ry_i),
+          dataPtr(imu_intrinsics.accel_axis_rz_i));
+    } else if (usesScaleMisalignment(options.imu_model)) {
+      problem->AddResidualBlock(
+          createScaleMisalignedAccelerometerResidual(sample, imu.noise,
+                                                     pose_meta,
+                                                     accel_bias_meta),
+          accel_loss.release(), dataPtr(imu_extrinsic),
+          dataPtr(state->gravity),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 0)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 1)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 2)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 3)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 4)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 5)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 0)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 1)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 2)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 3)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 4)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 5)),
+          dataPtr(imu_intrinsics.accel_M));
+    } else {
+      problem->AddResidualBlock(
+          createAccelerometerResidual(sample, imu.noise, pose_meta,
+                                      accel_bias_meta),
+          accel_loss.release(), dataPtr(imu_extrinsic),
+          dataPtr(state->gravity),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 0)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 1)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 2)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 3)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 4)),
+          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 5)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 0)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 1)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 2)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 3)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 4)),
+          dataPtr(accel_bias_controls.at(accel_bias_meta.coeff_start + 5)));
+    }
+    ++summary->accel_residuals;
+    ++added_imu;
+  }
+}
+
+void addBiasMotionPriorsForIndex(const std::size_t imu_index,
+                                 const ImuNoise &imu_noise,
+                                 CalibrationState *state,
+                                 ceres::Problem *problem,
+                                 CalibrationBuildSummary *summary) {
+  std::vector<BiasControlBlock> &gyro_bias_controls =
+      gyroBiasControlsFor(state, imu_index);
+  std::vector<BiasControlBlock> &accel_bias_controls =
+      accelBiasControlsFor(state, imu_index);
+
+  for (int segment = 0; segment < state->gyro_bias_spline.numSegments();
+       ++segment) {
+    const SplineSegmentMeta6 meta = state->gyro_bias_spline.segmentMeta6(
+        state->gyro_bias_spline.tMin() +
+        static_cast<double>(segment) * state->gyro_bias_spline.dt());
+    problem->AddResidualBlock(
+        createBiasMotionPrior(meta, imu_noise.gyroscope_random_walk), nullptr,
+        dataPtr(gyro_bias_controls.at(meta.coeff_start + 0)),
+        dataPtr(gyro_bias_controls.at(meta.coeff_start + 1)),
+        dataPtr(gyro_bias_controls.at(meta.coeff_start + 2)),
+        dataPtr(gyro_bias_controls.at(meta.coeff_start + 3)),
+        dataPtr(gyro_bias_controls.at(meta.coeff_start + 4)),
+        dataPtr(gyro_bias_controls.at(meta.coeff_start + 5)));
+    ++summary->gyro_bias_priors;
+  }
+
+  for (int segment = 0; segment < state->accel_bias_spline.numSegments();
+       ++segment) {
+    const SplineSegmentMeta6 meta = state->accel_bias_spline.segmentMeta6(
+        state->accel_bias_spline.tMin() +
+        static_cast<double>(segment) * state->accel_bias_spline.dt());
+    problem->AddResidualBlock(
+        createBiasMotionPrior(meta, imu_noise.accelerometer_random_walk),
+        nullptr, dataPtr(accel_bias_controls.at(meta.coeff_start + 0)),
+        dataPtr(accel_bias_controls.at(meta.coeff_start + 1)),
+        dataPtr(accel_bias_controls.at(meta.coeff_start + 2)),
+        dataPtr(accel_bias_controls.at(meta.coeff_start + 3)),
+        dataPtr(accel_bias_controls.at(meta.coeff_start + 4)),
+        dataPtr(accel_bias_controls.at(meta.coeff_start + 5)));
+    ++summary->accel_bias_priors;
   }
 }
 
@@ -399,6 +713,39 @@ CalibrationState initializeCalibrationState(
   return state;
 }
 
+CalibrationState initializeCalibrationState(
+    const std::vector<CameraObservationDataset> &cameras,
+    const std::vector<ImuObservationDataset> &imus,
+    const CalibrationOptions &options) {
+  if (cameras.empty()) {
+    throw std::runtime_error("at least one camera dataset is required");
+  }
+  if (imus.empty()) {
+    throw std::runtime_error("at least one IMU dataset is required");
+  }
+  std::vector<ImageObservation> all_images;
+  for (const CameraObservationDataset &camera : cameras) {
+    all_images.insert(all_images.end(), camera.images.begin(),
+                      camera.images.end());
+  }
+  std::vector<ImuSample> all_imu_samples;
+  for (const ImuObservationDataset &imu : imus) {
+    all_imu_samples.insert(all_imu_samples.end(), imu.samples.begin(),
+                           imu.samples.end());
+  }
+  CalibrationState state =
+      initializeCalibrationState(all_images, all_imu_samples, options);
+  state.camera_extrinsics.resize(cameras.size());
+  state.camera_time_shifts.resize(cameras.size());
+  state.camera_extrinsics[0] = state.T_c_b;
+  state.camera_time_shifts[0] = state.camera_time_shift_s;
+  for (std::size_t i = 1; i < cameras.size(); ++i) {
+    state.camera_time_shifts[i].value = options.initial_camera_time_shift_s;
+  }
+  ensureMultiImuStateSize(&state, imus.size());
+  return state;
+}
+
 CalibrationBuildSummary
 buildCalibrationProblem(const CameraIntrinsics &intrinsics,
                         const ImuNoise &imu_noise,
@@ -418,7 +765,7 @@ buildCalibrationProblem(const CameraIntrinsics &intrinsics,
   problem->AddParameterBlock(dataPtr(state->camera_time_shift_s), 1);
   problem->AddParameterBlock(dataPtr(state->imu_extrinsic), 6);
   problem->AddParameterBlock(dataPtr(state->gravity), 3);
-  addImuIntrinsicParameterBlocks(options, state, problem);
+  addImuIntrinsicParameterBlocks(options, &state->imu_intrinsics, problem);
   if (!options.estimate_gravity_length) {
     const Vec3 gravity(state->gravity.values[0], state->gravity.values[1],
                        state->gravity.values[2]);
@@ -808,6 +1155,44 @@ buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
             dataPtr(state->pose_controls.at(pose_meta.coeff_start + 5)));
         ++summary.camera_residuals;
       }
+    }
+  }
+
+  fillProblemSizeSummary(*problem, &summary);
+  summary.kalibr_style_error_terms =
+      summary.camera_residuals + summary.gyro_residuals +
+      summary.accel_residuals + summary.gravity_tangent_size;
+  return summary;
+}
+
+CalibrationBuildSummary
+buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
+                        const std::vector<ImuObservationDataset> &imus,
+                        const CalibrationOptions &options,
+                        CalibrationState *state, ceres::Problem *problem) {
+  if (imus.empty()) {
+    throw std::invalid_argument("at least one IMU dataset is required");
+  }
+  if (!state || !problem) {
+    throw std::invalid_argument("state and problem must be non-null");
+  }
+  ensureMultiImuStateSize(state, imus.size());
+
+  CalibrationBuildSummary summary =
+      buildCalibrationProblem(cameras, imus.front().noise,
+                              imus.front().samples, options, state, problem);
+
+  if (imus.size() == 1) {
+    return summary;
+  }
+
+  for (std::size_t imu_index = 1; imu_index < imus.size(); ++imu_index) {
+    addImuParameterBlocksForIndex(imu_index, options, state, problem);
+    addImuResidualBlocksForIndex(imu_index, imus[imu_index], options, state,
+                                 problem, nullptr, &summary);
+    if (options.add_bias_motion_prior) {
+      addBiasMotionPriorsForIndex(imu_index, imus[imu_index].noise, state,
+                                  problem, &summary);
     }
   }
 

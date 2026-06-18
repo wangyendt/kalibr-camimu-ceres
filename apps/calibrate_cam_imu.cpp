@@ -205,7 +205,8 @@ void usage() {
   std::cout
       << "calibrate_cam_imu --cam camchain.yaml --imu imu.yaml --target "
          "aprilgrid.yaml "
-         "--imu-data data.csv --corners corners.csv [--kalibr-result "
+         "--imu-data data.csv --corners corners.csv [--imu imu2.yaml "
+         "--imu-data data2.csv ...] [--kalibr-result "
          "result.txt] "
          "[--corner-poses poses.csv] [--init-from-kalibr] [--init-from-camchain] "
          "[--init-from-result result.yaml] "
@@ -286,7 +287,13 @@ void usage() {
          "and time-shift fit lambda defaults to 1e-4.\n";
   std::cout
       << "  --init-from-camchain reads T_cam_imu and timeshift_cam_imu from "
-         "the --cam YAML when those keys are present.\n";
+         "the --cam YAML when those keys are present. Multi-camera runs use "
+         "camchain initialization automatically unless initialized from a "
+         "complete prior result.\n";
+  std::cout
+      << "  --imu and --imu-data may be repeated for multi-IMU joint "
+         "optimization. Counts must match, order matters, and the first IMU "
+         "is the fixed reference IMU by default.\n";
   std::cout
       << "  --estimate-orientation-gravity-prior estimates camera-IMU "
          "rotation, gyro bias, and gravity from camera-pose angular velocity "
@@ -403,6 +410,21 @@ void setVector3Block(const ceres_cam_imu::Vec3 &value,
   }
 }
 
+ceres_cam_imu::ImuExtrinsicBlock imuExtrinsicFromKalibrTib(
+    const ceres_cam_imu::Mat4 &T_i_b) {
+  ceres_cam_imu::ImuExtrinsicBlock block;
+  const ceres_cam_imu::Mat3 R_i_b = T_i_b.block<3, 3>(0, 0);
+  const ceres_cam_imu::Vec3 t_i_b = T_i_b.block<3, 1>(0, 3);
+  const ceres_cam_imu::Vec3 r_b = -R_i_b.transpose() * t_i_b;
+  const ceres_cam_imu::Vec3 r_i_b =
+      ceres_cam_imu::rotationMatrixToVector(R_i_b);
+  for (int i = 0; i < 3; ++i) {
+    block.values[static_cast<std::size_t>(i)] = r_b(i);
+    block.values[static_cast<std::size_t>(i + 3)] = r_i_b(i);
+  }
+  return block;
+}
+
 void initializeImuIntrinsicsFromKalibr(
     const ceres_cam_imu::KalibrResult &kalibr,
     ceres_cam_imu::CalibrationState *state) {
@@ -459,6 +481,27 @@ void initializeImuIntrinsicsFromKalibr(
                       : 0)
               << "\n";
   }
+}
+
+void initializeImuExtrinsicsFromKalibr(
+    const ceres_cam_imu::KalibrResult &kalibr, const std::size_t imu_count,
+    ceres_cam_imu::CalibrationState *state) {
+  if (!state || kalibr.imu_T_i_b.size() < imu_count) {
+    return;
+  }
+  if (state->imu_extrinsics.size() < imu_count) {
+    state->imu_extrinsics.resize(imu_count);
+  }
+  for (std::size_t imu_index = 0; imu_index < imu_count; ++imu_index) {
+    const ceres_cam_imu::ImuExtrinsicBlock block =
+        imuExtrinsicFromKalibrTib(kalibr.imu_T_i_b[imu_index]);
+    if (imu_index == 0) {
+      state->imu_extrinsic = block;
+    }
+    state->imu_extrinsics[imu_index] = block;
+  }
+  std::cout << "initialized IMU chain extrinsics from Kalibr: count="
+            << imu_count << "\n";
 }
 
 void initializeImuIntrinsicsFromResult(
@@ -618,6 +661,18 @@ ceres_cam_imu::CalibrationResidualStatistics printFinalResidualStatistics(
   const ceres_cam_imu::CalibrationResidualStatistics stats =
       ceres_cam_imu::evaluateCalibrationResidualStatistics(
           cameras, imu_noise, imu_samples, options, state);
+  printResidualStatistics(stats);
+  return stats;
+}
+
+ceres_cam_imu::CalibrationResidualStatistics printFinalResidualStatistics(
+    const std::vector<ceres_cam_imu::CameraObservationDataset> &cameras,
+    const std::vector<ceres_cam_imu::ImuObservationDataset> &imus,
+    const ceres_cam_imu::CalibrationOptions &options,
+    const ceres_cam_imu::CalibrationState &state) {
+  const ceres_cam_imu::CalibrationResidualStatistics stats =
+      ceres_cam_imu::evaluateCalibrationResidualStatistics(cameras, imus,
+                                                           options, state);
   printResidualStatistics(stats);
   return stats;
 }
@@ -1278,12 +1333,41 @@ int main(int argc, char **argv) {
       cameras.front().intrinsics;
   const std::vector<ceres_cam_imu::ImageObservation> &images =
       cameras.front().images;
-  const ceres_cam_imu::ImuNoise imu_noise =
-      ceres_cam_imu::readImuNoise(imu_yaml);
-  const std::vector<ceres_cam_imu::ImuSample> raw_imu_samples =
-      ceres_cam_imu::readImuCsv(imu_data);
-  const std::vector<ceres_cam_imu::ImuSample> imu_samples =
-      ceres_cam_imu::trimImuSamplesKalibr(raw_imu_samples, imu_trim_edge_count);
+  std::vector<std::string> imu_yamls = argValues(argc, argv, "--imu");
+  std::vector<std::string> imu_data_csvs = argValues(argc, argv, "--imu-data");
+  if (imu_yamls.empty()) {
+    imu_yamls.push_back(imu_yaml);
+  }
+  if (imu_data_csvs.empty()) {
+    imu_data_csvs.push_back(imu_data);
+  }
+  if (imu_yamls.size() != imu_data_csvs.size()) {
+    std::cerr << "the number of --imu YAML files must match --imu-data CSV "
+                 "files; first IMU is the reference IMU\n";
+    return 2;
+  }
+  std::vector<ceres_cam_imu::ImuObservationDataset> imus;
+  imus.reserve(imu_yamls.size());
+  for (std::size_t imu_index = 0; imu_index < imu_yamls.size(); ++imu_index) {
+    ceres_cam_imu::ImuObservationDataset imu;
+    imu.noise = ceres_cam_imu::readImuNoise(imu_yamls[imu_index]);
+    const std::vector<ceres_cam_imu::ImuSample> raw_samples =
+        ceres_cam_imu::readImuCsv(imu_data_csvs[imu_index]);
+    imu.samples =
+        ceres_cam_imu::trimImuSamplesKalibr(raw_samples, imu_trim_edge_count);
+    imu.label = "imu" + std::to_string(imu_index);
+    imus.push_back(std::move(imu));
+  }
+  const bool multi_imu = imus.size() > 1;
+  const ceres_cam_imu::ImuNoise &imu_noise = imus.front().noise;
+  const std::vector<ceres_cam_imu::ImuSample> &imu_samples =
+      imus.front().samples;
+  std::cout << "imu inputs: count=" << imus.size();
+  for (std::size_t imu_index = 0; imu_index < imus.size(); ++imu_index) {
+    std::cout << " " << imus[imu_index].label << "_samples="
+              << imus[imu_index].samples.size();
+  }
+  std::cout << "\n";
   (void)ceres_cam_imu::readAprilGridConfig(target_yaml);
 
   const std::string corner_poses_csv = argValue(argc, argv, "--corner-poses");
@@ -1330,6 +1414,24 @@ int main(int argc, char **argv) {
   }
   const bool init_from_kalibr =
       requested_init_from_kalibr && have_kalibr_result;
+  if (init_from_kalibr && multi_camera &&
+      kalibr.camera_T_ci.size() < cameras.size()) {
+    std::cerr << "--init-from-kalibr requires a complete Kalibr camera chain "
+              << "for " << cameras.size() << " cameras; found "
+              << kalibr.camera_T_ci.size() << " camera T_ci entries\n";
+    return 2;
+  }
+  if (init_from_kalibr && multi_imu && kalibr.imu_T_i_b.size() < imus.size()) {
+    std::cerr << "--init-from-kalibr requires a complete Kalibr IMU chain for "
+              << imus.size() << " IMUs; found " << kalibr.imu_T_i_b.size()
+              << " T_ib entries\n";
+    return 2;
+  }
+  const bool auto_init_from_camchain =
+      multi_camera && !init_from_result && !init_from_kalibr &&
+      !requested_init_from_camchain;
+  const bool init_from_camchain =
+      requested_init_from_camchain || auto_init_from_camchain;
   ceres_cam_imu::CameraExtrinsicBlock initial_T_c_b;
   std::vector<ceres_cam_imu::CameraExtrinsicBlock> initial_camera_extrinsics(
       cameras.size());
@@ -1378,18 +1480,30 @@ int main(int argc, char **argv) {
     std::cout.precision(old_precision);
   }
   if (init_from_kalibr) {
-    options.initial_camera_time_shift_s = kalibr.timeshift_cam_to_imu_s;
-    initial_camera_time_shifts[0] = kalibr.timeshift_cam_to_imu_s;
-    const ceres_cam_imu::Vec6 T_c_b = ceres_cam_imu::matrixToPose6(kalibr.T_ci);
-    for (int i = 0; i < 6; ++i) {
-      initial_T_c_b.values[static_cast<std::size_t>(i)] = T_c_b(i);
+    for (std::size_t camera_index = 0; camera_index < cameras.size();
+         ++camera_index) {
+      const ceres_cam_imu::Mat4 &camera_T_ci =
+          camera_index < kalibr.camera_T_ci.size()
+              ? kalibr.camera_T_ci[camera_index]
+              : kalibr.T_ci;
+      const ceres_cam_imu::Vec6 camera_T_c_b =
+          ceres_cam_imu::matrixToPose6(camera_T_ci);
+      for (int i = 0; i < 6; ++i) {
+        initial_camera_extrinsics[camera_index]
+            .values[static_cast<std::size_t>(i)] = camera_T_c_b(i);
+      }
+      initial_camera_time_shifts[camera_index] =
+          camera_index < kalibr.camera_timeshift_cam_to_imu_s.size()
+              ? kalibr.camera_timeshift_cam_to_imu_s[camera_index]
+              : kalibr.timeshift_cam_to_imu_s;
     }
-    initial_camera_extrinsics[0] = initial_T_c_b;
+    initial_T_c_b = initial_camera_extrinsics[0];
+    options.initial_camera_time_shift_s = initial_camera_time_shifts[0];
     have_initial_camera_blocks = true;
     initial_gravity = kalibr.gravity;
     have_initial_gravity = true;
   }
-  if (requested_init_from_camchain) {
+  if (init_from_camchain) {
     for (std::size_t camera_index = 0; camera_index < cameras.size();
          ++camera_index) {
       const std::string &camera_yaml =
@@ -1399,7 +1513,11 @@ int main(int argc, char **argv) {
               camera_yaml, shared_camchain_yaml ? static_cast<int>(camera_index)
                                                 : 0);
       if (!camchain_prior.has_T_cam_imu) {
-        std::cerr << "--init-from-camchain requires T_cam_imu for camera "
+        std::cerr << (auto_init_from_camchain
+                          ? "multi-camera calibration requires T_cam_imu in "
+                            "camchain YAML for camera "
+                          : "--init-from-camchain requires T_cam_imu for "
+                            "camera ")
                   << camera_index << "\n";
         return 2;
       }
@@ -1419,7 +1537,9 @@ int main(int argc, char **argv) {
     have_initial_camera_blocks = true;
     const std::streamsize old_precision = std::cout.precision();
     std::cout << std::setprecision(17)
-              << "initialized from camchain: time_shift_s="
+              << "initialized from camchain"
+              << (auto_init_from_camchain ? " (auto multi-camera)" : "")
+              << ": time_shift_s="
               << options.initial_camera_time_shift_s
               << " translation_m=" << initial_T_c_b.values[0] << " "
               << initial_T_c_b.values[1] << " " << initial_T_c_b.values[2];
@@ -1575,11 +1695,15 @@ int main(int argc, char **argv) {
   }
 
   ceres_cam_imu::CalibrationState state =
-      multi_camera
-          ? ceres_cam_imu::initializeCalibrationState(cameras, imu_samples,
-                                                      options)
-          : ceres_cam_imu::initializeCalibrationState(images, imu_samples,
-                                                      options);
+      multi_imu
+          ? ceres_cam_imu::initializeCalibrationState(cameras, imus, options)
+          : multi_camera
+                ? ceres_cam_imu::initializeCalibrationState(cameras,
+                                                            imu_samples,
+                                                            options)
+                : ceres_cam_imu::initializeCalibrationState(images,
+                                                            imu_samples,
+                                                            options);
 
   state.T_c_b = initial_T_c_b;
   if (have_initial_camera_blocks) {
@@ -1609,6 +1733,9 @@ int main(int argc, char **argv) {
   }
   if (init_from_kalibr) {
     initializeImuIntrinsicsFromKalibr(kalibr, &state);
+    if (multi_imu) {
+      initializeImuExtrinsicsFromKalibr(kalibr, imus.size(), &state);
+    }
   }
 
   if (!poses.empty()) {
@@ -1628,11 +1755,6 @@ int main(int argc, char **argv) {
   }
 
   if (staged) {
-    if (multi_camera) {
-      std::cerr << "--staged multi-camera calibration is not implemented yet; "
-                   "use joint optimization for multi-camera runs\n";
-      return 2;
-    }
     std::vector<ceres_cam_imu::CalibrationStage> stages =
         stage_free_masks.empty()
             ? ceres_cam_imu::makeConservativeCalibrationStages(options,
@@ -1658,9 +1780,16 @@ int main(int argc, char **argv) {
       for (const ceres_cam_imu::CalibrationStage &stage : stages) {
         ceres::Problem stage_problem;
         const ceres_cam_imu::CalibrationBuildSummary stage_build =
-            ceres_cam_imu::buildCalibrationProblem(
-                intrinsics, imu_noise, images, imu_samples, stage.options,
-                &state, &stage_problem);
+            multi_imu
+                ? ceres_cam_imu::buildCalibrationProblem(
+                      cameras, imus, stage.options, &state, &stage_problem)
+                : multi_camera
+                ? ceres_cam_imu::buildCalibrationProblem(
+                      cameras, imu_noise, imu_samples, stage.options, &state,
+                      &stage_problem)
+                : ceres_cam_imu::buildCalibrationProblem(
+                      intrinsics, imu_noise, images, imu_samples, stage.options,
+                      &state, &stage_problem);
         printBuildSummary(
             "stage built [" + stage.name + " iterations=" +
                 std::to_string(stage.options.max_iterations) + " pose_order=" +
@@ -1704,8 +1833,17 @@ int main(int argc, char **argv) {
                 << " solver_abs_param_tol="
                 << stage.options.solver_absolute_parameter_tolerance << "\n";
       const ceres_cam_imu::CalibrationStageResult stage_result =
-          ceres_cam_imu::solveCalibrationStage(intrinsics, imu_noise, images,
-                                               imu_samples, stage, &state);
+          multi_imu
+              ? ceres_cam_imu::solveCalibrationStage(cameras, imus, stage,
+                                                     &state)
+              : multi_camera
+              ? ceres_cam_imu::solveCalibrationStage(
+                    cameras, std::vector<ceres_cam_imu::ImuObservationDataset>{
+                                 imus.front()},
+                    stage, &state)
+              : ceres_cam_imu::solveCalibrationStage(intrinsics, imu_noise,
+                                                     images, imu_samples, stage,
+                                                     &state);
       printBuildSummary("stage built [" + stage_result.name + "]: ",
                         stage_result.build);
       const std::streamsize old_precision = std::cout.precision();
@@ -1733,8 +1871,14 @@ int main(int argc, char **argv) {
     }
     printFinalState(state, have_kalibr_result, kalibr);
     const ceres_cam_imu::CalibrationResidualStatistics residual_stats =
-        printFinalResidualStatistics(intrinsics, imu_noise, images, imu_samples,
-                                     options, state);
+        multi_imu ? printFinalResidualStatistics(cameras, imus, options, state)
+                  : multi_camera ? printFinalResidualStatistics(cameras,
+                                                                imu_noise,
+                                                                imu_samples,
+                                                                options, state)
+                                 : printFinalResidualStatistics(
+                                       intrinsics, imu_noise, images,
+                                       imu_samples, options, state);
     for (const double inspect_time_s : inspect_times_s) {
       printLocalTimeDiagnostics(inspect_time_s, inspect_window_s, poses,
                                 imu_samples, state);
@@ -1758,7 +1902,10 @@ int main(int argc, char **argv) {
 
   ceres::Problem problem;
   const ceres_cam_imu::CalibrationBuildSummary build =
-      multi_camera
+      multi_imu
+          ? ceres_cam_imu::buildCalibrationProblem(cameras, imus, options,
+                                                   &state, &problem)
+          : multi_camera
           ? ceres_cam_imu::buildCalibrationProblem(cameras, imu_noise,
                                                    imu_samples, options, &state,
                                                    &problem)
@@ -1796,12 +1943,29 @@ int main(int argc, char **argv) {
                 << "\n";
     }
   }
+  if (multi_imu) {
+    for (std::size_t imu_index = 0; imu_index < state.imu_extrinsics.size();
+         ++imu_index) {
+      const ceres_cam_imu::ImuExtrinsicBlock &imu_extrinsic =
+          imu_index == 0 ? state.imu_extrinsic
+                         : state.imu_extrinsics[imu_index];
+      std::cout << "imu_chain_state imu=" << imu_index
+                << " r_b_m=" << imu_extrinsic.values[0] << " "
+                << imu_extrinsic.values[1] << " " << imu_extrinsic.values[2]
+                << " r_i_b=" << imu_extrinsic.values[3] << " "
+                << imu_extrinsic.values[4] << " " << imu_extrinsic.values[5]
+                << "\n";
+    }
+  }
   const ceres_cam_imu::CalibrationResidualStatistics residual_stats =
-      multi_camera ? printFinalResidualStatistics(cameras, imu_noise,
-                                                  imu_samples, options, state)
-                   : printFinalResidualStatistics(intrinsics, imu_noise,
-                                                  images, imu_samples, options,
-                                                  state);
+      multi_imu ? printFinalResidualStatistics(cameras, imus, options, state)
+                : multi_camera ? printFinalResidualStatistics(cameras,
+                                                              imu_noise,
+                                                              imu_samples,
+                                                              options, state)
+                               : printFinalResidualStatistics(
+                                     intrinsics, imu_noise, images,
+                                     imu_samples, options, state);
   for (const double inspect_time_s : inspect_times_s) {
     printLocalTimeDiagnostics(inspect_time_s, inspect_window_s, poses,
                               imu_samples, state);

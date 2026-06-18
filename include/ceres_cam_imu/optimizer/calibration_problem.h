@@ -113,6 +113,10 @@ struct CalibrationState {
   TimeShiftBlock camera_time_shift_s;
   std::vector<CameraExtrinsicBlock> camera_extrinsics;
   std::vector<TimeShiftBlock> camera_time_shifts;
+  std::vector<ImuExtrinsicBlock> imu_extrinsics;
+  std::vector<ImuIntrinsicBlocks> imu_intrinsics_by_imu;
+  std::vector<std::vector<BiasControlBlock>> gyro_bias_controls_by_imu;
+  std::vector<std::vector<BiasControlBlock>> accel_bias_controls_by_imu;
 };
 
 struct CalibrationBuildSummary {
@@ -160,6 +164,11 @@ initializeCalibrationState(const std::vector<CameraObservationDataset> &cameras,
                            const std::vector<ImuSample> &imu_samples,
                            const CalibrationOptions &options);
 
+CalibrationState initializeCalibrationState(
+    const std::vector<CameraObservationDataset> &cameras,
+    const std::vector<ImuObservationDataset> &imus,
+    const CalibrationOptions &options);
+
 CalibrationBuildSummary
 buildCalibrationProblem(const CameraIntrinsics &intrinsics,
                         const ImuNoise &imu_noise,
@@ -172,6 +181,12 @@ CalibrationBuildSummary
 buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
                         const ImuNoise &imu_noise,
                         const std::vector<ImuSample> &imu_samples,
+                        const CalibrationOptions &options,
+                        CalibrationState *state, ceres::Problem *problem);
+
+CalibrationBuildSummary
+buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
+                        const std::vector<ImuObservationDataset> &imus,
                         const CalibrationOptions &options,
                         CalibrationState *state, ceres::Problem *problem);
 

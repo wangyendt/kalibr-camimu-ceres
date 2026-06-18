@@ -71,6 +71,12 @@ struct ImuSample {
   Vec3 accel_m_s2 = Vec3::Zero();
 };
 
+struct ImuObservationDataset {
+  ImuNoise noise;
+  std::vector<ImuSample> samples;
+  std::string label;
+};
+
 struct CornerMeasurement {
   int corner_id = -1;
   Vec2 pixel = Vec2::Zero();
@@ -107,6 +113,8 @@ struct KalibrResult {
   std::vector<double> camera_timeshift_cam_to_imu_s;
   std::vector<double> camera_reprojection_mean_px;
   std::vector<double> camera_reprojection_normalized_mean;
+  std::vector<Mat4> imu_T_i_b;
+  std::vector<double> imu_time_offset_s;
   bool has_accel_M = false;
   bool has_gyro_M = false;
   bool has_gyro_accel_sensitivity = false;

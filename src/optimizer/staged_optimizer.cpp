@@ -445,4 +445,52 @@ std::vector<CalibrationStageResult> solveCalibrationStages(
   return results;
 }
 
+CalibrationStageResult
+solveCalibrationStage(const std::vector<CameraObservationDataset> &cameras,
+                      const std::vector<ImuObservationDataset> &imus,
+                      const CalibrationStage &stage, CalibrationState *state) {
+  if (!state) {
+    throw std::invalid_argument("state must be non-null");
+  }
+  ceres::Problem problem;
+  CalibrationStageResult result;
+  result.name = stage.name;
+  const CalibrationStateSnapshot state_before_stage =
+      snapshotCalibrationState(*state);
+  CalibrationOptions options = stage.options;
+  if ((options.trace_iteration_state ||
+       options.solver_absolute_cost_change_tolerance >= 0.0 ||
+       options.solver_absolute_step_tolerance >= 0.0 ||
+       options.solver_absolute_parameter_tolerance >= 0.0) &&
+      options.trace_label.empty()) {
+    options.trace_label = stage.name;
+  }
+  result.build = buildCalibrationProblem(cameras, imus, options, state,
+                                         &problem);
+  result.solver = solveCalibrationProblem(options, state, &problem);
+  result.state_decision = decideCalibrationStageStateUpdate(result.solver);
+  result.state_restored =
+      result.state_decision != CalibrationStageStateDecision::kAccepted;
+  result.state_cost_change =
+      hasFiniteStageCosts(result.solver)
+          ? result.solver.final_cost - result.solver.initial_cost
+          : std::numeric_limits<double>::quiet_NaN();
+  if (result.state_restored) {
+    restoreCalibrationState(state_before_stage, state);
+  }
+  return result;
+}
+
+std::vector<CalibrationStageResult> solveCalibrationStages(
+    const std::vector<CameraObservationDataset> &cameras,
+    const std::vector<ImuObservationDataset> &imus,
+    const std::vector<CalibrationStage> &stages, CalibrationState *state) {
+  std::vector<CalibrationStageResult> results;
+  results.reserve(stages.size());
+  for (const CalibrationStage &stage : stages) {
+    results.push_back(solveCalibrationStage(cameras, imus, stage, state));
+  }
+  return results;
+}
+
 } // namespace ceres_cam_imu

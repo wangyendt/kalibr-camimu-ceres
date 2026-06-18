@@ -85,4 +85,14 @@ std::vector<CalibrationStageResult> solveCalibrationStages(
     const std::vector<ImuSample> &imu_samples,
     const std::vector<CalibrationStage> &stages, CalibrationState *state);
 
+CalibrationStageResult
+solveCalibrationStage(const std::vector<CameraObservationDataset> &cameras,
+                      const std::vector<ImuObservationDataset> &imus,
+                      const CalibrationStage &stage, CalibrationState *state);
+
+std::vector<CalibrationStageResult> solveCalibrationStages(
+    const std::vector<CameraObservationDataset> &cameras,
+    const std::vector<ImuObservationDataset> &imus,
+    const std::vector<CalibrationStage> &stages, CalibrationState *state);
+
 } // namespace ceres_cam_imu

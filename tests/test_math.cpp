@@ -406,6 +406,45 @@ int main() {
   assert(size_imu_problem.IsParameterBlockConstant(
       size_imu_state.imu_intrinsics.accel_axis_rx_i.data()));
 
+  ceres_cam_imu::CalibrationOptions multi_imu_options = gravity_options;
+  multi_imu_options.add_bias_motion_prior = false;
+  ceres_cam_imu::ImuObservationDataset imu0;
+  imu0.label = "imu0";
+  ceres_cam_imu::ImuObservationDataset imu1;
+  imu1.label = "imu1";
+  for (int i = 0; i < 2; ++i) {
+    ceres_cam_imu::ImuSample sample;
+    sample.timestamp_s = 0.2 + 0.2 * static_cast<double>(i);
+    sample.gyro_rad_s = ceres_cam_imu::Vec3(0.01, -0.02, 0.03);
+    sample.accel_m_s2 = ceres_cam_imu::Vec3(0.1, 0.2, 9.7);
+    imu0.samples.push_back(sample);
+    sample.gyro_rad_s = ceres_cam_imu::Vec3(-0.01, 0.02, -0.03);
+    sample.accel_m_s2 = ceres_cam_imu::Vec3(-0.1, 0.1, 9.8);
+    imu1.samples.push_back(sample);
+  }
+  std::vector<ceres_cam_imu::CameraObservationDataset> multi_imu_cameras(1);
+  multi_imu_cameras[0].intrinsics = intr;
+  std::vector<ceres_cam_imu::ImuObservationDataset> multi_imus = {imu0, imu1};
+  ceres_cam_imu::CalibrationState multi_imu_state =
+      ceres_cam_imu::initializeCalibrationState(multi_imu_cameras, multi_imus,
+                                                multi_imu_options);
+  ceres::Problem multi_imu_problem;
+  const ceres_cam_imu::CalibrationBuildSummary multi_imu_build =
+      ceres_cam_imu::buildCalibrationProblem(multi_imu_cameras, multi_imus,
+                                             multi_imu_options,
+                                             &multi_imu_state,
+                                             &multi_imu_problem);
+  assert(multi_imu_state.imu_extrinsics.size() == 2);
+  assert(multi_imu_state.gyro_bias_controls_by_imu.size() == 2);
+  assert(multi_imu_build.gyro_residuals == 4);
+  assert(multi_imu_build.accel_residuals == 4);
+  assert(multi_imu_problem.IsParameterBlockConstant(
+      multi_imu_state.imu_extrinsic.data()));
+  assert(!multi_imu_problem.IsParameterBlockConstant(
+      multi_imu_state.imu_extrinsics[1].data()));
+  assert(multi_imu_problem.HasParameterBlock(
+      multi_imu_state.gyro_bias_controls_by_imu[1][0].data()));
+
   ceres_cam_imu::CalibrationState fit_state;
   fit_state.pose_spline = ceres_cam_imu::UniformBSpline(6, 6, 0.0, 1.0, 8);
   fit_state.pose_controls.resize(

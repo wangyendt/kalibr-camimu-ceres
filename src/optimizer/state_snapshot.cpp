@@ -15,6 +15,12 @@ snapshotCalibrationState(const CalibrationState &state) {
   snapshot.imu_intrinsics = state.imu_intrinsics;
   snapshot.gravity = state.gravity;
   snapshot.camera_time_shift_s = state.camera_time_shift_s;
+  snapshot.camera_extrinsics = state.camera_extrinsics;
+  snapshot.camera_time_shifts = state.camera_time_shifts;
+  snapshot.imu_extrinsics = state.imu_extrinsics;
+  snapshot.imu_intrinsics_by_imu = state.imu_intrinsics_by_imu;
+  snapshot.gyro_bias_controls_by_imu = state.gyro_bias_controls_by_imu;
+  snapshot.accel_bias_controls_by_imu = state.accel_bias_controls_by_imu;
   return snapshot;
 }
 
@@ -24,7 +30,16 @@ bool isCompatibleStateSnapshot(const CalibrationStateSnapshot &snapshot,
          snapshot.gyro_bias_controls.size() ==
              state.gyro_bias_controls.size() &&
          snapshot.accel_bias_controls.size() ==
-             state.accel_bias_controls.size();
+             state.accel_bias_controls.size() &&
+         snapshot.camera_extrinsics.size() == state.camera_extrinsics.size() &&
+         snapshot.camera_time_shifts.size() == state.camera_time_shifts.size() &&
+         snapshot.imu_extrinsics.size() == state.imu_extrinsics.size() &&
+         snapshot.imu_intrinsics_by_imu.size() ==
+             state.imu_intrinsics_by_imu.size() &&
+         snapshot.gyro_bias_controls_by_imu.size() ==
+             state.gyro_bias_controls_by_imu.size() &&
+         snapshot.accel_bias_controls_by_imu.size() ==
+             state.accel_bias_controls_by_imu.size();
 }
 
 void restoreCalibrationState(const CalibrationStateSnapshot &snapshot,
@@ -44,6 +59,12 @@ void restoreCalibrationState(const CalibrationStateSnapshot &snapshot,
   state->imu_intrinsics = snapshot.imu_intrinsics;
   state->gravity = snapshot.gravity;
   state->camera_time_shift_s = snapshot.camera_time_shift_s;
+  state->camera_extrinsics = snapshot.camera_extrinsics;
+  state->camera_time_shifts = snapshot.camera_time_shifts;
+  state->imu_extrinsics = snapshot.imu_extrinsics;
+  state->imu_intrinsics_by_imu = snapshot.imu_intrinsics_by_imu;
+  state->gyro_bias_controls_by_imu = snapshot.gyro_bias_controls_by_imu;
+  state->accel_bias_controls_by_imu = snapshot.accel_bias_controls_by_imu;
 }
 
 } // namespace ceres_cam_imu

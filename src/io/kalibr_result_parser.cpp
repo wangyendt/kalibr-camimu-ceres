@@ -79,6 +79,15 @@ int cameraIndexFromLine(const std::string& line) {
   return std::stoi(match[1].str());
 }
 
+int targetImuIndexFromLine(const std::string& line) {
+  static const std::regex target_imu_re(R"(to imu([0-9]+))");
+  std::smatch match;
+  if (!std::regex_search(line, match, target_imu_re) || match.size() < 2) {
+    return -1;
+  }
+  return std::stoi(match[1].str());
+}
+
 template <typename T>
 void ensureVectorSize(std::vector<T>* values, const int index,
                       const T& fill_value) {
@@ -109,6 +118,7 @@ KalibrResult readKalibrResult(const std::string& result_txt_path) {
   bool in_gyro_section = false;
   bool in_accel_section = false;
   int active_camera_index = -1;
+  int active_imu_index = -1;
   for (std::size_t i = 0; i < lines.size(); ++i) {
     const std::string& l = lines[i];
     if (l.find("Reprojection error (cam") != std::string::npos &&
@@ -182,6 +192,24 @@ KalibrResult readKalibrResult(const std::string& result_txt_path) {
         if (camera_index == 0) {
           result.timeshift_cam_to_imu_s = values.front();
         }
+      }
+    } else if (l.find("T_ib (imu0 to imu") != std::string::npos &&
+               i + 4 < lines.size()) {
+      active_imu_index = targetImuIndexFromLine(l);
+      const Mat4 T_i_b = readMatrix4(lines, i + 1);
+      ensureVectorSize(&result.imu_T_i_b, active_imu_index,
+                       Mat4(Mat4::Identity()));
+      if (active_imu_index >= 0) {
+        result.imu_T_i_b[static_cast<std::size_t>(active_imu_index)] = T_i_b;
+      }
+    } else if (l.find("time offset with respect to IMU0") !=
+                   std::string::npos &&
+               active_imu_index >= 0) {
+      const std::vector<double> values = extractDoubles(l);
+      if (!values.empty()) {
+        ensureVectorSize(&result.imu_time_offset_s, active_imu_index, 0.0);
+        result.imu_time_offset_s[static_cast<std::size_t>(active_imu_index)] =
+            values.back();
       }
     } else if (l.find("Gravity vector") != std::string::npos &&
                i + 1 < lines.size()) {

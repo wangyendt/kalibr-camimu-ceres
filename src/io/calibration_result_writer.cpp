@@ -176,6 +176,59 @@ void writeCalibrationResultYaml(
       output << "    time_shift_s: " << time_shift << "\n";
     }
   }
+  if (state.imu_extrinsics.size() > 1) {
+    output << "imu_chain:\n";
+    for (std::size_t imu_index = 0; imu_index < state.imu_extrinsics.size();
+         ++imu_index) {
+      const ImuExtrinsicBlock& imu_extrinsic =
+          imu_index == 0 ? state.imu_extrinsic
+                         : state.imu_extrinsics[imu_index];
+      const ImuIntrinsicBlocks& imu_intrinsics =
+          imu_index == 0 ? state.imu_intrinsics
+                         : state.imu_intrinsics_by_imu[imu_index];
+      output << "  - imu_index: " << imu_index << "\n";
+      output << "    r_b: ";
+      writeVector3(output, Vec3(imu_extrinsic.values[0],
+                                imu_extrinsic.values[1],
+                                imu_extrinsic.values[2]));
+      output << "\n";
+      output << "    r_i_b: ";
+      writeVector3(output, Vec3(imu_extrinsic.values[3],
+                                imu_extrinsic.values[4],
+                                imu_extrinsic.values[5]));
+      output << "\n";
+      output << "    accel_M: ";
+      writeMatrix3(output, lowerTriangularMatrix(imu_intrinsics.accel_M.data()));
+      output << "\n";
+      output << "    gyro_M: ";
+      writeMatrix3(output, lowerTriangularMatrix(imu_intrinsics.gyro_M.data()));
+      output << "\n";
+      output << "    gyro_accel_sensitivity: ";
+      writeMatrix3(output,
+                   matrix3Block(imu_intrinsics.gyro_accel_sensitivity.data()));
+      output << "\n";
+      const Vec3 gyro_sensing_rotation_vector =
+          vector3Block(imu_intrinsics.gyro_sensing_rotation.data());
+      output << "    gyro_sensing_rotation: ";
+      writeMatrix3(output, rotationVectorToMatrix(gyro_sensing_rotation_vector));
+      output << "\n";
+      output << "    gyro_sensing_rotation_vector: ";
+      writeVector3(output, gyro_sensing_rotation_vector);
+      output << "\n";
+      output << "    accel_axis_rx_i: ";
+      writeVector3(output,
+                   vector3Block(imu_intrinsics.accel_axis_rx_i.data()));
+      output << "\n";
+      output << "    accel_axis_ry_i: ";
+      writeVector3(output,
+                   vector3Block(imu_intrinsics.accel_axis_ry_i.data()));
+      output << "\n";
+      output << "    accel_axis_rz_i: ";
+      writeVector3(output,
+                   vector3Block(imu_intrinsics.accel_axis_rz_i.data()));
+      output << "\n";
+    }
+  }
   output << "imu_intrinsics:\n";
   output << "  accel_M: ";
   writeMatrix3(output, lowerTriangularMatrix(state.imu_intrinsics.accel_M.data()));
