@@ -35,14 +35,46 @@ python3 tools/prepare_ceres_inputs.py --help
 python3 tools/run_kalibr_docker.py --help
 
 ======================================================================
-关联 Kalibr Docker 仓库
+Kalibr Docker 镜像
 ======================================================================
 
-说明：在新工程下克隆当前 Kalibr Docker 包装仓库；已有 `external/kalibr-docker` 时不要重复执行。
-git clone ../kalibr external/kalibr-docker
+说明：从 DockerHub 拉取 Kalibr Docker 镜像；本项目脚本会在本地缺少默认镜像时自动执行等价拉取。
+docker pull wang121ye/kalibr-camera-calibration:20.04
 
-说明：用当前 Kalibr Docker 包装仓库构建基线镜像。
-docker build -f external/kalibr-docker/docker/camera-calibration/Dockerfile -t kalibr-camera-calibration:20.04 external/kalibr-docker
+说明：查看本机是否已有本地 Kalibr 镜像；有 `kalibr-camera-calibration:20.04` 时脚本优先使用本地镜像。
+docker image inspect kalibr-camera-calibration:20.04
+
+======================================================================
+关联 cpp_tools 稀疏子模块
+======================================================================
+
+说明：初始化或修正 cpp_tools 稀疏子模块，只保留 apriltag_detection 和 camera_models。
+tools/update_cpp_tools_sparse_submodule.sh
+
+说明：构建 native EuRoC 导出所需的 cpp_tools pybind 模块；默认使用官方 Kalibr/cpp_tools upstream 的 apriltag gradient step=1。
+tools/build_cpp_tools_pybinds.sh
+
+说明：复现实验早期旧 Kalibr fork 的 apriltag gradient step=3；只用于历史对比，不作为当前默认口径。
+KALIBR_APRILTAG_COMPAT=1 tools/build_cpp_tools_pybinds.sh
+
+======================================================================
+kalibr-camimu-ceres Docker 镜像（本项目 Ceres solver）
+======================================================================
+
+说明：默认构建（amd64）；Dockerfile 默认 BASE_IMAGE=ubuntu:20.04、BASE_IMAGE_PLATFORM=linux/amd64，自带全部构建依赖并用清华 pip 源装 pywayne，再用 gettool ceres -v 2.2.0 从源码编译 Ceres，不再依赖 Kalibr/ROS 基础镜像。
+docker build -f docker/Dockerfile -t kalibr-camimu-ceres:amd64 .
+
+说明：显式构建 amd64 镜像并加载到本地，与默认构建等价，便于在 arm 机器上做对照。
+docker buildx build --platform linux/amd64 --build-arg BASE_IMAGE_PLATFORM=linux/amd64 --build-arg BUILD_JOBS=8 -f docker/Dockerfile -t kalibr-camimu-ceres:amd64 --load .
+
+说明：本地构建 arm64 镜像（Apple Silicon 原生）；除 --platform 外还要把 BASE_IMAGE_PLATFORM 覆盖为 linux/arm64，否则 FROM 仍按默认拉 amd64 基础镜像。
+docker buildx build --platform linux/arm64 --build-arg BASE_IMAGE_PLATFORM=linux/arm64 --build-arg BUILD_JOBS=8 -f docker/Dockerfile -t kalibr-camimu-ceres:arm64 --load .
+
+说明：容器内查看主标定器参数，确认镜像可用。
+docker run --rm kalibr-camimu-ceres:arm64 calibrate_cam_imu --help
+
+说明：容器内运行 Ceres 完全独立标定；把生产数据目录挂到 /data、输出目录挂到 /out，命令里的路径全部改成容器内路径。
+docker run --rm -v /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data:/data -v /private/tmp:/out kalibr-camimu-ceres:arm64 calibrate_cam_imu --corner-defaults --cam /data/2025_03_14_00_10_18/cam_imu/cam0-camchain-640x400.yaml --imu /data/2025_03_14_00_10_18/cam_imu/imu.yaml --target /data/2025_03_14_00_10_18/cam_imu/aprilgrid.yaml --imu-data /data/2025_03_14_00_10_18/cam_imu/data1.csv --corners /data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corners.csv --corner-poses /data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /out/ceres_2025_03_14_00_10_18_independent.yaml
 
 ======================================================================
 Ceres 通用标定示例
@@ -64,6 +96,19 @@ python3 tools/prepare_ceres_inputs.py --source-type pkl --corner-pkl /Users/wayn
 python3 tools/prepare_ceres_inputs.py --source-type bag --bag /Users/wayne/Documents/work/data/TUM/dataset-calib-imu1_512_16.bag --cams /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/camchain.yaml --imu /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/imu_config.yaml --target /Users/wayne/Documents/work/data/TUM/april_6x6_80x80cm.yaml --out-dir /private/tmp/ceres_tum_imu1_bag --run-calibration -- --imu-model scale-misalignment --max-iterations 100
 
 ======================================================================
+多 IMU Ceres 标定验证
+======================================================================
+
+说明：生产数据 4 IMU + 1 camera 全量 dry-run，只建图不优化，用来确认多 IMU residual 和参数块数量。
+build/calibrate_cam_imu --corner-defaults --cam /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0-camchain-640x400.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --target /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/aprilgrid.yaml --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data1.csv --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data2.csv --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data3.csv --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data4.csv --corners /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corners.csv --corner-poses /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corner_poses.csv --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --max-iterations 1 --solver-max-trust-region-radius 10000000 --dry-run
+
+说明：生产数据 4 IMU + 1 camera 小规模 smoke，跑 1 次迭代并输出包含 imu_chain 的 Ceres YAML。
+build/calibrate_cam_imu --corner-defaults --cam /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0-camchain-640x400.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --target /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/aprilgrid.yaml --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data1.csv --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data2.csv --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data3.csv --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data4.csv --corners /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corners.csv --corner-poses /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corner_poses.csv --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --max-frames 20 --max-imu-residuals 100 --max-iterations 1 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_2025_03_14_00_10_18_multi_imu_smoke.yaml
+
+说明：生产数据 4 IMU + 1 camera staged joint 口径；使用已有 Kalibr joint 结果热启动，第一段优化 pose/bias/gravity/IMU chain，第二段释放 camera extrinsic 和 time shift。
+build/calibrate_cam_imu --corner-defaults --cam /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0-camchain-640x400.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --target /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/aprilgrid.yaml --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data1.csv --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data2.csv --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data3.csv --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data4.csv --corners /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corners.csv --corner-poses /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corner_poses.csv --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --kalibr-result /Users/wayne/Documents/work/code/project/ffalcon/kalibr-camimu-ceres/out/docker_benchmarks/20260618_step4_native_ceres_no_param_stop/benchmark_multi_imu/benchmark_multi_2025_03_14_00_10_18/joint_4imu/kalibr/input/cam0_640x400_corners-fixture-results-imucam.txt --init-from-kalibr --staged --stage-free pbg,pbegt --stage-iterations 30,30 --stage-solver-initial-trust-region-radii 1,1 --stage-solver-max-trust-region-radii 10000000,10000000 --max-iterations 150 --solver-max-trust-region-radius 10000000 --solver-absolute-parameter-tolerance -1 --output-result /private/tmp/ceres_2025_03_14_00_10_18_multi_imu_staged_pbg_pbegt.yaml
+
+======================================================================
 本地数据集单数据集三步命令
 ======================================================================
 
@@ -76,6 +121,14 @@ python3 tools/run_kalibr_docker.py --dataset /Users/wayne/Documents/work/code/pr
 build/calibrate_cam_imu --corner-defaults --cam /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0-camchain-640x400.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --target /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/aprilgrid.yaml --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data1.csv --corners /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corners.csv --corner-poses /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_2025_03_14_00_10_18_independent.yaml
 说明：[2025_03_14_00_10_18] 3 运行 Ceres 热启动标定。
 build/calibrate_cam_imu --corner-defaults --cam /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0-camchain-640x400.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/imu.yaml --target /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/aprilgrid.yaml --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/data1.csv --corners /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corners.csv --corner-poses /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corner_poses.csv --kalibr-result /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corners-1-results-imucam.txt --init-from-kalibr --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_2025_03_14_00_10_18_hotstart.yaml
+说明：[2025_03_14_00_10_18] 4 Docker 运行 kalibr 基线（amd64）；wang121ye/kalibr-camera-calibration:20.04 现已是多架构镜像，amd64 在 Apple Silicon 上经 QEMU/Rosetta 模拟运行。
+python3 tools/run_kalibr_docker.py --dataset /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu --run-name kalibr_2025_03_14_00_10_18 --max-iter 30 --platform linux/amd64
+说明：[2025_03_14_00_10_18] 5 Docker 运行 kalibr 基线（arm64 原生）；上游镜像已 push arm64 manifest，Apple Silicon 上直接拉原生 arm64 层、最快。
+python3 tools/run_kalibr_docker.py --dataset /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_03_14_00_10_18/cam_imu --run-name kalibr_2025_03_14_00_10_18 --max-iter 30 --platform linux/arm64
+说明：[2025_03_14_00_10_18] 6 Docker 运行 kalibr-camimu-ceres 完全独立标定（amd64）；先 docker build -t kalibr-camimu-ceres:amd64 .，arm 机器上经 QEMU 模拟 amd64；数据目录挂到 /data、输出挂到 /out。
+docker run --rm --platform linux/amd64 -v /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data:/data -v /private/tmp:/out kalibr-camimu-ceres:amd64 calibrate_cam_imu --corner-defaults --cam /data/2025_03_14_00_10_18/cam_imu/cam0-camchain-640x400.yaml --imu /data/2025_03_14_00_10_18/cam_imu/imu.yaml --target /data/2025_03_14_00_10_18/cam_imu/aprilgrid.yaml --imu-data /data/2025_03_14_00_10_18/cam_imu/data1.csv --corners /data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corners.csv --corner-poses /data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /out/ceres_2025_03_14_00_10_18_independent.yaml
+说明：[2025_03_14_00_10_18] 7 Docker 运行 kalibr-camimu-ceres 完全独立标定（arm64 原生）；先用 buildx 构建 kalibr-camimu-ceres:arm64，Apple Silicon 上原生执行、最快；数据目录挂到 /data、输出挂到 /out。
+docker run --rm --platform linux/arm64 -v /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data:/data -v /private/tmp:/out kalibr-camimu-ceres:arm64 calibrate_cam_imu --corner-defaults --cam /data/2025_03_14_00_10_18/cam_imu/cam0-camchain-640x400.yaml --imu /data/2025_03_14_00_10_18/cam_imu/imu.yaml --target /data/2025_03_14_00_10_18/cam_imu/aprilgrid.yaml --imu-data /data/2025_03_14_00_10_18/cam_imu/data1.csv --corners /data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corners.csv --corner-poses /data/2025_03_14_00_10_18/cam_imu/cam0_640x400_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /out/ceres_2025_03_14_00_10_18_independent.yaml
 
 ======================================================================
 TUM / EuRoC 转换
@@ -84,5 +137,14 @@ TUM / EuRoC 转换
 说明：TUM bag 格式输入，先导出角点/IMU CSV，再运行 Ceres 单阶段。
 python3 tools/prepare_ceres_inputs.py --source-type bag --bag /Users/wayne/Documents/work/data/TUM/dataset-calib-imu1_512_16.bag --cams /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/camchain.yaml --imu /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/imu_config.yaml --target /Users/wayne/Documents/work/data/TUM/april_6x6_80x80cm.yaml --out-dir /private/tmp/ceres_tum_imu1_bag --run-calibration -- --imu-model scale-misalignment --max-iterations 100
 
-说明：TUM EuRoC/mav0 目录格式输入，先转 bag 和 CSV，再运行 Ceres 单阶段。
-python3 tools/prepare_ceres_inputs.py --source-type euroc --euroc-dir /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16 --cams /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/camchain.yaml --imu /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/imu_config.yaml --target /Users/wayne/Documents/work/data/TUM/april_6x6_80x80cm.yaml --out-dir /private/tmp/ceres_tum_imu2_euroc --run-calibration -- --imu-model scale-misalignment --init-from-camchain --max-iterations 100
+说明：TUM EuRoC/mav0 目录格式输入，使用 native cpp_tools 导出 CSV，不依赖 Kalibr Docker，再运行 Ceres 单阶段。
+python3 tools/prepare_ceres_inputs.py --source-type euroc --euroc-backend native --euroc-dir /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16 --cams /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/camchain.yaml --imu /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/imu_config.yaml --target /Users/wayne/Documents/work/data/TUM/april_6x6_80x80cm.yaml --out-dir /private/tmp/ceres_tum_imu2_euroc_native --run-calibration -- --imu-model scale-misalignment --init-from-camchain --max-iterations 100
+
+说明：TUM EuRoC/mav0 目录格式输入，显式使用 Kalibr Docker 旧链路生成对比基线。
+python3 tools/prepare_ceres_inputs.py --source-type euroc --euroc-backend kalibr-docker --euroc-dir /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16 --cams /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/camchain.yaml --imu /Users/wayne/Documents/work/data/TUM/dataset-calib-imu2_512_16/dso/imu_config.yaml --target /Users/wayne/Documents/work/data/TUM/april_6x6_80x80cm.yaml --out-dir /private/tmp/ceres_tum_imu2_euroc_kalibr_baseline
+
+说明：对比 TUM cam0 的 Kalibr 与 native cpp_tools 角点像素误差，按 Kalibr grid corner id 匹配并允许 1 微秒时间戳量化差。
+python3 tools/compare_corner_csv.py --reference /private/tmp/ceres_tum_imu2_euroc_kalibr_baseline/cam0_corners.csv --candidate /private/tmp/ceres_tum_imu2_euroc_native/cam0_corners.csv --label tum_imu2_cam0_cpp_tools_vs_kalibr --timestamp-tolerance-ns 1000 --match-key corner-id
+
+说明：对比 TUM cam1 的 Kalibr 与 native cpp_tools 角点像素误差，按 Kalibr grid corner id 匹配并允许 1 微秒时间戳量化差。
+python3 tools/compare_corner_csv.py --reference /private/tmp/ceres_tum_imu2_euroc_kalibr_baseline/cam1_corners.csv --candidate /private/tmp/ceres_tum_imu2_euroc_native/cam1_corners.csv --label tum_imu2_cam1_cpp_tools_vs_kalibr --timestamp-tolerance-ns 1000 --match-key corner-id
