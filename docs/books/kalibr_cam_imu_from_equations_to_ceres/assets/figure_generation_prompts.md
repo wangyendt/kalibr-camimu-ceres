@@ -3,7 +3,7 @@
 本文件记录第 4 章相机观测模型中几张示意图的生成提示词。推荐导出为 PNG，并使用下面给出的文件名直接替换同目录资源：
 
 ```text
-docs/knowhow/cam_imu_calibration_book/assets/
+docs/books/kalibr_cam_imu_from_equations_to_ceres/assets/
 ```
 
 如果生成工具能导出更清晰的 SVG，也可以临时保存为 SVG，但本书正文当前统一引用 PNG。
