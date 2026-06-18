@@ -1,0 +1,85 @@
+# Kalibr Cam-IMU Ceres 常用命令
+
+说明：以下命令都保持为单行，方便直接复制执行。默认从 `kalibr-camimu-ceres` 仓库根目录执行。
+
+======================================================================
+构建与测试
+======================================================================
+
+说明：Release 构建 Ceres cam-IMU。
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+说明：编译所有二进制。
+cmake --build build -j
+
+说明：运行轻量数值检查。
+ctest --test-dir build --output-on-failure
+
+======================================================================
+帮助入口
+======================================================================
+
+说明：查看主标定器参数。
+build/calibrate_cam_imu --help
+
+说明：查看数据检查工具参数。
+build/check_dataset --help
+
+说明：查看 Kalibr/Ceres result 对比工具参数。
+build/compare_kalibr_result --help
+
+说明：查看输入转换脚本参数。
+python3 tools/prepare_ceres_inputs.py --help
+
+说明：查看 Kalibr Docker 基线脚本参数。
+python3 tools/run_kalibr_docker.py --help
+
+======================================================================
+关联 Kalibr Docker 仓库
+======================================================================
+
+说明：在新工程下克隆当前 Kalibr Docker 包装仓库；已有 `external/kalibr-docker` 时不要重复执行。
+git clone ../kalibr external/kalibr-docker
+
+说明：用当前 Kalibr Docker 包装仓库构建基线镜像。
+docker build -f external/kalibr-docker/docker/camera-calibration/Dockerfile -t kalibr-camera-calibration:20.04 external/kalibr-docker
+
+======================================================================
+Ceres 通用标定模板
+======================================================================
+
+说明：Ceres 完全独立标定模板；不传 Kalibr result，不读取 Kalibr 变量或结果。
+build/calibrate_cam_imu --corner-defaults --cam /ABS/camchain.yaml --imu /ABS/imu.yaml --target /ABS/aprilgrid.yaml --imu-data /ABS/imu.csv --corners /ABS/cam0_corners.csv --corner-poses /ABS/cam0_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_independent.yaml
+
+说明：Ceres 热启动诊断模板；只用于实验对比，显式读取 Kalibr result 作为初值。
+build/calibrate_cam_imu --corner-defaults --cam /ABS/camchain.yaml --imu /ABS/imu.yaml --target /ABS/aprilgrid.yaml --imu-data /ABS/imu.csv --corners /ABS/cam0_corners.csv --corner-poses /ABS/cam0_corner_poses.csv --kalibr-result /ABS/results-imucam.txt --init-from-kalibr --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_hotstart.yaml
+
+说明：Ceres 结果与 Kalibr result 离线对比；这是评测命令，不参与标定求解。
+build/compare_kalibr_result --kalibr-result /ABS/results-imucam.txt --ceres-result /private/tmp/ceres_independent.yaml
+
+说明：pkl 输入一键转换并运行 Ceres 单阶段标定。
+python3 tools/prepare_ceres_inputs.py --source-type pkl --corner-pkl /ABS/corners.pkl --cams /ABS/camchain.yaml --imu /ABS/imu.yaml --imu-data /ABS/imu.csv --target /ABS/aprilgrid.yaml --out-dir /ABS/ceres_inputs --run-calibration -- --corner-defaults --estimate-time-shift-prior --estimate-orientation-gravity-prior
+
+说明：bag 输入一键转换并运行 TUM parity 二阶段。
+python3 tools/prepare_ceres_inputs.py --source-type bag --bag /ABS/data.bag --cams /ABS/camchain.yaml --imu /ABS/imu.yaml --target /ABS/aprilgrid.yaml --out-dir /ABS/ceres_inputs --run-two-stage
+
+======================================================================
+production_calibration 单数据集三步命令
+======================================================================
+
+说明：可替换 session-id：2025_03_14_00_10_18、2025_03_14_00_34_14、2025_03_14_00_50_37、2025_03_14_02_13_45、2025_03_14_02_21_41、2025_03_14_10_23_35、2025_04_19_18_43_05、2025_04_19_19_03_03、2025_04_19_19_20_46、2025_04_19_19_35_04、2025_04_19_19_55_25、2025_04_19_20_21_09。下面只保留 2025_04_19_20_21_09，一次替换命令中的 session-id 即可复用。
+
+----- 2025_04_19_20_21_09 -----
+说明：[2025_04_19_20_21_09] 1 运行 Kalibr Docker。
+python3 tools/run_kalibr_docker.py --dataset /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu --run-name kalibr_2025_04_19_20_21_09 --max-iter 30
+说明：[2025_04_19_20_21_09] 2 运行 Ceres 完全独立标定。
+build/calibrate_cam_imu --corner-defaults --cam /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/cam0-camchain-640x400.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/imu.yaml --target /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/aprilgrid.yaml --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/data1.csv --corners /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/cam0_640x400_corners.csv --corner-poses /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/cam0_640x400_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_2025_04_19_20_21_09_independent.yaml
+说明：[2025_04_19_20_21_09] 3 运行 Ceres 热启动标定。
+build/calibrate_cam_imu --corner-defaults --cam /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/cam0-camchain-640x400.yaml --imu /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/imu.yaml --target /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/aprilgrid.yaml --imu-data /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/data1.csv --corners /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/cam0_640x400_corners.csv --corner-poses /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/cam0_640x400_corner_poses.csv --kalibr-result /Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data/2025_04_19_20_21_09/cam_imu/cam0_640x400_corners-1-results-imucam.txt --init-from-kalibr --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_2025_04_19_20_21_09_hotstart.yaml
+
+======================================================================
+TUM / EuRoC 转换
+======================================================================
+
+说明：EuRoC/TUM mav0 目录先转 bag 和 CSV，再运行 Ceres 单阶段。
+python3 tools/prepare_ceres_inputs.py --source-type euroc --euroc-dir /ABS/dataset-calib-imu2_512_16 --cams /ABS/camchain.yaml --imu /ABS/imu.yaml --target /ABS/aprilgrid.yaml --out-dir /ABS/ceres_inputs --run-calibration -- --imu-model scale-misalignment --init-from-camchain --max-iterations 100

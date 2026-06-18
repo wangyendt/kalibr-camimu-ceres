@@ -1,0 +1,4 @@
+interface:
+  display_name: "Technical Book Writer"
+  short_description: "Write rigorous derivation-first technical books"
+  default_prompt: "Use $technical-book-writer to turn this technical derivation into a readable book chapter."
