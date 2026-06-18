@@ -10,7 +10,9 @@ import subprocess
 import sys
 
 
-KALIBR_IMAGE = "kalibr-camera-calibration:20.04"
+KALIBR_LOCAL_IMAGE = "kalibr-camera-calibration:20.04"
+KALIBR_DOCKERHUB_IMAGE = "wang121ye/kalibr-camera-calibration:20.04"
+KALIBR_IMAGE = KALIBR_LOCAL_IMAGE
 KALIBR_BIN = "/catkin_ws/devel/lib/kalibr/kalibr_calibrate_imu_camera"
 DEFAULT_DATASET = pathlib.Path("/Users/wayne/Documents/work/data/cam_imu_2")
 
@@ -75,6 +77,36 @@ def _extract_summary(clean_text):
 
 def _write_text(path, text):
     path.write_text(text, encoding="utf-8")
+
+
+def _quote_command(command):
+    return " ".join(shlex.quote(str(part)) for part in command)
+
+
+def _docker_image_exists(image):
+    result = subprocess.run(
+        ["docker", "image", "inspect", image],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def _resolve_kalibr_image(args):
+    if args.print_only:
+        if args.image == KALIBR_LOCAL_IMAGE:
+            return args.remote_image
+        return args.image
+    if _docker_image_exists(args.image):
+        return args.image
+    pull_image = args.remote_image if args.image == KALIBR_LOCAL_IMAGE else args.image
+    pull_command = ["docker", "pull", pull_image]
+    print(f"local Docker image not found: {args.image}; pulling {pull_image}", flush=True)
+    print(_quote_command(pull_command), flush=True)
+    rc = subprocess.call(pull_command)
+    if rc != 0:
+        raise RuntimeError(f"failed to pull Docker image: {pull_image}")
+    return pull_image
 
 
 def build_kalibr_args(args, input_dir="/out/input"):
@@ -149,7 +181,7 @@ def build_docker_command(args, run_dir):
         f"{run_dir}:/out",
         "-w",
         "/out",
-        args.image,
+        args.resolved_image,
         "/bin/bash",
         "-lc",
         container_script,
@@ -163,6 +195,13 @@ def parse_args():
     )
     parser.add_argument("--dataset", type=pathlib.Path, default=DEFAULT_DATASET)
     parser.add_argument("--image", default=KALIBR_IMAGE)
+    parser.add_argument(
+        "--remote-image",
+        default=KALIBR_DOCKERHUB_IMAGE,
+        help=(
+            "DockerHub image to pull when the default local Kalibr image is absent"
+        ),
+    )
     parser.add_argument("--platform", default="linux/amd64")
     parser.add_argument("--corner-file", default="cam0_640x400_corners.pkl")
     parser.add_argument("--image-timestamp-file", default="0_save_timestamp.txt")
@@ -206,6 +245,7 @@ def main():
         ("IMU yaml", args.imu),
     ]:
         _require_file(args.dataset, filename, label)
+    args.resolved_image = _resolve_kalibr_image(args)
 
     run_name = args.run_name or f"{args.dataset.name}_iter{args.max_iter}_{_timestamp()}"
     run_dir = args.out_root / run_name
@@ -214,9 +254,9 @@ def main():
     docker_command, kalibr_args = build_docker_command(args, run_dir)
     command_text = (
         "# Host command\n"
-        + " ".join(shlex.quote(x) for x in docker_command)
+        + _quote_command(docker_command)
         + "\n\n# Kalibr command inside container\n"
-        + " ".join(shlex.quote(x) for x in kalibr_args)
+        + _quote_command(kalibr_args)
         + "\n"
     )
     _write_text(run_dir / "command.txt", command_text)

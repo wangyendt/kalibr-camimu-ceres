@@ -1,0 +1,14 @@
+.git
+.github
+build
+out
+tmp
+__pycache__
+*.pyc
+*.pyo
+.DS_Store
+third_party/cpp_tools/.git
+third_party/cpp_tools/cv/*/build
+third_party/cpp_tools/cv/*/lib/*.dylib
+third_party/cpp_tools/cv/*/lib/*.so
+third_party/cpp_tools/cv/*/lib/*.pyd

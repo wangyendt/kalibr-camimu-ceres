@@ -28,7 +28,7 @@ docs/books/  Kalibr cam-IMU 推导成书
 docs/        plan/todo/experiment/knowhow/常用命令
 ```
 
-未带入旧目录中的 `build/`、`out/`、`__pycache__/` 和实验 Dockerfile。这个仓库默认通过 CMake 在本机生成二进制。
+未带入旧目录中的 `build/`、`out/`、`__pycache__/` 和旧实验 Dockerfile。这个仓库默认通过 CMake 在本机生成二进制；可复现实验用的容器定义放在 `docker/` 下。
 
 ## 构建
 
@@ -52,19 +52,24 @@ build/calibrate_cam_imu --corner-defaults --cam /ABS/cam_imu/cam0-camchain-640x4
 build/compare_kalibr_result --kalibr-result /ABS/cam_imu/cam0_640x400_corners-1-results-imucam.txt --ceres-result /private/tmp/ceres_independent.yaml
 ```
 
-## 和 Kalibr Docker 仓库配合
+## 和 Kalibr Docker 配合
 
-如果本机还没有 `kalibr-camera-calibration:20.04` 镜像，可以在本仓库下克隆 Docker 包装仓库再构建：
+需要 Kalibr 环境的转换和基线脚本默认优先使用本机已有的 `kalibr-camera-calibration:20.04`。如果本机没有这个镜像，脚本会自动从 DockerHub 拉取 `wang121ye/kalibr-camera-calibration:20.04` 并运行，因此外部用户不需要本地克隆 `kalibr-docker` 仓库。
 
 ```bash
-git clone ../kalibr external/kalibr-docker
-docker build -f external/kalibr-docker/docker/camera-calibration/Dockerfile -t kalibr-camera-calibration:20.04 external/kalibr-docker
+docker pull wang121ye/kalibr-camera-calibration:20.04
 ```
 
-然后用本仓库工具跑 Kalibr Docker 基线：
+用本仓库工具跑 Kalibr Docker 基线：
 
 ```bash
 python3 tools/run_kalibr_docker.py --dataset /ABS/cam_imu --run-name kalibr_baseline --max-iter 30
+```
+
+如果需要固定 Linux 依赖环境运行 Ceres 求解器，可以构建本项目的 solver 镜像。该镜像基于 Kalibr DockerHub 镜像，并通过 `gettool ceres -v 2.2.0` 构建 Ceres：
+
+```bash
+docker build -f docker/Dockerfile -t kalibr-camimu-ceres-solver:20.04 .
 ```
 
 ## 文档
