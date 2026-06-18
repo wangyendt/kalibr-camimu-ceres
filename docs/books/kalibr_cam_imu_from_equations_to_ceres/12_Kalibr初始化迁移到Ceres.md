@@ -90,7 +90,7 @@ src/initialization/time_shift_initializer.cpp
 验证命令：
 
 ```bash
-build/calibrate_cam_imu --kalibr-corner-defaults --cam /Users/wayne/Documents/work/data/cam_imu_2/cam0-camchain-640x400.yaml --imu /Users/wayne/Documents/work/data/cam_imu_2/imu.yaml --target /Users/wayne/Documents/work/data/cam_imu_2/aprilgrid.yaml --imu-data /Users/wayne/Documents/work/data/cam_imu_2/data1.csv --corners /Users/wayne/Documents/work/data/cam_imu_2/cam0_640x400_corners.csv --corner-poses /Users/wayne/Documents/work/data/cam_imu_2/cam0_640x400_corner_poses.csv --kalibr-result /Users/wayne/Documents/work/data/cam_imu_2/cam0_640x400_corners-1-results-imucam.txt --init-from-kalibr --estimate-time-shift-prior --dry-run --max-frames 20 --imu-stride 1000 --max-imu-residuals 5
+build/calibrate_cam_imu --kalibr-corner-defaults --cam /ABS/cam_imu/cam0-camchain-640x400.yaml --imu /ABS/cam_imu/imu.yaml --target /ABS/cam_imu/aprilgrid.yaml --imu-data /ABS/cam_imu/data1.csv --corners /ABS/cam_imu/cam0_640x400_corners.csv --corner-poses /ABS/cam_imu/cam0_640x400_corner_poses.csv --kalibr-result /ABS/cam_imu/cam0_640x400_corners-1-results-imucam.txt --init-from-kalibr --estimate-time-shift-prior --dry-run --max-frames 20 --imu-stride 1000 --max-imu-residuals 5
 ```
 
 关键输出：
@@ -144,7 +144,7 @@ return UniformBSpline(dimension, order, t_min, t_max, segments);
                         →  parameter_blocks / tangent_params / motion-prior 数都变多
 ```
 
-它**只影响轨迹表示的分辨率与维度，不影响 residual 数**：camera/gyro/accel residual 数完全不变。`cam_imu_2`（pose-kps=100、bias-kps=50、数据跨度 48.5345 s）的 dry-run 实测：
+它**只影响轨迹表示的分辨率与维度，不影响 residual 数**：camera/gyro/accel residual 数完全不变。某个匿名样例（pose-kps=100、bias-kps=50、数据跨度 48.5345 s）的 dry-run 实测：
 
 | timeoffset-padding | pose 控制点 | bias prior(=bias 段) | parameter_blocks | tangent_params | camera/gyro/accel residual |
 |---:|---:|---:|---:|---:|---|
@@ -175,10 +175,10 @@ return UniformBSpline(dimension, order, t_min, t_max, segments);
 如果问题是“Ceres 和 Docker Kalibr 当前精度是否对齐”，应分两层判断：
 
 1. 初始化层：time-shift 初值现在已经和 Docker Kalibr 零迭代对齐，关键证据是 `-0.55052438939288217 s` 对 `-0.5505243893928822 s`。
-2. orientation/gravity 初值层：`--estimate-orientation-gravity-prior` 已能在 `cam_imu_2` 上不依赖 Kalibr 初始旋转启动。当前 dry-run 默认 `boundary_anchors=1`、`ceres_refine=1`，旋转先验距 Kalibr 最终结果约 `0.175954 deg`，重力差约 `0.014182 m/s^2`，gyro bias prior 为 `[-0.0011955, -0.0013163, 0.0065238] rad/s`。`refine_iterations=1` 说明小 Ceres refinement 只确认闭式解，没有改变数值。
+2. orientation/gravity 初值层：`--estimate-orientation-gravity-prior` 已能在匿名样例上不依赖 Kalibr 初始旋转启动。当前 dry-run 默认 `boundary_anchors=1`、`ceres_refine=1`，旋转先验距 Kalibr 最终结果约 `0.175954 deg`，重力差约 `0.014182 m/s^2`，gyro bias prior 为 `[-0.0011955, -0.0013163, 0.0065238] rad/s`。`refine_iterations=1` 说明小 Ceres refinement 只确认闭式解，没有改变数值。
 3. pose spline 初始化层：`independent-full` 现在启用 Kalibr 风格 `--pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors`。相对旧 pose-fit，accelerometer mean 从 `0.898892 m/s^2` 降到 `0.880795 m/s^2`，translation delta 从 `0.032903 m` 微降到 `0.0328967 m`，reprojection mean 从 `0.197435 px` 升到 `0.201851 px`。这说明 pose spline 初始化差异已经补齐，但不是 3 cm 级平移差的主因。
 4. 外参平移初值层：Kalibr 的 cam0 平移初值是零。`ceres_cam_imu` 已把 `CameraExtrinsicBlock` 默认平移从旧的 `[0, 0, 0.1]` 改为 `[0, 0, 0]`。同一独立初始化 staged 全量命令下，translation delta 从约 `0.101754 m` 降到约 `0.032903 m`，证明旧默认值确实是一个初始化差异。
-5. camchain 读取层：`--init-from-camchain` 能从 `cam0_640x400_corners-1-camchain-imucam.yaml` 读取 `T_cam_imu` 和 `timeshift_cam_imu`。dry-run 验证输出 `kalibr_translation_delta_m=6.84e-09`、`kalibr_time_delta_s=0`。这个入口方便直接复用 Docker/产线 camchain YAML，但它不提供 gravity。
+5. camchain 读取层：`--init-from-camchain` 能从 `cam0_640x400_corners-1-camchain-imucam.yaml` 读取 `T_cam_imu` 和 `timeshift_cam_imu`。dry-run 验证输出 `kalibr_translation_delta_m=6.84e-09`、`kalibr_time_delta_s=0`。这个入口方便直接复用 Docker/camchain YAML，但它不提供 gravity。
 6. 最终优化层：`--init-from-kalibr` 的当前全量基线仍约有 `0.846 ms` 的最终 time-shift delta，残差均值约为 `0.196977 px / 0.167393 rad/s / 0.863287 m/s^2`，外参平移差约 `0.052 mm`。这不是 time-shift 初值算法差异；完全替代 `--init-from-kalibr` 后的剩余平移差，主要来自主优化路径和外参平移可观性。
 
 ## Sweep preset
@@ -193,7 +193,7 @@ return UniformBSpline(dimension, order, t_min, t_max, segments);
 | `independent-legacy-posefit-full` | 旧 pose-fit 独立初始化回归 | 不启用 `--pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors`，用于确认 pose-fit 迁移的影响 |
 | `independent-final-pe-full` | 外参平移可观性诊断 | 独立初始化后最后只联合释放 pose 和 extrinsic，固定 bias、time shift 和 gravity，观察外参能否脱离零平移盆地 |
 | `independent-capped-pe-full` | trust-region 受限的外参平移诊断 | 在 `independent-final-pe-full` 基础上把最后 `pe` 阶段改为 10 次，并通过 `--stage-solver-max-trust-region-radii 1e16,1e16,1e16,10000000` 只限制最后阶段，用于复现当前独立初始化最接近 Kalibr 的路径 |
-| `camchain-dry-run` | camchain YAML 读取 | 确认 `T_cam_imu` 和 `timeshift_cam_imu` 能直接复用 Kalibr/产线 YAML |
+| `camchain-dry-run` | camchain YAML 读取 | 确认 `T_cam_imu` 和 `timeshift_cam_imu` 能直接复用 Kalibr/camchain YAML |
 | `camchain-full` | camchain YAML 初值全量回归 | 用 camchain 外参/time shift 加独立 orientation/gravity prior 进入 staged optimizer |
 
 推荐先跑：
@@ -204,7 +204,7 @@ python3 tools/run_ceres_sweep.py --preset camchain-dry-run --preset independent-
 
 `summary.csv` 里重点看 `camchain_init_time_shift_s`、`camchain_init_translation_x_m`、`camchain_init_translation_y_m`、`camchain_init_translation_z_m`、`camchain_init_kalibr_translation_delta_m`、`camchain_init_kalibr_time_delta_s`，以及 `independent-full` 的 `time_shift_init_*`、`orientation_init_*`、`pose_init_*` 和 `kalibr_delta_translation_m`。前者回答“读取层是否完全对齐”；`time_shift_init_*`、`orientation_init_*` 和 `pose_init_*` 回答“独立初始化是否按 Kalibr 风格启用”；最终 `kalibr_delta_translation_m` 回答“不依赖 Kalibr txt 后主优化还能不能收敛到同一外参”。
 
-`independent-final-pe-full` 的实测结果提供了一个新的判断边界：最后阶段使用 `--stage-free e,bt,pbt,pe --stage-iterations 0,1,4,8`，只释放 pose 和 camera-to-IMU extrinsic，固定 bias、time shift 和 gravity。`cam_imu_2` 上 translation delta 从 conservative 独立路径的 `0.0328967 m` 降到 `0.00606277 m`，rotation delta 从 `0.17413 deg` 降到 `0.0943398 deg`；同时 residual mean 变为 `0.208920 px / 0.172327 rad/s / 0.885812 m/s^2`，比 conservative 路径略差。继续把 `pe` 阶段加到 10 或 12 次会让 translation 分别漂到 `0.0470606 m` 和 `0.0807533 m`。因此这个 preset 证明外参平移可通过 joint pose/extrinsic 释放显著改善，但停止策略和主优化调度仍未完全对齐 Kalibr。
+`independent-final-pe-full` 的实测结果提供了一个新的判断边界：最后阶段使用 `--stage-free e,bt,pbt,pe --stage-iterations 0,1,4,8`，只释放 pose 和 camera-to-IMU extrinsic，固定 bias、time shift 和 gravity。匿名样例上 translation delta 从 conservative 独立路径的 `0.0328967 m` 降到 `0.00606277 m`，rotation delta 从 `0.17413 deg` 降到 `0.0943398 deg`；同时 residual mean 变为 `0.208920 px / 0.172327 rad/s / 0.885812 m/s^2`，比 conservative 路径略差。继续把 `pe` 阶段加到 10 或 12 次会让 translation 分别漂到 `0.0470606 m` 和 `0.0807533 m`。因此这个 preset 证明外参平移可通过 joint pose/extrinsic 释放显著改善，但停止策略和主优化调度仍未完全对齐 Kalibr。
 
 为避免只看最终结果，Ceres 侧新增了 `--trace-iteration-state`。该开关通过 Ceres `IterationCallback` 在每次 accepted step 后打印当前 `T_c_b`、time shift、gravity，以及它们相对 `--kalibr-result` 的差值；`run_ceres_sweep.py --extra-arg=--trace-iteration-state` 会把关键字段汇总到 `summary.csv`。`independent_final_pe_trace_summary_20260616` 的证据显示，最后 `pe` 阶段从零平移出发，reference translation delta 按 `0.03297 -> 0.03276 -> 0.03269 -> 0.03254 -> 0.03217 -> 0.03118 -> 0.02843 -> 0.02129 -> 0.00606 m` 下降，第 `8` 次迭代达到当前 preset 的最小值。旧 sweep 中把 `pe` 继续加到 10 或 12 次会继续降 cost，但平移开始远离 Kalibr，所以问题不是 time-shift 初值，而是 joint pose/extrinsic 释放后的停止策略和可观性取舍。
 
@@ -214,13 +214,13 @@ python3 tools/run_ceres_sweep.py --preset camchain-dry-run --preset independent-
 
 这个机制的位置需要分清。它不是用 Kalibr 结果作为 oracle 选择“最接近 Kalibr 的一步”，也不会解决独立初始化下外参平移可观性不足的问题；它解决的是 Optimizer2 风格更新循环里的基本安全性：某个阶段如果产生不可用或变坏的参数状态，后续阶段不会在这个坏状态上继续线性化。当前 `current-full` 回归四个 stage 都是 `accepted/restored=0`，说明该保护层不改变已验证的 Kalibr 初值基线。
 
-新的半径 sweep 给出了当前最有用的调度线索。保持独立初始化、最后 `pe` 阶段和初始半径 `10000` 不变，`pe` 只跑 8 次时，`max_trust_region_radius=10/100/1000/10000` 对应最终 translation delta 约为 `32.84 mm / 32.46 mm / 29.17 mm / 6.06 mm`。这说明较大的 early trust region 对外参平移脱离零平移盆地是必要的。继续把 `pe` 跑到 12 次时，默认 `max=1e16` 会漂到 `80.75 mm`；限制 `max=6.561e7` 后漂到 `56.39 mm`；限制 `max=1e7` 时第 10 次达到最小 `2.433 mm`，第 12 次又回到 `12.54 mm`。因此 `independent-capped-pe-full` 固化为 `--stage-iterations 0,1,4,10 --stage-solver-max-trust-region-radii 1e16,1e16,1e16,10000000`，只给最后 pose/extrinsic 阶段加 cap。2026-06-16 复验输出在 `out/ceres_sweeps/abs_parameter_default_regression_20260616/`：`current-full` 仍保持 translation delta `5.17357e-05 m`、time-shift delta `+0.00084628 s`；`independent-capped-pe-full` 的外参平移差 `0.00243325 m`、rotation delta `0.0886821 deg`、time-shift delta `-0.00252163 s`、residual mean `0.209027 px / 0.172274 rad/s / 0.880630 m/s^2`。同时 `absolute_stop_smoke_20260616`、`stage_absolute_stop_smoke_20260616` 和 `parameter_stop_smoke_20260616` 验证了全局、per-stage 以及 parameter-delta absolute stop callback 都会打印 `absolute_stop` 并进入 `summary.csv`。`independent_kalibr_stop_pe_20260616` 给出 step-norm 负例：最后 `pe` 阶段使用近似 Kalibr 阈值 `deltaJ=1`、`step_norm=0.01`，20 次内没有触发，最终平移差漂到 `0.0424538 m`。新增的 `independent_final_pe_parameter_trace_20260616` 则给出 parameter-delta 负例：final `pe` 的平移差在第 `10` 次达到最小 `0.00243325 m`，而 `parameter_delta` 在第 `20` 次才最小，为 `0.0028641`，此时平移差已经是 `0.0424538 m`。因此 parameter-delta callback 是必要的观测工具，但单个 `deltaX` 阈值仍不能替代当前固定 `pe=10` 的 best-so-far 调度。这个 preset 不是生产推荐解，而是证明剩余差距已经进入主优化调度、trust-region 路径、停止条件和外参可观性取舍问题。
+新的半径 sweep 给出了当前最有用的调度线索。保持独立初始化、最后 `pe` 阶段和初始半径 `10000` 不变，`pe` 只跑 8 次时，`max_trust_region_radius=10/100/1000/10000` 对应最终 translation delta 约为 `32.84 mm / 32.46 mm / 29.17 mm / 6.06 mm`。这说明较大的 early trust region 对外参平移脱离零平移盆地是必要的。继续把 `pe` 跑到 12 次时，默认 `max=1e16` 会漂到 `80.75 mm`；限制 `max=6.561e7` 后漂到 `56.39 mm`；限制 `max=1e7` 时第 10 次达到最小 `2.433 mm`，第 12 次又回到 `12.54 mm`。因此 `independent-capped-pe-full` 固化为 `--stage-iterations 0,1,4,10 --stage-solver-max-trust-region-radii 1e16,1e16,1e16,10000000`，只给最后 pose/extrinsic 阶段加 cap。2026-06-16 复验输出在 `out/ceres_sweeps/abs_parameter_default_regression_20260616/`：`current-full` 仍保持 translation delta `5.17357e-05 m`、time-shift delta `+0.00084628 s`；`independent-capped-pe-full` 的外参平移差 `0.00243325 m`、rotation delta `0.0886821 deg`、time-shift delta `-0.00252163 s`、residual mean `0.209027 px / 0.172274 rad/s / 0.880630 m/s^2`。同时 `absolute_stop_smoke_20260616`、`stage_absolute_stop_smoke_20260616` 和 `parameter_stop_smoke_20260616` 验证了全局、per-stage 以及 parameter-delta absolute stop callback 都会打印 `absolute_stop` 并进入 `summary.csv`。`independent_kalibr_stop_pe_20260616` 给出 step-norm 负例：最后 `pe` 阶段使用近似 Kalibr 阈值 `deltaJ=1`、`step_norm=0.01`，20 次内没有触发，最终平移差漂到 `0.0424538 m`。新增的 `independent_final_pe_parameter_trace_20260616` 则给出 parameter-delta 负例：final `pe` 的平移差在第 `10` 次达到最小 `0.00243325 m`，而 `parameter_delta` 在第 `20` 次才最小，为 `0.0028641`，此时平移差已经是 `0.0424538 m`。因此 parameter-delta callback 是必要的观测工具，但单个 `deltaX` 阈值仍不能替代当前固定 `pe=10` 的 best-so-far 调度。这个 preset 不是默认推荐解，而是证明剩余差距已经进入主优化调度、trust-region 路径、停止条件和外参可观性取舍问题。
 
 ## 下一步
 
 下一阶段若要继续减少对 Kalibr 结果文件的依赖，应把新初始化模块接入全量 staged 评测，而不是只看 dry-run：
 
-1. 继续保留 `--estimate-time-shift-prior --estimate-orientation-gravity-prior` 作为独立初始化入口，但不要引入 accelerometer-only 平移初值。真实数据验证表明这种平移拟合容易被 accel bias、pose 二阶导和动态段噪声混淆。
+1. 继续保留 `--estimate-time-shift-prior --estimate-orientation-gravity-prior` 作为独立初始化入口，但不要引入 accelerometer-only 平移初值。实测数据验证表明这种平移拟合容易被 accel bias、pose 二阶导和动态段噪声混淆。
 2. 针对零平移起点设计更接近 Kalibr 的主优化调度。当前 conservative staged 路径会让 pose 先吸收相机约束，最后释放外参时平移仍停在零附近；`independent-final-pe-full` 和 `independent-capped-pe-full` 证明 pose+extrinsic 联合释放与 trust-region 上限能显著改善平移，但迭代数过多仍会漂移。
-3. 利用 `optimizer/state_snapshot` 继续靠近 Optimizer2 的状态更新语义。当前已经有阶段失败/非有限 cost/cost 上升回滚；下一步若要做 best-so-far restore，应只使用当前 stage 内部 cost、鲁棒 residual 统计或稳定性指标，避免把 Kalibr 结果当成生产 oracle。
+3. 利用 `optimizer/state_snapshot` 继续靠近 Optimizer2 的状态更新语义。当前已经有阶段失败/非有限 cost/cost 上升回滚；下一步若要做 best-so-far restore，应只使用当前 stage 内部 cost、鲁棒 residual 统计或稳定性指标，避免把 Kalibr 结果当成默认路径 oracle。
 4. Kalibr 的 orientation prior 小优化器结构和 pose spline 初始化正则已经迁移；当前证据显示它们不是剩余平移差的主因。下一轮优先比较 Kalibr 主优化的 Optimizer2 线性求解/LM 参数、重力先验处理，以及 pose/extrinsic 联合释放阶段的停止策略。

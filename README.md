@@ -2,13 +2,13 @@
 
 从 Kalibr cam-IMU 的公式、Jacobian、初始化和因子图出发，写成一本可读的推导书，再用 C++/Ceres 复现一条可独立运行的标定链路。
 
-一句话：这是 **Kalibr cam-IMU 的可解释 Ceres 版本**。它不把 Kalibr result 当生产输入；Kalibr 只作为基线、热启动诊断和部分格式转换环境。
+一句话：这是 **Kalibr cam-IMU 的可解释 Ceres 版本**。它不把 Kalibr result 当默认求解输入；Kalibr 只作为基线、热启动诊断和部分格式转换环境。
 
 ## 为什么值得看
 
 | 证据 | 当前结果 |
 |---|---|
-| Production 12 组独立标定 | 全部收敛；外参平移差 `1.3-4.7 mm`，旋转多数 `<0.02 deg` |
+| 匿名基准数据集独立标定 | 全部收敛；外参平移差 `1.3-4.7 mm`，旋转多数 `<0.02 deg` |
 | 墙钟 | Ceres 原生平均约 `103 s`，Kalibr Docker 基线平均约 `203 s` |
 | 热启动诊断 | 从 Kalibr 解出发仍会漂 `0.19-2.63 mm`，说明两套优化问题不是逐位相同 |
 | TUM 双目 | Ceres single-stage residual 达到 Kalibr 同量级，time shift 误差约 `0.155-0.174 ms` |
@@ -40,7 +40,7 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-## 跑一次生产独立标定
+## 跑一次独立标定
 
 ```bash
 build/calibrate_cam_imu --corner-defaults --cam /ABS/cam_imu/cam0-camchain-640x400.yaml --imu /ABS/cam_imu/imu.yaml --target /ABS/cam_imu/aprilgrid.yaml --imu-data /ABS/cam_imu/data1.csv --corners /ABS/cam_imu/cam0_640x400_corners.csv --corner-poses /ABS/cam_imu/cam0_640x400_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_independent.yaml
@@ -86,7 +86,7 @@ It contains:
 - Tools for converting Kalibr pkl, ROS bag, and EuRoC/TUM-style inputs into Ceres CSV files.
 - A Kalibr Docker baseline runner for controlled comparisons.
 
-On the current 12 production datasets, standalone Ceres converges on every run and averages about `103 s` wall clock versus about `203 s` for the Kalibr Docker baseline on this machine. Treat that as an engineering benchmark, not a universal algorithmic speedup claim, because the Kalibr baseline is Docker/amd64 while Ceres is native arm64.
+On the anonymized benchmark set, standalone Ceres converges on every run and averages about `103 s` wall clock versus about `203 s` for the Kalibr Docker baseline on this machine. Treat that as an engineering benchmark, not a universal algorithmic speedup claim, because the Kalibr baseline is Docker/amd64 while Ceres is native arm64.
 
 ## License
 
