@@ -14,6 +14,11 @@ struct CalibrationResultDelta {
   double gravity_norm = 0.0;
 };
 
+struct CalibrationResultImuExtrinsic {
+  Vec3 r_b = Vec3::Zero();
+  Vec3 r_i_b = Vec3::Zero();
+};
+
 struct CalibrationResultFile {
   int format_version = 0;
   Mat4 T_c_b = Mat4::Identity();
@@ -23,6 +28,7 @@ struct CalibrationResultFile {
   KalibrResidualStats residuals;
   std::vector<Mat4> camera_T_c_b;
   std::vector<double> camera_time_shift_s;
+  std::vector<CalibrationResultImuExtrinsic> imu_extrinsics;
   bool has_accel_M = false;
   bool has_gyro_M = false;
   bool has_gyro_accel_sensitivity = false;

@@ -342,9 +342,298 @@ Reference IMU 的外参如果被固定，则它的 block 不进入活跃变量�
 
 Kalibr 的 expression graph 天然适合这种组织方式：每个 residual 只把自己用到的 expression node 接进图里，JacobianContainer 只会收到这些 active block 的 Jacobian。Ceres 或其他后端若手写 residual，也应该保持同样的 block 选择规则；不要为了实现方便把无关传感器变量塞进同一个 residual parameter list。
 
-## 13.8 本章小结
+## 13.8 单相机多 IMU：外参、杠杆臂与精确参数化
+
+13.1-13.7 给的是因子图层面的结构规则。但本书的主线是“单相机 + 单 IMU 已对齐，现在要把它扩到单相机 + 多 IMU”。这一节开始，把多 IMU 真正新增的两个设计变量 —— **非参考 IMU 的外参旋转 $\mathbf R_{i_mb}$ 和杠杆臂 $\mathbf r_{b,m}$** —— 按 Kalibr 源码逐项推清楚。这两个量在单 IMU 里被固定为 $\mathbf I$ 和 $\mathbf 0$，所以第 6、7 章并没有真正推过它们的 Jacobian。本节及 13.9 节补的就是这块缺口。
+
+> 重要更正：13.3 节说“多 IMU 的 Jacobian 只要照搬第 4-10 章”，这句话**只对 pose/bias/gravity/扩展内参成立**，对 $\mathbf R_{i_mb}$ 和 $\mathbf r_{b,m}$ 不成立——因为单 IMU 章节根本没有对它们求过导（它们当时是常量）。所以本节是对 13.3 节的必要补充，不是重复。
+
+### 13.8.1 body frame 与 IMU 链的约定
+
+约定 body frame 与 **reference IMU（imu0）**重合。Kalibr 源码里这体现为 `isReferenceImu=True` 时，旋转外参和杠杆臂都被建成 design variable 但 `setActive(False)`：
+
+$$
+\mathbf R_{i_0b}=\mathbf I,
+\qquad
+\mathbf r_{b,0}=\mathbf 0
+\qquad(\text{固定不优化}).
+$$
+
+第 $m\ (m\ge1)$ 个非参考 IMU 有两个活跃设计变量：
+
+| 设计变量 | 含义 | Kalibr 源码 | 参数化 |
+|---|---|---|---|
+| $\mathbf R_{i_mb}=\mathbf C(\boldsymbol\varphi_m)$ | body→imu$_m$ 旋转 | `self.q_i_b_Dv` | 旋转向量 $\boldsymbol\varphi_m\in\mathbb R^3$ |
+| $\mathbf r_{b,m}\in\mathbb R^3$ | imu$_m$ 原点在 body 系中的位置（杠杆臂） | `self.r_b_Dv` | 欧式三维 |
+
+二者一起组成 body→imu$_m$ 的刚体变换（对照 `getTransformationFromBodyToImu`）：
+
+$$
+\mathbf T_{i_mb}
+=
+\begin{bmatrix}
+\mathbf R_{i_mb} & -\mathbf R_{i_mb}\,\mathbf r_{b,m}\\
+\mathbf 0^\top & 1
+\end{bmatrix},
+\qquad
+\mathbf p_{i_m}=\mathbf R_{i_mb}(\mathbf p_b-\mathbf r_{b,m}).
+$$
+
+即 $\mathbf r_{b,m}$ 是“在 body 系里 imu$_m$ 原点的坐标”，平移分量是 $-\mathbf R_{i_mb}\mathbf r_{b,m}$ 而不是 $\mathbf r_{b,m}$ 本身。这一点在写结果 YAML（`T_i_b`）时必须对齐，否则外参平移会差一个旋转。
+
+### 13.8.2 旋转约定 $\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)$
+
+Ceres 复现采用与 Kalibr `sm::RotationVector` 一致的约定（见 `core/so3.h` 的 `rotationVectorToMatrix`）：
+
+$$
+\mathbf C(\boldsymbol\varphi)
+=
+\mathrm{Exp}_K(\boldsymbol\varphi)
+=
+\mathbf I-\sin\theta\,[\mathbf a]_\times+(1-\cos\theta)[\mathbf a]_\times^2
+=
+\exp(-[\boldsymbol\varphi]_\times),
+\qquad
+\theta=\|\boldsymbol\varphi\|,\ \mathbf a=\boldsymbol\varphi/\theta.
+$$
+
+注意这是**负号指数**：$\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)=\exp([\boldsymbol\varphi]_\times)^\top$。整套左 Jacobian（`leftJacobianSO3`）和下面所有推导都建立在这个约定上：
+
+$$
+\mathbf J_l(\boldsymbol\varphi)
+=
+\mathbf I+\frac{1-\cos\theta}{\theta^2}[\boldsymbol\varphi]_\times+\frac{\theta-\sin\theta}{\theta^3}[\boldsymbol\varphi]_\times^2.
+$$
+
+**核心扰动引理（本章后续 Jacobian 的唯一来源）。** 设旋转用最小坐标 $\boldsymbol\varphi$ 表示、采用欧式更新 $\boldsymbol\varphi\to\boldsymbol\varphi+\boldsymbol\delta$，$\mathbf v$ 与 $\boldsymbol\varphi$ 无关，则在 $\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)$ 约定下：
+
+$$
+\boxed{
+\frac{\partial\big(\mathbf C(\boldsymbol\varphi)\,\mathbf v\big)}{\partial\boldsymbol\varphi}
+=
+\mathbf C(\boldsymbol\varphi)\,[\mathbf v]_\times\,\mathbf J_l(\boldsymbol\varphi).
+}
+$$
+
+推导：用 BCH 一阶式 $\exp([\mathbf a+\mathrm d\mathbf a]_\times)\approx\exp([\mathbf a]_\times)\exp\big([\mathbf J_r(\mathbf a)\,\mathrm d\mathbf a]_\times\big)$，取 $\mathbf a=-\boldsymbol\varphi$、$\mathrm d\mathbf a=-\boldsymbol\delta$：
+
+$$
+\mathbf C(\boldsymbol\varphi+\boldsymbol\delta)
+=
+\exp\!\big([-\boldsymbol\varphi-\boldsymbol\delta]_\times\big)
+\approx
+\mathbf C(\boldsymbol\varphi)\exp\!\big(-[\mathbf J_r(-\boldsymbol\varphi)\boldsymbol\delta]_\times\big),
+$$
+
+$$
+\mathbf C(\boldsymbol\varphi+\boldsymbol\delta)\mathbf v
+\approx
+\mathbf C(\boldsymbol\varphi)\big(\mathbf I-[\mathbf J_r(-\boldsymbol\varphi)\boldsymbol\delta]_\times\big)\mathbf v
+=
+\mathbf C(\boldsymbol\varphi)\mathbf v+\mathbf C(\boldsymbol\varphi)[\mathbf v]_\times\mathbf J_r(-\boldsymbol\varphi)\boldsymbol\delta,
+$$
+
+再用 $\mathbf J_r(-\boldsymbol\varphi)=\mathbf J_l(\boldsymbol\varphi)$ 即得引理。这一行就是 `gyroscope_residual.cpp` 里 `R_i_b * skew(omega_b) * leftJacobianSO3(r_i_b)` 和 `accelerometer_residual.cpp` 里 `R_i_b * skew(body_specific_force) * leftJacobianSO3(r_i_b)` 的来源——符号为正、带 $\mathbf J_l$，与代码逐项一致。
+
+## 13.9 多 IMU 新增 Jacobian 的完整推导
+
+### 13.9.1 前向预测量（与源码对齐的写法）
+
+记 spline 在查询时刻给出的 body 量：旋转 $\mathbf R_{bw}$、世界系线加速度 $\mathbf a_w$、body 角速度 $\boldsymbol\omega_b$、body 角加速度 $\boldsymbol\alpha_b$。定义
+
+$$
+\mathbf h_b=\mathbf R_{bw}(\mathbf a_w-\mathbf g_w)
+\quad(\text{body 原点比力}),
+\qquad
+\mathbf u_{b,m}=\mathbf h_b+\underbrace{\boldsymbol\alpha_b\times\mathbf r_{b,m}+\boldsymbol\omega_b\times(\boldsymbol\omega_b\times\mathbf r_{b,m})}_{\text{杠杆臂输运项 }\boldsymbol\ell_m}.
+$$
+
+普通（calibrated）模型的预测量与残差（$\sigma_g,\sigma_a$ 为离散噪声标准差，各向同性白化）：
+
+$$
+\hat{\mathbf z}^\omega_m=\mathbf R_{i_mb}\boldsymbol\omega_b+\mathbf b^g_m,
+\qquad
+\hat{\mathbf z}^a_m=\mathbf R_{i_mb}\mathbf u_{b,m}+\mathbf b^a_m,
+$$
+
+$$
+\mathbf e^\omega_m=\tfrac1{\sigma_g}(\hat{\mathbf z}^\omega_m-\mathbf z^\omega_m),
+\qquad
+\mathbf e^a_m=\tfrac1{\sigma_a}(\hat{\mathbf z}^a_m-\mathbf z^a_m).
+$$
+
+scale-misalignment 模型在外层包内参（$\mathbf M_a$ 下三角、$\mathbf M_g$ 下三角、$\mathbf A_g$ 满阵、$\mathbf R_{g_mi_m}$ sensing 旋转）：
+
+$$
+\hat{\mathbf z}^a_m=\mathbf M_a\big(\mathbf R_{i_mb}\mathbf u_{b,m}\big)+\mathbf b^a_m,
+\qquad
+\hat{\mathbf z}^\omega_m=\mathbf M_g\big(\mathbf R_{g_mb}\boldsymbol\omega_b\big)+\mathbf A_g\big(\mathbf R_{g_mb}\mathbf u_{b,m}\big)+\mathbf b^g_m,
+$$
+
+其中 $\mathbf R_{g_mb}=\mathbf R_{g_mi_m}\mathbf R_{i_mb}$。下面对 $\mathbf r_{b,m}$ 和 $\boldsymbol\varphi_m$ 的新 Jacobian 推导，calibrated 取 $\mathbf M_a=\mathbf I$ 即可。
+
+### 13.9.2 杠杆臂 $\mathbf r_{b,m}$ 的 Jacobian
+
+只有加速度计前向量依赖 $\mathbf r_{b,m}$（角速度与杠杆臂无关，这是刚体上各点角速度相同的物理事实）。先求输运项对杠杆臂的导数：
+
+$$
+\frac{\partial(\boldsymbol\alpha_b\times\mathbf r_{b,m})}{\partial\mathbf r_{b,m}}=[\boldsymbol\alpha_b]_\times,
+\qquad
+\frac{\partial\big(\boldsymbol\omega_b\times(\boldsymbol\omega_b\times\mathbf r_{b,m})\big)}{\partial\mathbf r_{b,m}}=[\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times,
+$$
+
+所以
+
+$$
+\frac{\partial\mathbf u_{b,m}}{\partial\mathbf r_{b,m}}
+=
+[\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times,
+\qquad
+\boxed{
+\frac{\partial\mathbf e^a_m}{\partial\mathbf r_{b,m}}
+=
+\tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}\Big([\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times\Big).
+}
+$$
+
+对照 `accelerometer_residual.cpp`：`d_body_d_r_b = skew(alpha_b) + skew(omega_b)*skew(omega_b)`，再左乘 `inv_sigma * M_accel * R_i_b`。陀螺侧 `gyroscope_residual.cpp`（scale-misalignment）的 `d_residual_d_r_b = inv_sigma * A_gyro_accel * R_gyro_b * d_a_d_r_b`——只有 $\mathbf A_g\mathbf a_g$ 分支才把杠杆臂带进陀螺残差，与 13.4 节的稀疏表一致。
+
+### 13.9.3 外参旋转 $\boldsymbol\varphi_m$ 的 Jacobian
+
+直接套 13.8.2 的核心引理。陀螺侧 $\mathbf v=\boldsymbol\omega_b$：
+
+$$
+\boxed{
+\frac{\partial\mathbf e^\omega_m}{\partial\boldsymbol\varphi_m}
+=
+\tfrac1{\sigma_g}\mathbf R_{i_mb}[\boldsymbol\omega_b]_\times\mathbf J_l(\boldsymbol\varphi_m)
+}
+\quad(\text{calibrated}).
+$$
+
+加速度侧 $\mathbf v=\mathbf u_{b,m}$：
+
+$$
+\boxed{
+\frac{\partial\mathbf e^a_m}{\partial\boldsymbol\varphi_m}
+=
+\tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}[\mathbf u_{b,m}]_\times\mathbf J_l(\boldsymbol\varphi_m).
+}
+$$
+
+scale-misalignment 陀螺把 $\boldsymbol\omega_g=\mathbf R_{g_mb}\boldsymbol\omega_b$ 和 $\mathbf a_g=\mathbf R_{g_mb}\mathbf u_{b,m}$ 都过 $\mathbf R_{i_mb}$，因此
+
+$$
+\frac{\partial\mathbf e^\omega_m}{\partial\boldsymbol\varphi_m}
+=
+\tfrac1{\sigma_g}\Big(
+\mathbf M_g\mathbf R_{g_mi_m}\mathbf R_{i_mb}[\boldsymbol\omega_b]_\times\mathbf J_l(\boldsymbol\varphi_m)
++
+\mathbf A_g\mathbf R_{g_mi_m}\mathbf R_{i_mb}[\mathbf u_{b,m}]_\times\mathbf J_l(\boldsymbol\varphi_m)
+\Big),
+$$
+
+对照 `gyroscope_residual.cpp` 的 `d_residual_d_r_i_b`（两项分别带 $\mathbf M_g$ 与 $\mathbf A_g$）。sensing 旋转 $\mathbf R_{g_mi_m}=\mathbf C(\boldsymbol\varphi_{g})$ 的 Jacobian 同样套引理，但 $\mathbf v$ 换成已经过 $\mathbf R_{i_mb}$ 的量：$\mathbf R_{g_mi_m}[\mathbf R_{i_mb}\boldsymbol\omega_b]_\times\mathbf J_l(\boldsymbol\varphi_g)$，与代码 `d_residual_d_r_gyro_i` 一致。
+
+### 13.9.4 block 布局与共享
+
+实现上把 $(\mathbf r_{b,m},\boldsymbol\varphi_m)$ 合并成一个 6 维 parameter block `[r_b(3); r_i_b(3)]`：
+
+| residual | 该 6 维 block 的非零列 | 原因 |
+|---|---|---|
+| 普通/扩展 gyro | 仅 $\boldsymbol\varphi_m$（列 3-5） | 角速度与杠杆臂无关；只有 $\mathbf A_g$ 分支才碰列 0-2 |
+| 普通/扩展 accel | $\mathbf r_{b,m}$（列 0-2）与 $\boldsymbol\varphi_m$（列 3-5）都非零 | 比力依赖杠杆臂和外参旋转 |
+
+reference IMU 的这个 block 存在但不 active，装配时不进 Hessian——这正是 13.6 节强调的“公式非零 ≠ 实现 active”。
+
+## 13.10 IMU-IMU 初始化：冷启动的关键先验
+
+13.9 的 Jacobian 保证“给定初值后能正确下降”，但不解决“初值从哪来”。非参考 IMU 的 $\boldsymbol\varphi_m$ 若从单位阵起步、$\mathbf r_{b,m}$ 从零起步，再叠加相机/time 一起放开，冷启动很容易掉进局部极小（实验记录里 4-IMU joint 冷启动 reprojection 一度到 $54.76$ px）。Kalibr 用 `IccImu.findOrientationPrior(referenceImu)` 给每个非参考 IMU 算两个先验，再进 bundle：
+
+**第一阶段——时间对齐。** 先用 reference IMU 的陀螺拟合一条自由 body 角速度 spline $\boldsymbol\omega_{\mathrm{ref}}(t)$（同时估一个常值 ref gyro bias）。然后对两路陀螺模长做互相关：
+
+$$
+\Delta t^i_m=\arg\max_{\tau}\ \mathrm{xcorr}\big(\|\boldsymbol\omega_{\mathrm{ref}}(t)\|,\ \|\mathbf z^\omega_m(t+\tau)\|\big),
+$$
+
+离散峰值再用 `scipy.optimize.fmin` 在连续域细化（仅当 `estimateTimedelay` 且非 reference 时）。这个 $\Delta t^i_m$ **不是** bundle 设计变量，而是查询共享 spline 时的常量偏移：$t_{\text{query}}=t^{\mathrm{imu}}_{m,k}+\Delta t^i_m$（对照 `addAccelerometer/GyroscopeErrorTerms` 里 `tk = im.stamp.toSec() + self.timeOffset`）。
+
+**第二阶段——相对旋转先验。** 用对齐后的时间，建陀螺残差 $\mathbf z^\omega_m\approx\mathbf C(\boldsymbol\varphi_m)\boldsymbol\omega_{\mathrm{ref}}(t)+\mathbf b$，优化得到 $\boldsymbol\varphi_m$ 的初值 `q_i_b_prior`。
+
+**杠杆臂先验** 取 $\mathbf r_{b,m}=\mathbf 0$：纯陀螺信息看不到平移杠杆臂，它只能在 joint 阶段由加速度计的输运项约束，因此天然弱可观、毫米级漂移属正常。
+
+> 对齐缺口（Ceres 侧）：当前 Ceres 复现的多 IMU joint 走的是“从 Kalibr 结果热启动 imu_chain”的 benchmark 口径，**还没有实现这套陀螺互相关 + 相对旋转先验的冷启动初始化**。要在产线数据上做冷启动 1cam+多imu，这是必须补的第一块代码（见 13.12 节缺口表）。
+
+## 13.11 鲁棒核与 IRLS：Kalibr M-estimator 的精确语义
+
+多 IMU joint 冷启动失败的第二个根因不是几何，而是鲁棒核线性化。Kalibr 在 `corner_file` 路径（产线角点输入）对不同 residual 指定不同 M-estimator：
+
+| residual | M-estimator | 源码 | 形参 |
+|---|---|---|---|
+| 相机重投影 | `CauchyMEstimator` | `blakeZisserCam=10` | $\sigma^2=10$ |
+| calibrated IMU gyro/accel | `CauchyMEstimator` | `huberGyro/huberAccel=10` | $\sigma^2=10$ |
+| scale-misalignment IMU gyro/accel | `HuberMEstimator` | 同上 | $k=10$ |
+
+**权重定义。** 记原始平方马氏误差 $s=\mathbf e^\top\mathbf R^{-1}\mathbf e$（`getRawSquaredError`）。`MEstimatorPolicies.cpp` 给出的 `getWeight(s)` 正是鲁棒损失 $\rho(s)$ 的一阶导 $\rho'(s)$：
+
+$$
+w_{\text{Cauchy}}(s)=\frac{1}{1+s/\sigma^2},
+\qquad
+w_{\text{Huber}}(s)=\begin{cases}1,&s<k^2\\[2pt]k/\sqrt{s},&s\ge k^2\end{cases},
+\qquad
+w_{\text{None}}(s)=1.
+$$
+
+**装配语义（IRLS）。** `ErrorTerm.hpp` 用的是“开方权重”方案：
+
+$$
+\sqrt{w}=\sqrt{\rho'(s)},
+\quad
+\bar{\mathbf e}=\sqrt{w}\,\mathbf R^{-1/2}\mathbf e,
+\quad
+\bar{\mathbf J}=\sqrt{w}\,\mathbf R^{-1/2}\mathbf J,
+\quad
+\mathbf H=\sum\bar{\mathbf J}^\top\bar{\mathbf J},
+\quad
+\mathbf b=-\sum\bar{\mathbf J}^\top\bar{\mathbf e}.
+$$
+
+关键点：**$\rho''$ 完全不参与**。Kalibr 只用 $\rho'$ 对残差和 Jacobian 同开方缩放，做标准 Gauss-Newton，即 iteratively reweighted least squares。
+
+**与 Ceres 标准 loss 的差别。** Ceres `LossFunction` 把 $\rho',\rho''$ 都喂给求解器：除了 $\rho'$ 缩放，还有 $\rho''$ 带来的 rescaling / Triggs 修正项，改变正规方程的曲率。所以直接套 Ceres `CauchyLoss`/`HuberLoss` 与 Kalibr 不是同一个线性化，冷启动全自由多 IMU 会漂。要对齐，必须自定义 loss，令
+
+$$
+\rho(s)=\text{(数值无关)},\quad \rho'(s)=w(s),\quad \rho''(s)=0,
+$$
+
+即 `Evaluate` 输出 `rho[1]=w(s)`、`rho[2]=0`。这与实验文档定位、`docs/knowhow/20260619_Kalibr_IRLS鲁棒核对齐.md` 的结论一致，也解释了为什么“Cauchy 宽度一致但仍发散”——差的不是宽度而是 $\rho''$ 这一项。
+
+## 13.12 与 Ceres 实现的逐项对照与当前对齐缺口
+
+**已验证一致（前向 + Jacobian）。** 在 $\mathbf C=\exp(-[\cdot]_\times)$ 约定 + 欧式更新下，下面三项与 `gyroscope_residual.cpp` / `accelerometer_residual.cpp` 逐项吻合，并已被中心差分单测覆盖：
+
+| 量 | 本章公式 | 源码 |
+|---|---|---|
+| $\partial\mathbf e^\omega/\partial\boldsymbol\varphi_m$ | $\tfrac1{\sigma_g}\mathbf R_{i_mb}[\boldsymbol\omega_b]_\times\mathbf J_l$ | `R_i_b*skew(omega_b)*leftJacobianSO3` |
+| $\partial\mathbf e^a/\partial\mathbf r_{b,m}$ | $\tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}([\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times^2)$ | `M_accel*R_i_b*(skew(alpha)+skew(omega)^2)` |
+| $\partial\mathbf e^a/\partial\boldsymbol\varphi_m$ | $\tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}[\mathbf u_{b,m}]_\times\mathbf J_l$ | `M_accel*R_i_b*skew(body_specific_force)*leftJacobianSO3` |
+
+**当前对齐缺口（要做 cam+多 IMU 冷启动产线验证必须补）。**
+
+| 缺口 | 现状 | 需要的工作 |
+|---|---|---|
+| 非参考 IMU 冷启动初值 | 仅支持从 Kalibr 结果热启动 imu_chain | 实现 13.10 的陀螺互相关 time offset + 相对旋转先验 |
+| 鲁棒核线性化 | 标准 Ceres loss 与 Kalibr IRLS 不等价 | 用 13.11 的 Kalibr-style M-estimator（$\rho'=w,\rho''=0$），并按 model 分配 Cauchy/Huber |
+| per-IMU time offset | 两边都不是 bundle 变量；Ceres 直接按 CSV 时间戳查 spline | 至少要把 13.10 的常量 $\Delta t^i_m$ 接进查询，避免多 IMU 间未对齐 |
+| 杠杆臂可观性 | 弱可观，毫米级漂移 | 接受为固有量，报告时按 per-IMU 输出，不平均 |
+
+这张表就是从“推导”过渡到“代码 + 实验”的接口：13.8-13.9 保证 Jacobian 正确，13.10-13.11 补冷启动初值和鲁棒核，三者齐了才能在产线数据上做 1cam→1cam+2imu→1cam+4imu 的逐级冷启动验证。
+
+## 13.13 本章小结
 
 多相机 / 多 IMU 不改变第 4-10 章的局部物理模型。Camera residual 仍然是 measurement minus projection；gyro 和 accel residual 仍然是 prediction minus measurement；扩展 IMU 的 $\mathbf M_a$、$\mathbf M_g$、$\mathbf A_g$ 和 sensing-frame rotation 仍然按第 10 章的链式法则求 Jacobian。
+
+单相机多 IMU 真正新增的，是 13.8-13.12 这几节：非参考 IMU 的外参旋转 $\mathbf R_{i_mb}$ 和杠杆臂 $\mathbf r_{b,m}$ 的精确 Jacobian（单 IMU 章节没推过）、冷启动初始化先验、以及 Kalibr IRLS 鲁棒核语义。
 
 变化发生在因子图层：
 

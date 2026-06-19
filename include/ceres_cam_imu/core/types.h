@@ -102,6 +102,13 @@ struct KalibrResidualStats {
   double accel_normalized_mean = 0.0;
 };
 
+struct KalibrImuResidualStats {
+  double gyro_mean_rad_s = 0.0;
+  double accel_mean_m_s2 = 0.0;
+  double gyro_normalized_mean = 0.0;
+  double accel_normalized_mean = 0.0;
+};
+
 struct KalibrResult {
   Mat4 T_ci = Mat4::Identity();
   Mat4 T_ic = Mat4::Identity();
@@ -115,6 +122,7 @@ struct KalibrResult {
   std::vector<double> camera_reprojection_normalized_mean;
   std::vector<Mat4> imu_T_i_b;
   std::vector<double> imu_time_offset_s;
+  std::vector<KalibrImuResidualStats> imu_residuals;
   bool has_accel_M = false;
   bool has_gyro_M = false;
   bool has_gyro_accel_sensitivity = false;

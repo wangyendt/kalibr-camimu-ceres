@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include <ceres/manifold.h>
 #include <ceres/sphere_manifold.h>
 
 #include "ceres_cam_imu/core/se3.h"
@@ -99,6 +100,112 @@ std::unique_ptr<ceres::LossFunction> makeLoss(const RobustLossType type,
   return nullptr;
 }
 
+class Pose6Manifold final : public ceres::Manifold {
+public:
+  int AmbientSize() const override { return 6; }
+  int TangentSize() const override { return 6; }
+
+  bool Plus(const double *x, const double *delta,
+            double *x_plus_delta) const override {
+    for (int i = 0; i < 3; ++i) {
+      x_plus_delta[i] = x[i] + delta[i];
+    }
+    const Eigen::Map<const Vec3> r(x + 3);
+    const Eigen::Map<const Vec3> dr(delta + 3);
+    const Mat3 R_plus = rotationVectorToMatrix(dr) * rotationVectorToMatrix(r);
+    const Vec3 r_plus = rotationMatrixToVector(R_plus);
+    for (int i = 0; i < 3; ++i) {
+      x_plus_delta[i + 3] = r_plus(i);
+    }
+    return true;
+  }
+
+  bool PlusJacobian(const double *x, double *jacobian) const override {
+    std::fill(jacobian, jacobian + 36, 0.0);
+    for (int i = 0; i < 3; ++i) {
+      jacobian[i * 6 + i] = 1.0;
+    }
+
+    constexpr double kEps = 1e-8;
+    double delta_plus[6] = {};
+    double delta_minus[6] = {};
+    double x_plus[6] = {};
+    double x_minus[6] = {};
+    for (int col = 3; col < 6; ++col) {
+      std::fill(std::begin(delta_plus), std::end(delta_plus), 0.0);
+      std::fill(std::begin(delta_minus), std::end(delta_minus), 0.0);
+      delta_plus[col] = kEps;
+      delta_minus[col] = -kEps;
+      Plus(x, delta_plus, x_plus);
+      Plus(x, delta_minus, x_minus);
+      for (int row = 3; row < 6; ++row) {
+        jacobian[row * 6 + col] = (x_plus[row] - x_minus[row]) / (2.0 * kEps);
+      }
+    }
+    return true;
+  }
+
+  bool Minus(const double *y, const double *x,
+             double *y_minus_x) const override {
+    for (int i = 0; i < 3; ++i) {
+      y_minus_x[i] = y[i] - x[i];
+    }
+    const Eigen::Map<const Vec3> r_x(x + 3);
+    const Eigen::Map<const Vec3> r_y(y + 3);
+    const Mat3 R_delta =
+        rotationVectorToMatrix(r_y) * rotationVectorToMatrix(r_x).transpose();
+    const Vec3 dr = rotationMatrixToVector(R_delta);
+    for (int i = 0; i < 3; ++i) {
+      y_minus_x[i + 3] = dr(i);
+    }
+    return true;
+  }
+
+  bool MinusJacobian(const double *x, double *jacobian) const override {
+    std::fill(jacobian, jacobian + 36, 0.0);
+    for (int i = 0; i < 3; ++i) {
+      jacobian[i * 6 + i] = 1.0;
+    }
+
+    constexpr double kEps = 1e-8;
+    double y_plus[6] = {};
+    double y_minus[6] = {};
+    double diff_plus[6] = {};
+    double diff_minus[6] = {};
+    std::copy(x, x + 6, y_plus);
+    std::copy(x, x + 6, y_minus);
+    for (int col = 3; col < 6; ++col) {
+      std::copy(x, x + 6, y_plus);
+      std::copy(x, x + 6, y_minus);
+      y_plus[col] += kEps;
+      y_minus[col] -= kEps;
+      Minus(y_plus, x, diff_plus);
+      Minus(y_minus, x, diff_minus);
+      for (int row = 3; row < 6; ++row) {
+        jacobian[row * 6 + col] =
+            (diff_plus[row] - diff_minus[row]) / (2.0 * kEps);
+      }
+    }
+    return true;
+  }
+};
+
+void setExtrinsicManifoldIfEnabled(const CalibrationOptions &options,
+                                   double *parameter_block,
+                                   ceres::Problem *problem) {
+  if (options.use_extrinsic_manifold) {
+    problem->SetManifold(parameter_block, new Pose6Manifold());
+  }
+}
+
+void setPoseControlManifoldIfEnabled(const CalibrationOptions &options,
+                                     double *parameter_block,
+                                     ceres::Problem *problem) {
+  if (options.use_pose_control_manifold) {
+    problem->SetManifold(parameter_block, new Pose6Manifold());
+  }
+}
+
 void markActiveSegment(const SplineSegmentMeta6 &meta,
                        std::vector<char> *active_segments) {
   if (!active_segments) {
@@ -108,6 +215,85 @@ void markActiveSegment(const SplineSegmentMeta6 &meta,
       meta.coeff_start < static_cast<int>(active_segments->size())) {
     active_segments->at(static_cast<std::size_t>(meta.coeff_start)) = 1;
   }
+}
+
+struct PoseSegmentBuffer {
+  std::vector<SplineSegmentMeta6> metas;
+  int local_coeff_start = 0;
+  int local_coeff_end = 0;
+  double buffer_start_s = 0.0;
+  double buffer_end_s = 0.0;
+};
+
+PoseSegmentBuffer makePoseSegmentBuffer(const UniformBSpline &spline,
+                                        const double center_time_s,
+                                        const double padding_s) {
+  PoseSegmentBuffer buffer;
+  buffer.buffer_start_s = std::max(spline.tMin(), center_time_s - padding_s);
+  buffer.buffer_end_s = std::min(spline.tMax(), center_time_s + padding_s);
+  const int first_segment = spline.segmentIndex(buffer.buffer_start_s);
+  const int last_segment = spline.segmentIndex(buffer.buffer_end_s);
+  buffer.metas.reserve(static_cast<std::size_t>(last_segment - first_segment + 1));
+  for (int segment = first_segment; segment <= last_segment; ++segment) {
+    const double segment_time =
+        spline.tMin() + (static_cast<double>(segment) + 0.5) * spline.dt();
+    buffer.metas.push_back(spline.segmentMeta6(segment_time));
+  }
+  buffer.local_coeff_start = buffer.metas.front().coeff_start;
+  buffer.local_coeff_end =
+      buffer.metas.back().coeff_start + SplineSegmentMeta6::kOrder;
+  return buffer;
+}
+
+void addCameraReprojectionResidualBlock(
+    const CameraIntrinsics &intrinsics, const CornerMeasurement &corner,
+    const double observation_time_s, const CalibrationOptions &options,
+    CalibrationState *state, CameraExtrinsicBlock *T_c_b,
+    TimeShiftBlock *time_shift, const SplineSegmentMeta6 &pose_meta,
+    std::vector<char> *active_pose_segments, ceres::Problem *problem,
+    CalibrationBuildSummary *summary) {
+  std::unique_ptr<ceres::LossFunction> loss =
+      makeLoss(options.camera_loss_type, options.camera_loss_width);
+
+  if (!options.fix_time_shift && options.time_padding_s > 0.0) {
+    const double query_time_s = observation_time_s + time_shift->value;
+    const PoseSegmentBuffer buffer =
+        makePoseSegmentBuffer(state->pose_spline, query_time_s,
+                              options.time_padding_s);
+    for (const SplineSegmentMeta6 &meta : buffer.metas) {
+      markActiveSegment(meta, active_pose_segments);
+    }
+    ceres::CostFunction *cost = createCameraReprojectionTimeOffsetResidual(
+        intrinsics, corner, observation_time_s, buffer.metas,
+        buffer.local_coeff_start, buffer.buffer_start_s, buffer.buffer_end_s,
+        options.reprojection_sigma_px);
+
+    std::vector<double *> parameter_blocks;
+    parameter_blocks.reserve(
+        static_cast<std::size_t>(2 + buffer.local_coeff_end -
+                                 buffer.local_coeff_start));
+    parameter_blocks.push_back(dataPtr(*T_c_b));
+    parameter_blocks.push_back(dataPtr(*time_shift));
+    for (int coeff = buffer.local_coeff_start; coeff < buffer.local_coeff_end;
+         ++coeff) {
+      parameter_blocks.push_back(dataPtr(state->pose_controls.at(coeff)));
+    }
+    problem->AddResidualBlock(cost, loss.release(), parameter_blocks);
+  } else {
+    markActiveSegment(pose_meta, active_pose_segments);
+    ceres::CostFunction *cost = createCameraReprojectionResidual(
+        intrinsics, corner, observation_time_s, pose_meta,
+        options.reprojection_sigma_px);
+    problem->AddResidualBlock(
+        cost, loss.release(), dataPtr(*T_c_b), dataPtr(*time_shift),
+        dataPtr(state->pose_controls.at(pose_meta.coeff_start + 0)),
+        dataPtr(state->pose_controls.at(pose_meta.coeff_start + 1)),
+        dataPtr(state->pose_controls.at(pose_meta.coeff_start + 2)),
+        dataPtr(state->pose_controls.at(pose_meta.coeff_start + 3)),
+        dataPtr(state->pose_controls.at(pose_meta.coeff_start + 4)),
+        dataPtr(state->pose_controls.at(pose_meta.coeff_start + 5)));
+  }
+  ++summary->camera_residuals;
 }
 
 bool usesLocalPoseMotionScaling(const CalibrationOptions &options) {
@@ -271,7 +457,10 @@ void addImuParameterBlocksForIndex(const std::size_t imu_index,
                                    ceres::Problem *problem) {
   ImuExtrinsicBlock &imu_extrinsic = imuExtrinsicFor(state, imu_index);
   problem->AddParameterBlock(dataPtr(imu_extrinsic), 6);
+  setExtrinsicManifoldIfEnabled(options, dataPtr(imu_extrinsic), problem);
   if (imu_index == 0 && options.fix_reference_imu_extrinsic) {
+    problem->SetParameterBlockConstant(dataPtr(imu_extrinsic));
+  } else if (imu_index > 0 && options.fix_imu_extrinsics) {
     problem->SetParameterBlockConstant(dataPtr(imu_extrinsic));
   }
 
@@ -762,8 +951,11 @@ buildCalibrationProblem(const CameraIntrinsics &intrinsics,
       static_cast<std::size_t>(state->pose_spline.numSegments()), 0);
 
   problem->AddParameterBlock(dataPtr(state->T_c_b), 6);
+  setExtrinsicManifoldIfEnabled(options, dataPtr(state->T_c_b), problem);
   problem->AddParameterBlock(dataPtr(state->camera_time_shift_s), 1);
   problem->AddParameterBlock(dataPtr(state->imu_extrinsic), 6);
+  setExtrinsicManifoldIfEnabled(options, dataPtr(state->imu_extrinsic),
+                                problem);
   problem->AddParameterBlock(dataPtr(state->gravity), 3);
   addImuIntrinsicParameterBlocks(options, &state->imu_intrinsics, problem);
   if (!options.estimate_gravity_length) {
@@ -800,6 +992,7 @@ buildCalibrationProblem(const CameraIntrinsics &intrinsics,
 
   for (PoseControlBlock &control : state->pose_controls) {
     problem->AddParameterBlock(dataPtr(control), 6);
+    setPoseControlManifoldIfEnabled(options, dataPtr(control), problem);
     if (options.fix_pose_controls) {
       problem->SetParameterBlockConstant(dataPtr(control));
     }
@@ -831,23 +1024,11 @@ buildCalibrationProblem(const CameraIntrinsics &intrinsics,
     }
     const SplineSegmentMeta6 pose_meta =
         state->pose_spline.segmentMeta6(query_time);
-    markActiveSegment(pose_meta, &active_pose_segments);
     for (const CornerMeasurement &corner : image.corners) {
-      ceres::CostFunction *cost = createCameraReprojectionResidual(
-          intrinsics, corner, image.timestamp_s, pose_meta,
-          options.reprojection_sigma_px);
-      std::unique_ptr<ceres::LossFunction> loss =
-          makeLoss(options.camera_loss_type, options.camera_loss_width);
-      problem->AddResidualBlock(
-          cost, loss.release(), dataPtr(state->T_c_b),
-          dataPtr(state->camera_time_shift_s),
-          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 0)),
-          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 1)),
-          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 2)),
-          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 3)),
-          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 4)),
-          dataPtr(state->pose_controls.at(pose_meta.coeff_start + 5)));
-      ++summary.camera_residuals;
+      addCameraReprojectionResidualBlock(
+          intrinsics, corner, image.timestamp_s, options, state, &state->T_c_b,
+          &state->camera_time_shift_s, pose_meta, &active_pose_segments, problem,
+          &summary);
     }
   }
 
@@ -1109,6 +1290,7 @@ buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
     CameraExtrinsicBlock &T_c_b = state->camera_extrinsics[camera_index];
     TimeShiftBlock &time_shift = state->camera_time_shifts[camera_index];
     problem->AddParameterBlock(dataPtr(T_c_b), 6);
+    setExtrinsicManifoldIfEnabled(options, dataPtr(T_c_b), problem);
     problem->AddParameterBlock(dataPtr(time_shift), 1);
     if (options.fix_camera_extrinsic) {
       problem->SetParameterBlockConstant(dataPtr(T_c_b));
@@ -1140,20 +1322,9 @@ buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
       const SplineSegmentMeta6 pose_meta =
           state->pose_spline.segmentMeta6(query_time);
       for (const CornerMeasurement &corner : image.corners) {
-        ceres::CostFunction *cost = createCameraReprojectionResidual(
-            camera.intrinsics, corner, image.timestamp_s, pose_meta,
-            options.reprojection_sigma_px);
-        std::unique_ptr<ceres::LossFunction> loss =
-            makeLoss(options.camera_loss_type, options.camera_loss_width);
-        problem->AddResidualBlock(
-            cost, loss.release(), dataPtr(T_c_b), dataPtr(time_shift),
-            dataPtr(state->pose_controls.at(pose_meta.coeff_start + 0)),
-            dataPtr(state->pose_controls.at(pose_meta.coeff_start + 1)),
-            dataPtr(state->pose_controls.at(pose_meta.coeff_start + 2)),
-            dataPtr(state->pose_controls.at(pose_meta.coeff_start + 3)),
-            dataPtr(state->pose_controls.at(pose_meta.coeff_start + 4)),
-            dataPtr(state->pose_controls.at(pose_meta.coeff_start + 5)));
-        ++summary.camera_residuals;
+        addCameraReprojectionResidualBlock(
+            camera.intrinsics, corner, image.timestamp_s, options, state,
+            &T_c_b, &time_shift, pose_meta, nullptr, problem, &summary);
       }
     }
   }
@@ -1255,7 +1426,7 @@ PoseInitializationSummary initializePoseControlsFromCameraPoses(
     const std::vector<PoseObservation> &pose_observations,
     const CameraExtrinsicBlock &T_c_b, CalibrationState *state) {
   CalibrationOptions options;
-  options.pose_fit_diagonal_regularization = 1e-9;
+  options.pose_fit_diagonal_regularization = 0.0;
   options.pose_fit_motion_regularization = 0.0;
   options.pose_fit_add_boundary_anchors = false;
   return initializePoseControlsFromCameraPoses(pose_observations, T_c_b,
@@ -1276,6 +1447,7 @@ PoseInitializationSummary initializePoseControlsFromCameraPoses(
   fit_options.motion_regularization = options.pose_fit_motion_regularization;
   fit_options.motion_regularization_order = 2;
   fit_options.add_boundary_anchors = options.pose_fit_add_boundary_anchors;
+  fit_options.boundary_anchor_padding_s = options.time_padding_s;
   fit_options.unwrap_rotation_vectors = true;
   const PoseSplineFitSummary fit_summary = fitPoseSplineControlsFromCameraPoses(
       pose_observations, T_c_b, state->camera_time_shift_s.value,

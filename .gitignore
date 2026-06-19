@@ -6,3 +6,8 @@
 /cmake-build-*/
 /*.csv
 /*.txt
+# /*.txt above is meant for stray root-level data dumps, but it also swallows
+# the project's root CMakeLists.txt (which left fresh clones unbuildable). Keep
+# the build file tracked explicitly.
+!/CMakeLists.txt
+__pycache__/

@@ -13,6 +13,8 @@
 #include <ceres/ceres.h>
 
 #include "ceres_cam_imu/core/so3.h"
+#include "ceres_cam_imu/initialization/camera_translation_initializer.h"
+#include "ceres_cam_imu/initialization/multi_imu_initializer.h"
 #include "ceres_cam_imu/initialization/orientation_gravity_initializer.h"
 #include "ceres_cam_imu/initialization/time_shift_initializer.h"
 #include "ceres_cam_imu/io/calibration_result_reader.h"
@@ -233,15 +235,28 @@ void usage() {
          "[--stop-on-stage-failure] "
          "[--time-padding S|--timeoffset-padding S] "
          "[--fix-poses] [--fix-biases] [--fix-camera-extrinsic] "
-         "[--fix-time-shift] [--fix-gravity] [--estimate-gravity-length] "
+         "[--fix-time-shift] [--fix-gravity] [--fix-imu-extrinsics] "
+         "[--extrinsic-manifold] "
+         "[--estimate-gravity-length] "
          "[--imu-model calibrated|scale-misalignment|"
          "scale-misalignment-size-effect] [--fix-imu-intrinsics] "
          "[--estimate-time-shift-prior] "
+         "[--initial-time-shift-s S] "
          "[--time-shift-pose-kps K] [--time-shift-fit-lambda L] "
          "[--estimate-orientation-gravity-prior] "
          "[--orientation-prior-pose-kps K] [--orientation-prior-fit-lambda L] "
          "[--no-orientation-prior-boundary-anchors] "
          "[--no-orientation-prior-ceres-refine] "
+         "[--estimate-imu-chain-lever-prior] "
+         "[--no-estimate-imu-chain-lever-prior] "
+         "[--imu-chain-prior-max-lever-m M] "
+         "[--estimate-camera-translation-prior] "
+         "[--no-estimate-camera-translation-prior] "
+         "[--camera-translation-prior-pose-kps K] "
+         "[--camera-translation-prior-fit-lambda L] "
+         "[--camera-translation-prior-stride N] "
+         "[--camera-translation-prior-min-lever-norm V] "
+         "[--camera-translation-prior-max-norm M] "
          "[--time-shift-prior-sigma S] [--pose-motion-prior] "
          "[--pose-motion-all-segments] "
          "[--camera-loss cauchy|huber|none] [--camera-loss-width W] "
@@ -286,6 +301,10 @@ void usage() {
          "cross-correlation initializer: time-shift pose kps defaults to 100 "
          "and time-shift fit lambda defaults to 1e-4.\n";
   std::cout
+      << "  --initial-time-shift-s sets an explicit cold-start camera-to-IMU "
+         "time shift before orientation/gravity initialization; it overrides "
+         "the gyro-norm initializer when both are provided.\n";
+  std::cout
       << "  --init-from-camchain reads T_cam_imu and timeshift_cam_imu from "
          "the --cam YAML when those keys are present. Multi-camera runs use "
          "camchain initialization automatically unless initialized from a "
@@ -295,9 +314,22 @@ void usage() {
          "optimization. Counts must match, order matters, and the first IMU "
          "is the fixed reference IMU by default.\n";
   std::cout
+      << "  Multi-IMU cold starts estimate non-reference IMU rotations from "
+         "gyro correlation by default. Experimental non-reference lever-arm "
+         "initialization from accelerometer differences is available through "
+         "--estimate-imu-chain-lever-prior. Use "
+         "--no-estimate-imu-chain-prior to disable the whole chain prior, "
+         "--imu-chain-prior-max-offset-s S to bound time search, and "
+         "--imu-chain-prior-stride N to downsample initialization samples.\n";
+  std::cout
       << "  --estimate-orientation-gravity-prior estimates camera-IMU "
          "rotation, gyro bias, and gravity from camera-pose angular velocity "
          "and IMU samples before building the main problem.\n";
+  std::cout
+      << "  --estimate-camera-translation-prior estimates cam0 translation "
+         "from camera-pose acceleration and reference-IMU accelerometer data "
+         "after the orientation/gravity prior. It is experimental and stays "
+         "off unless requested.\n";
   std::cout << "  --solver-linear-solver accepts Ceres names such as "
                "SPARSE_NORMAL_CHOLESKY, DENSE_QR, DENSE_NORMAL_CHOLESKY, "
                "CGNR, SPARSE_SCHUR, or ITERATIVE_SCHUR.\n";
@@ -311,8 +343,18 @@ void usage() {
   std::cout
       << "  --stage-free overrides the conservative staged preset. Each mask "
          "lists "
-         "free variables: p=pose, b=bias, e=extrinsic, t=time, g=gravity; "
-         "use '-' or 'none' for an evaluation-only stage.\n";
+         "free variables: p=pose, b=bias, e=camera extrinsic, t=time, "
+         "g=gravity, i=non-reference IMU extrinsics; use '-' or 'none' for "
+         "an evaluation-only stage. When no stage mask contains i, IMU "
+         "extrinsics keep the legacy always-free behavior.\n";
+  std::cout
+      << "  --extrinsic-manifold enables an experimental SO(3) update for "
+         "camera/IMU extrinsics. The default keeps the legacy additive "
+         "rotation-vector update until the SO(3) path is validated.\n";
+  std::cout
+      << "  --pose-control-manifold enables an experimental SO(3) update for "
+         "pose spline control rotations. The default keeps the legacy additive "
+         "rotation-vector update for benchmark compatibility.\n";
   std::cout
       << "  gravity uses a Kalibr-style fixed-norm direction manifold by "
          "default; "
@@ -407,6 +449,16 @@ void setVector3Block(const ceres_cam_imu::Vec3 &value,
   }
   for (int i = 0; i < 3; ++i) {
     block->values[static_cast<std::size_t>(i)] = value(i);
+  }
+}
+
+void setBiasControls(const ceres_cam_imu::Vec3 &bias,
+                     std::vector<ceres_cam_imu::BiasControlBlock> *controls) {
+  if (!controls) {
+    return;
+  }
+  for (ceres_cam_imu::BiasControlBlock &control : *controls) {
+    control.values = {bias.x(), bias.y(), bias.z()};
   }
 }
 
@@ -962,9 +1014,54 @@ int main(int argc, char **argv) {
     std::cerr << "pose fit regularization values must be non-negative\n";
     return 2;
   }
+  const bool estimate_imu_chain_prior =
+      !hasFlag(argc, argv, "--no-estimate-imu-chain-prior");
+  ceres_cam_imu::ImuChainInitializerOptions imu_chain_prior_options;
+  imu_chain_prior_options.max_time_offset_search_s =
+      doubleArg(argc, argv, "--imu-chain-prior-max-offset-s",
+                imu_chain_prior_options.max_time_offset_search_s);
+  imu_chain_prior_options.sample_stride =
+      intArg(argc, argv, "--imu-chain-prior-stride",
+             imu_chain_prior_options.sample_stride);
+  imu_chain_prior_options.min_samples =
+      intArg(argc, argv, "--imu-chain-prior-min-samples",
+             imu_chain_prior_options.min_samples);
+  imu_chain_prior_options.min_rotation_excitation =
+      doubleArg(argc, argv, "--imu-chain-prior-min-excitation",
+                imu_chain_prior_options.min_rotation_excitation);
+  imu_chain_prior_options.estimate_lever_arms =
+      hasFlag(argc, argv, "--estimate-imu-chain-lever-prior") &&
+      !hasFlag(argc, argv, "--no-estimate-imu-chain-lever-prior");
+  imu_chain_prior_options.min_lever_excitation =
+      doubleArg(argc, argv, "--imu-chain-prior-min-lever-excitation",
+                imu_chain_prior_options.min_lever_excitation);
+  imu_chain_prior_options.max_lever_arm_norm_m =
+      doubleArg(argc, argv, "--imu-chain-prior-max-lever-m",
+                imu_chain_prior_options.max_lever_arm_norm_m);
+  imu_chain_prior_options.refine_with_ceres =
+      !hasFlag(argc, argv, "--no-imu-chain-prior-ceres-refine");
+  imu_chain_prior_options.refine_max_iterations =
+      intArg(argc, argv, "--imu-chain-prior-refine-iterations",
+             imu_chain_prior_options.refine_max_iterations);
+  if (imu_chain_prior_options.max_time_offset_search_s < 0.0 ||
+      imu_chain_prior_options.sample_stride <= 0 ||
+      imu_chain_prior_options.min_samples <= 0 ||
+      imu_chain_prior_options.min_rotation_excitation < 0.0 ||
+      imu_chain_prior_options.min_lever_excitation < 0.0 ||
+      imu_chain_prior_options.max_lever_arm_norm_m <= 0.0 ||
+      imu_chain_prior_options.refine_max_iterations < 0) {
+    std::cerr << "IMU chain prior options must use non-negative offset/"
+                 "excitation, positive stride/min-samples/max-lever, and "
+                 "non-negative refine iterations\n";
+    return 2;
+  }
   options.fix_pose_controls = hasFlag(argc, argv, "--fix-poses");
   options.fix_bias_controls = hasFlag(argc, argv, "--fix-biases");
   options.fix_camera_extrinsic = hasFlag(argc, argv, "--fix-camera-extrinsic");
+  options.fix_imu_extrinsics = hasFlag(argc, argv, "--fix-imu-extrinsics");
+  options.use_extrinsic_manifold = hasFlag(argc, argv, "--extrinsic-manifold");
+  options.use_pose_control_manifold =
+      hasFlag(argc, argv, "--pose-control-manifold");
   options.fix_time_shift = hasFlag(argc, argv, "--fix-time-shift");
   options.fix_gravity = hasFlag(argc, argv, "--fix-gravity");
   options.imu_model = ceres_cam_imu::parseImuCalibrationModel(
@@ -1408,6 +1505,13 @@ int main(int argc, char **argv) {
       hasFlag(argc, argv, "--init-from-kalibr");
   const bool requested_init_from_camchain =
       hasFlag(argc, argv, "--init-from-camchain");
+  const std::string initial_time_shift_arg =
+      argValue(argc, argv, "--initial-time-shift-s");
+  const bool have_explicit_initial_time_shift =
+      !initial_time_shift_arg.empty();
+  const double explicit_initial_time_shift_s =
+      have_explicit_initial_time_shift ? std::stod(initial_time_shift_arg)
+                                       : 0.0;
   if (requested_init_from_kalibr && !have_kalibr_result) {
     std::cerr << "--init-from-kalibr requires --kalibr-result\n";
     return 2;
@@ -1596,8 +1700,30 @@ int main(int argc, char **argv) {
     std::cout << "\n";
     std::cout.precision(old_precision);
   }
+  if (have_explicit_initial_time_shift) {
+    options.initial_camera_time_shift_s = explicit_initial_time_shift_s;
+    if (!initial_camera_time_shifts.empty()) {
+      initial_camera_time_shifts[0] = explicit_initial_time_shift_s;
+    }
+    const std::streamsize old_precision = std::cout.precision();
+    std::cout << std::setprecision(17)
+              << "using explicit initial time shift: shift_s="
+              << explicit_initial_time_shift_s << "\n";
+    std::cout.precision(old_precision);
+  }
 
-  if (hasFlag(argc, argv, "--estimate-orientation-gravity-prior")) {
+  ceres_cam_imu::Vec3 initial_reference_accel_bias =
+      ceres_cam_imu::Vec3::Zero();
+  bool have_initial_reference_accel_bias = false;
+  const bool estimate_orientation_gravity_prior =
+      hasFlag(argc, argv, "--estimate-orientation-gravity-prior");
+  const bool estimate_camera_translation_prior =
+      hasFlag(argc, argv, "--estimate-camera-translation-prior") &&
+      estimate_orientation_gravity_prior &&
+      !hasFlag(argc, argv, "--no-estimate-camera-translation-prior") &&
+      !init_from_kalibr && !init_from_result && !init_from_camchain;
+
+  if (estimate_orientation_gravity_prior) {
     if (poses.empty()) {
       std::cerr << "--estimate-orientation-gravity-prior requires "
                    "--corner-poses poses.csv\n";
@@ -1671,6 +1797,85 @@ int main(int argc, char **argv) {
     std::cout.precision(old_precision);
   }
 
+  if (estimate_camera_translation_prior) {
+    try {
+      ceres_cam_imu::CameraTranslationInitializerOptions
+          translation_options;
+      translation_options.pose_knots_per_second =
+          doubleArg(argc, argv, "--camera-translation-prior-pose-kps",
+                    translation_options.pose_knots_per_second);
+      translation_options.pose_fit_regularization =
+          doubleArg(argc, argv, "--camera-translation-prior-fit-lambda",
+                    translation_options.pose_fit_regularization);
+      translation_options.sample_stride =
+          intArg(argc, argv, "--camera-translation-prior-stride",
+                 translation_options.sample_stride);
+      translation_options.min_lever_jacobian_norm =
+          doubleArg(argc, argv, "--camera-translation-prior-min-lever-norm",
+                    translation_options.min_lever_jacobian_norm);
+      translation_options.max_translation_norm_m =
+          doubleArg(argc, argv, "--camera-translation-prior-max-norm",
+                    translation_options.max_translation_norm_m);
+      if (translation_options.pose_knots_per_second <= 0.0 ||
+          translation_options.pose_fit_regularization < 0.0 ||
+          translation_options.sample_stride <= 0 ||
+          translation_options.min_lever_jacobian_norm < 0.0 ||
+          translation_options.max_translation_norm_m <= 0.0) {
+        std::cerr << "camera translation prior options are out of range\n";
+        return 2;
+      }
+      const ceres_cam_imu::CameraTranslationInitializerResult translation =
+          ceres_cam_imu::estimateCameraTranslationAndAccelBiasPrior(
+              poses, imu_samples, initial_T_c_b, initial_gravity,
+              options.initial_camera_time_shift_s, translation_options);
+      for (int i = 0; i < 3; ++i) {
+        initial_T_c_b.values[static_cast<std::size_t>(i)] =
+            translation.t_c_b_m(i);
+      }
+      initial_camera_extrinsics[0] = initial_T_c_b;
+      have_initial_camera_blocks = true;
+      initial_reference_accel_bias = translation.accel_bias_m_s2;
+      have_initial_reference_accel_bias = true;
+
+      const std::streamsize old_precision = std::cout.precision();
+      std::cout << std::setprecision(17)
+                << "estimated camera translation prior: samples="
+                << translation.num_samples
+                << " pose_kps="
+                << translation_options.pose_knots_per_second
+                << " fit_lambda="
+                << translation_options.pose_fit_regularization
+                << " stride=" << translation_options.sample_stride
+                << " min_lever_norm="
+                << translation_options.min_lever_jacobian_norm
+                << " t_c_b_m=" << translation.t_c_b_m.transpose()
+                << " accel_bias_m_s2="
+                << translation.accel_bias_m_s2.transpose()
+                << " accel_rms_m_s2=" << translation.accel_rms_m_s2
+                << " singular_values="
+                << translation.singular_values.transpose()
+                << " pose_fit_rms_translation_m="
+                << translation.pose_fit_rms_translation_m
+                << " pose_fit_rms_rotation_rad="
+                << translation.pose_fit_rms_rotation_rad
+                << " pose_fit_boundary_anchor_observations="
+                << translation.pose_fit_boundary_anchor_observations;
+      if (have_kalibr_result) {
+        const ceres_cam_imu::Mat4 initial_T =
+            ceres_cam_imu::pose6ToMatrix(initial_T_c_b);
+        std::cout << " kalibr_translation_delta_m="
+                  << (initial_T.block<3, 1>(0, 3) -
+                      kalibr.T_ci.block<3, 1>(0, 3))
+                         .norm();
+      }
+      std::cout << "\n";
+      std::cout.precision(old_precision);
+    } catch (const std::exception &e) {
+      std::cerr << "failed to estimate camera translation prior: "
+                << e.what() << "\n";
+    }
+  }
+
   if (options.add_time_shift_prior || !stage_time_shift_prior_sigmas.empty()) {
     options.time_shift_prior_s = options.initial_camera_time_shift_s;
   }
@@ -1728,6 +1933,13 @@ int main(int argc, char **argv) {
       state.gravity.values[static_cast<std::size_t>(i)] = initial_gravity(i);
     }
   }
+  if (have_initial_reference_accel_bias) {
+    setBiasControls(initial_reference_accel_bias, &state.accel_bias_controls);
+    if (!state.accel_bias_controls_by_imu.empty()) {
+      setBiasControls(initial_reference_accel_bias,
+                      &state.accel_bias_controls_by_imu[0]);
+    }
+  }
   if (init_from_result) {
     initializeImuIntrinsicsFromResult(init_result, &state);
   }
@@ -1735,6 +1947,65 @@ int main(int argc, char **argv) {
     initializeImuIntrinsicsFromKalibr(kalibr, &state);
     if (multi_imu) {
       initializeImuExtrinsicsFromKalibr(kalibr, imus.size(), &state);
+    }
+  }
+  if (multi_imu && estimate_imu_chain_prior && !init_from_kalibr) {
+    // The gyro-correlation chain prior also runs when seeding from a Ceres
+    // result, so that non-reference IMUs not covered by the result (e.g. a
+    // single-IMU cam+imu0 seed extended to 4 IMUs) still get a rotation/lever
+    // initial guess. IMUs already provided by the result are left untouched.
+    const std::size_t result_imu_count =
+        init_from_result ? init_result.imu_extrinsics.size() : 0;
+    try {
+      const ceres_cam_imu::ImuChainInitializerResult imu_chain_prior =
+          ceres_cam_imu::estimateImuChainPrior(imus,
+                                               imu_chain_prior_options);
+      for (const ceres_cam_imu::ImuChainInitializerPairResult &imu_result :
+           imu_chain_prior.imu_results) {
+        if (imu_result.imu_index >= state.imu_extrinsics.size()) {
+          continue;
+        }
+        if (init_from_result &&
+            imu_result.imu_index < result_imu_count) {
+          continue;
+        }
+        state.imu_extrinsics[imu_result.imu_index] =
+            ceres_cam_imu::imuExtrinsicFromRotationAndLever(
+                imu_result.R_i_b, imu_result.r_b);
+        const std::streamsize old_precision = std::cout.precision();
+        std::cout << std::setprecision(17)
+                  << "estimated IMU chain prior: imu="
+                  << imu_result.imu_index
+                  << " time_offset_s=" << imu_result.time_offset_s
+                  << " discrete_shift_samples="
+                  << imu_result.discrete_shift_samples
+                  << " sample_dt_s=" << imu_result.sample_dt_s
+                  << " matched_samples=" << imu_result.matched_samples
+                  << " peak_correlation=" << imu_result.peak_correlation
+                  << " r_i_b=" << imu_result.r_i_b.transpose()
+                  << " lever_estimated="
+                  << (imu_result.lever_arm_estimated ? 1 : 0)
+                  << " r_b_m=" << imu_result.r_b.transpose()
+                  << " gyro_bias_rad_s="
+                  << imu_result.gyro_bias_rad_s.transpose()
+                  << " singular_values="
+                  << imu_result.singular_values.transpose()
+                  << " gyro_rms_rad_s=" << imu_result.gyro_rms_rad_s
+                  << " accel_bias_delta_body_m_s2="
+                  << imu_result.accel_bias_delta_body_m_s2.transpose()
+                  << " lever_singular_values="
+                  << imu_result.lever_singular_values.transpose()
+                  << " accel_rms_m_s2=" << imu_result.accel_rms_m_s2
+                  << " refine_iterations="
+                  << imu_result.refine_iterations
+                  << " refine_final_cost=" << imu_result.refine_final_cost
+                  << "\n";
+        std::cout.precision(old_precision);
+      }
+    } catch (const std::exception &e) {
+      std::cerr << "failed to estimate IMU chain prior: " << e.what()
+                << "\n";
+      return 2;
     }
   }
 
@@ -1816,7 +2087,9 @@ int main(int argc, char **argv) {
     }
 
     bool all_stages_usable = true;
-    for (const ceres_cam_imu::CalibrationStage &stage : stages) {
+    for (std::size_t stage_index = 0; stage_index < stages.size();
+         ++stage_index) {
+      const ceres_cam_imu::CalibrationStage &stage = stages[stage_index];
       std::cout << "stage begin: " << stage.name
                 << " iterations=" << stage.options.max_iterations
                 << " pose_order=" << stage.options.pose_motion_derivative_order
@@ -1868,6 +2141,15 @@ int main(int argc, char **argv) {
       }
       all_stages_usable =
           all_stages_usable && stage_result.solver.IsSolutionUsable();
+    }
+    // Sync the first-camera vector slots from the optimized scalar blocks (see
+    // note in the single-stage path) so residual statistics use the solved
+    // extrinsic/time-shift instead of the stale initial seed.
+    if (!state.camera_extrinsics.empty()) {
+      state.camera_extrinsics[0] = state.T_c_b;
+    }
+    if (!state.camera_time_shifts.empty()) {
+      state.camera_time_shifts[0] = state.camera_time_shift_s;
     }
     printFinalState(state, have_kalibr_result, kalibr);
     const ceres_cam_imu::CalibrationResidualStatistics residual_stats =
@@ -1922,9 +2204,17 @@ int main(int argc, char **argv) {
   const ceres::Solver::Summary summary =
       ceres_cam_imu::solveCalibrationProblem(options, &state, &problem);
   std::cout << summary.BriefReport() << "\n";
-  if (multi_camera && !state.camera_extrinsics.empty() &&
-      !state.camera_time_shifts.empty()) {
+  // The first camera always optimizes the scalar state.T_c_b /
+  // camera_time_shift_s blocks (single-camera build path), even in multi-IMU
+  // runs. The camera_extrinsics[0] / camera_time_shifts[0] vector slots are
+  // only seeded with the initial values at setup, so they must be synced back
+  // from the optimized scalars after solving; otherwise downstream consumers
+  // that read the vector (e.g. multi-camera/multi-IMU residual statistics) use
+  // the stale initial extrinsic/time-shift and report inflated reprojection.
+  if (!state.camera_extrinsics.empty()) {
     state.camera_extrinsics[0] = state.T_c_b;
+  }
+  if (!state.camera_time_shifts.empty()) {
     state.camera_time_shifts[0] = state.camera_time_shift_s;
   }
   printFinalState(state, have_kalibr_result, kalibr);

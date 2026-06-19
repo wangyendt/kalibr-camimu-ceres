@@ -90,7 +90,7 @@
 | `--pose-motion-order` | `2` | pose motion derivative 阶数 | 必须在 `[1, spline_order)` |
 | `--pose-motion-translation-variance` | `1e6` | 平移 prior 方差 | 越小约束越强 |
 | `--pose-motion-rotation-variance` | `1e5` | 旋转 prior 方差 | 越小约束越强 |
-| `--pose-fit-diagonal-lambda` | `1e-9` | pose fit 对角正则 | 稳定线性系统 |
+| `--pose-fit-diagonal-lambda` | `0` | pose fit 对角正则 | 默认关闭以匹配 Kalibr `initSplineSparse`；需要数值阻尼时显式开启 |
 | `--pose-fit-motion-lambda` | `0` | pose fit motion 正则 | 默认批量评测常用 `0.0001` |
 | `--pose-fit-boundary-anchors` | 关闭 | 边界重复 anchors | 对齐 Kalibr 初始化 |
 | `--pose-motion-local-center` | 空 | 局部 prior 中心时间 | 与 local window 配合 |

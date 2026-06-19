@@ -10,12 +10,13 @@
 namespace ceres_cam_imu {
 
 struct PoseSplineFitOptions {
-  // Small diagonal damping for numerical robustness. Kalibr-style smoothness
-  // is controlled separately by motion_regularization.
-  double regularization = 1e-9;
+  // Kalibr's initSplineSparse only adds derivative-integral smoothness.
+  // Diagonal damping is available as an explicit diagnostic option.
+  double regularization = 0.0;
   double motion_regularization = 0.0;
   int motion_regularization_order = 2;
   bool add_boundary_anchors = false;
+  double boundary_anchor_padding_s = 0.0;
   bool unwrap_rotation_vectors = true;
 };
 

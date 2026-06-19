@@ -278,6 +278,27 @@ void writeCalibrationResultYaml(
   if (options.include_spline_controls) {
     writeControlBlocks(output, state.accel_bias_controls, "    ");
   }
+  if (options.include_spline_controls &&
+      (!state.gyro_bias_controls_by_imu.empty() ||
+       !state.accel_bias_controls_by_imu.empty())) {
+    const std::size_t imu_count =
+        std::max(state.gyro_bias_controls_by_imu.size(),
+                 state.accel_bias_controls_by_imu.size());
+    output << "  by_imu:\n";
+    for (std::size_t imu_index = 0; imu_index < imu_count; ++imu_index) {
+      output << "    - imu_index: " << imu_index << "\n";
+      if (imu_index < state.gyro_bias_controls_by_imu.size()) {
+        output << "      gyro:\n";
+        writeControlBlocks(output, state.gyro_bias_controls_by_imu[imu_index],
+                           "        ");
+      }
+      if (imu_index < state.accel_bias_controls_by_imu.size()) {
+        output << "      accel:\n";
+        writeControlBlocks(output, state.accel_bias_controls_by_imu[imu_index],
+                           "        ");
+      }
+    }
+  }
 
   output << "residual_statistics:\n";
   writeResidualStats(output, "reprojection_px",

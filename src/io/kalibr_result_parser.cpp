@@ -79,6 +79,15 @@ int cameraIndexFromLine(const std::string& line) {
   return std::stoi(match[1].str());
 }
 
+int imuIndexFromLine(const std::string& line) {
+  static const std::regex imu_re(R"(imu([0-9]+))");
+  std::smatch match;
+  if (!std::regex_search(line, match, imu_re) || match.size() < 2) {
+    return -1;
+  }
+  return std::stoi(match[1].str());
+}
+
 int targetImuIndexFromLine(const std::string& line) {
   static const std::regex target_imu_re(R"(to imu([0-9]+))");
   std::smatch match;
@@ -98,6 +107,21 @@ void ensureVectorSize(std::vector<T>* values, const int index,
   if (values->size() < required) {
     values->resize(required, fill_value);
   }
+}
+
+double meanKalibrImuValue(
+    const std::vector<KalibrImuResidualStats>& residuals,
+    double KalibrImuResidualStats::*member) {
+  if (residuals.empty()) {
+    return 0.0;
+  }
+  double sum = 0.0;
+  int count = 0;
+  for (const KalibrImuResidualStats& residual : residuals) {
+    sum += residual.*member;
+    ++count;
+  }
+  return count == 0 ? 0.0 : sum / static_cast<double>(count);
 }
 
 }  // namespace
@@ -134,10 +158,24 @@ KalibrResult readKalibrResult(const std::string& result_txt_path) {
       if (camera_index == 0) {
         result.residuals.reprojection_normalized_mean = mean;
       }
-    } else if (l.find("Gyroscope error (imu0):") != std::string::npos) {
-      result.residuals.gyro_normalized_mean = readMeanAfterToken(l);
-    } else if (l.find("Accelerometer error (imu0):") != std::string::npos) {
-      result.residuals.accel_normalized_mean = readMeanAfterToken(l);
+    } else if (l.find("Gyroscope error (imu") != std::string::npos &&
+               l.find("[rad/s]") == std::string::npos) {
+      const int imu_index = imuIndexFromLine(l);
+      ensureVectorSize(&result.imu_residuals, imu_index,
+                       KalibrImuResidualStats());
+      if (imu_index >= 0) {
+        result.imu_residuals[static_cast<std::size_t>(imu_index)]
+            .gyro_normalized_mean = readMeanAfterToken(l);
+      }
+    } else if (l.find("Accelerometer error (imu") != std::string::npos &&
+               l.find("[m/s^2]") == std::string::npos) {
+      const int imu_index = imuIndexFromLine(l);
+      ensureVectorSize(&result.imu_residuals, imu_index,
+                       KalibrImuResidualStats());
+      if (imu_index >= 0) {
+        result.imu_residuals[static_cast<std::size_t>(imu_index)]
+            .accel_normalized_mean = readMeanAfterToken(l);
+      }
     } else if (l.find("Reprojection error (cam") != std::string::npos &&
                l.find("[px]") != std::string::npos) {
       const int camera_index = cameraIndexFromLine(l);
@@ -150,10 +188,24 @@ KalibrResult readKalibrResult(const std::string& result_txt_path) {
       if (camera_index == 0) {
         result.residuals.reprojection_mean_px = mean;
       }
-    } else if (l.find("Gyroscope error (imu0) [rad/s]") != std::string::npos) {
-      result.residuals.gyro_mean_rad_s = readMeanAfterToken(l);
-    } else if (l.find("Accelerometer error (imu0) [m/s^2]") != std::string::npos) {
-      result.residuals.accel_mean_m_s2 = readMeanAfterToken(l);
+    } else if (l.find("Gyroscope error (imu") != std::string::npos &&
+               l.find("[rad/s]") != std::string::npos) {
+      const int imu_index = imuIndexFromLine(l);
+      ensureVectorSize(&result.imu_residuals, imu_index,
+                       KalibrImuResidualStats());
+      if (imu_index >= 0) {
+        result.imu_residuals[static_cast<std::size_t>(imu_index)]
+            .gyro_mean_rad_s = readMeanAfterToken(l);
+      }
+    } else if (l.find("Accelerometer error (imu") != std::string::npos &&
+               l.find("[m/s^2]") != std::string::npos) {
+      const int imu_index = imuIndexFromLine(l);
+      ensureVectorSize(&result.imu_residuals, imu_index,
+                       KalibrImuResidualStats());
+      if (imu_index >= 0) {
+        result.imu_residuals[static_cast<std::size_t>(imu_index)]
+            .accel_mean_m_s2 = readMeanAfterToken(l);
+      }
     } else if (l.find("Transformation (cam") != std::string::npos) {
       active_camera_index = cameraIndexFromLine(l);
     } else if (l.find("T_ci:") != std::string::npos && i + 4 < lines.size()) {
@@ -249,6 +301,21 @@ KalibrResult readKalibrResult(const std::string& result_txt_path) {
                tryReadVector3(lines, i + 1, &result.accel_axis_rz_i)) {
       result.has_accel_axis_rz_i = true;
     }
+  }
+
+  if (!result.imu_residuals.empty()) {
+    result.residuals.gyro_mean_rad_s =
+        meanKalibrImuValue(result.imu_residuals,
+                           &KalibrImuResidualStats::gyro_mean_rad_s);
+    result.residuals.accel_mean_m_s2 =
+        meanKalibrImuValue(result.imu_residuals,
+                           &KalibrImuResidualStats::accel_mean_m_s2);
+    result.residuals.gyro_normalized_mean =
+        meanKalibrImuValue(result.imu_residuals,
+                           &KalibrImuResidualStats::gyro_normalized_mean);
+    result.residuals.accel_normalized_mean =
+        meanKalibrImuValue(result.imu_residuals,
+                           &KalibrImuResidualStats::accel_normalized_mean);
   }
 
   return result;

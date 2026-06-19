@@ -31,7 +31,8 @@ CalibrationOptions
 stageOptions(const CalibrationOptions &base_options, const int max_iterations,
              const bool fix_pose_controls, const bool fix_bias_controls,
              const bool fix_camera_extrinsic, const bool fix_time_shift,
-             const bool fix_gravity) {
+             const bool fix_gravity,
+             const bool fix_imu_extrinsics = false) {
   CalibrationOptions options = base_options;
   options.fix_pose_controls =
       fix_pose_controls || base_options.fix_pose_controls;
@@ -41,6 +42,8 @@ stageOptions(const CalibrationOptions &base_options, const int max_iterations,
       fix_camera_extrinsic || base_options.fix_camera_extrinsic;
   options.fix_time_shift = fix_time_shift || base_options.fix_time_shift;
   options.fix_gravity = fix_gravity || base_options.fix_gravity;
+  options.fix_imu_extrinsics =
+      fix_imu_extrinsics || base_options.fix_imu_extrinsics;
   options.max_iterations = std::max(0, max_iterations);
   return options;
 }
@@ -71,10 +74,21 @@ void validateStageFreeMask(const std::string &mask) {
     return;
   }
   for (const char ch : mask) {
-    if (ch != 'p' && ch != 'b' && ch != 'e' && ch != 't' && ch != 'g') {
+    if (ch != 'p' && ch != 'b' && ch != 'e' && ch != 't' && ch != 'g' &&
+        ch != 'i') {
       throw std::invalid_argument("unknown stage free-variable mask character");
     }
   }
+}
+
+bool anyStageMaskContains(const std::vector<std::string> &masks,
+                          const char variable) {
+  for (const std::string &mask : masks) {
+    if (stageMaskContains(mask, variable)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void validateVarianceSchedule(const std::vector<double> &variances,
@@ -243,6 +257,8 @@ std::vector<CalibrationStage> makeCalibrationStagesFromFreeMasks(
   }
   std::vector<CalibrationStage> stages;
   stages.reserve(stage_free_masks.size());
+  const bool use_explicit_imu_extrinsic_masks =
+      anyStageMaskContains(stage_free_masks, 'i');
   for (std::size_t i = 0; i < stage_free_masks.size(); ++i) {
     const std::string &mask = stage_free_masks.at(i);
     validateStageFreeMask(mask);
@@ -251,13 +267,16 @@ std::vector<CalibrationStage> makeCalibrationStagesFromFreeMasks(
     const bool free_extrinsic = stageMaskContains(mask, 'e');
     const bool free_time = stageMaskContains(mask, 't');
     const bool free_gravity = stageMaskContains(mask, 'g');
+    const bool free_imu_extrinsics =
+        !use_explicit_imu_extrinsic_masks || stageMaskContains(mask, 'i');
     CalibrationStage stage;
     stage.name = "custom_" + std::to_string(i) + "_free_" + mask;
     stage.options = stageOptions(base_options,
                                  stageIteration(base_options, stage_iterations,
                                                 i, stage_free_masks.size()),
                                  !free_pose, !free_bias, !free_extrinsic,
-                                 !free_time, !free_gravity);
+                                 !free_time, !free_gravity,
+                                 !free_imu_extrinsics);
     stages.push_back(stage);
   }
   return stages;

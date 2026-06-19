@@ -14,6 +14,8 @@
 #include "ceres_cam_imu/camera/pinhole_radtan.h"
 #include "ceres_cam_imu/core/se3.h"
 #include "ceres_cam_imu/core/so3.h"
+#include "ceres_cam_imu/initialization/camera_translation_initializer.h"
+#include "ceres_cam_imu/initialization/multi_imu_initializer.h"
 #include "ceres_cam_imu/initialization/orientation_gravity_initializer.h"
 #include "ceres_cam_imu/initialization/pose_spline_fit.h"
 #include "ceres_cam_imu/initialization/time_shift_initializer.h"
@@ -326,6 +328,7 @@ int main() {
   assert(image_range.end_s == 3.0);
 
   ceres_cam_imu::CalibrationOptions gravity_options;
+  gravity_options.use_extrinsic_manifold = true;
   gravity_options.add_bias_motion_prior = false;
   gravity_options.add_pose_motion_prior = false;
   ceres_cam_imu::CalibrationState gravity_state;
@@ -342,9 +345,30 @@ int main() {
   assert(gravity_build.ambient_parameters == 16);
   assert(gravity_build.tangent_parameters == 9);
   assert(gravity_build.kalibr_style_error_terms == 2);
+  assert(gravity_problem.HasManifold(gravity_state.T_c_b.data()));
+  assert(gravity_problem.HasManifold(gravity_state.imu_extrinsic.data()));
+  assert(gravity_problem.ParameterBlockTangentSize(
+             gravity_state.T_c_b.data()) == 6);
+  assert(gravity_problem.ParameterBlockTangentSize(
+             gravity_state.imu_extrinsic.data()) == 0);
   assert(gravity_problem.HasManifold(gravity_state.gravity.data()));
   assert(gravity_problem.ParameterBlockTangentSize(
              gravity_state.gravity.data()) == 2);
+
+  ceres_cam_imu::CalibrationOptions pose_manifold_options;
+  pose_manifold_options.use_pose_control_manifold = true;
+  pose_manifold_options.add_bias_motion_prior = false;
+  pose_manifold_options.add_pose_motion_prior = false;
+  ceres_cam_imu::CalibrationState pose_manifold_state;
+  pose_manifold_state.pose_controls.resize(1);
+  ceres::Problem pose_manifold_problem;
+  ceres_cam_imu::buildCalibrationProblem(
+      intr, ceres_cam_imu::ImuNoise{}, {}, {}, pose_manifold_options,
+      &pose_manifold_state, &pose_manifold_problem);
+  assert(
+      pose_manifold_problem.HasManifold(pose_manifold_state.pose_controls[0].data()));
+  assert(pose_manifold_problem.ParameterBlockTangentSize(
+             pose_manifold_state.pose_controls[0].data()) == 6);
 
   ceres_cam_imu::CalibrationOptions gravity_length_options = gravity_options;
   gravity_length_options.estimate_gravity_length = true;
@@ -442,8 +466,79 @@ int main() {
       multi_imu_state.imu_extrinsic.data()));
   assert(!multi_imu_problem.IsParameterBlockConstant(
       multi_imu_state.imu_extrinsics[1].data()));
+  assert(multi_imu_problem.HasManifold(
+      multi_imu_state.imu_extrinsics[1].data()));
+  assert(multi_imu_problem.ParameterBlockTangentSize(
+             multi_imu_state.imu_extrinsics[1].data()) == 6);
   assert(multi_imu_problem.HasParameterBlock(
       multi_imu_state.gyro_bias_controls_by_imu[1][0].data()));
+
+  ceres_cam_imu::ImuObservationDataset chain_ref;
+  chain_ref.label = "imu0";
+  ceres_cam_imu::ImuObservationDataset chain_target;
+  chain_target.label = "imu1";
+  const ceres_cam_imu::Vec3 true_r_i_b(0.2, -0.1, 0.05);
+  const ceres_cam_imu::Mat3 true_R_i_b =
+      ceres_cam_imu::rotationVectorToMatrix(true_r_i_b);
+  const ceres_cam_imu::Vec3 true_bias(0.01, -0.02, 0.005);
+  const ceres_cam_imu::Vec3 true_chain_r_b(0.12, -0.04, 0.03);
+  const ceres_cam_imu::Vec3 true_accel_bias_delta_body(0.04, -0.03, 0.02);
+  std::vector<ceres_cam_imu::Vec3> chain_gyro_values;
+  chain_gyro_values.reserve(500);
+  for (int i = 0; i < 500; ++i) {
+    const double t = 0.002 * static_cast<double>(i);
+    chain_gyro_values.push_back(
+        ceres_cam_imu::Vec3(std::sin(7.0 * t) + 0.2 * std::cos(19.0 * t),
+                            std::cos(11.0 * t) - 0.1 * std::sin(5.0 * t),
+                            0.4 * std::sin(17.0 * t)));
+  }
+  for (int i = 0; i < 500; ++i) {
+    const double t = 0.002 * static_cast<double>(i);
+    const ceres_cam_imu::Vec3 omega_b =
+        chain_gyro_values[static_cast<std::size_t>(i)];
+    const ceres_cam_imu::Vec3 alpha_b =
+        i == 0 ? (chain_gyro_values[1] - chain_gyro_values[0]) / 0.002
+               : (chain_gyro_values[static_cast<std::size_t>(i)] -
+                  chain_gyro_values[static_cast<std::size_t>(i - 1)]) /
+                     0.002;
+    const ceres_cam_imu::Vec3 reference_accel(
+        0.3 * std::sin(3.0 * t), -0.2 * std::cos(2.0 * t),
+        9.8 + 0.1 * std::sin(5.0 * t));
+    const ceres_cam_imu::Vec3 lever_accel =
+        alpha_b.cross(true_chain_r_b) +
+        omega_b.cross(omega_b.cross(true_chain_r_b));
+    ceres_cam_imu::ImuSample ref_sample;
+    ref_sample.timestamp_s = t;
+    ref_sample.gyro_rad_s = omega_b;
+    ref_sample.accel_m_s2 = reference_accel;
+    chain_ref.samples.push_back(ref_sample);
+    ceres_cam_imu::ImuSample target_sample;
+    target_sample.timestamp_s = t;
+    target_sample.gyro_rad_s = true_R_i_b * ref_sample.gyro_rad_s + true_bias;
+    target_sample.accel_m_s2 =
+        true_R_i_b *
+        (reference_accel + lever_accel + true_accel_bias_delta_body);
+    chain_target.samples.push_back(target_sample);
+  }
+  ceres_cam_imu::ImuChainInitializerOptions chain_options;
+  chain_options.min_samples = 50;
+  chain_options.sample_stride = 2;
+  chain_options.max_time_offset_search_s = 0.0;
+  const ceres_cam_imu::ImuChainInitializerPairResult chain_prior =
+      ceres_cam_imu::estimateImuChainPairPrior(chain_ref, chain_target, 1,
+                                               chain_options);
+  const ceres_cam_imu::Mat3 dR =
+      chain_prior.R_i_b * true_R_i_b.transpose();
+  const double cos_delta =
+      std::max(-1.0, std::min(1.0, (dR.trace() - 1.0) * 0.5));
+  assert(std::acos(cos_delta) < 1e-8);
+  assert((chain_prior.gyro_bias_rad_s - true_bias).norm() < 1e-8);
+  assert(chain_prior.lever_arm_estimated);
+  assert((chain_prior.r_b - true_chain_r_b).norm() < 1e-8);
+  assert((chain_prior.accel_bias_delta_body_m_s2 -
+          true_accel_bias_delta_body)
+             .norm() < 1e-8);
+  assert(std::abs(chain_prior.time_offset_s) < 1e-12);
 
   ceres_cam_imu::CalibrationState fit_state;
   fit_state.pose_spline = ceres_cam_imu::UniformBSpline(6, 6, 0.0, 1.0, 8);
@@ -599,6 +694,51 @@ int main() {
   assert((estimated_R_c_i - true_R_c_i).norm() < 5e-3);
   assert((orientation_prior.gyro_bias_rad_s - true_gyro_bias).norm() < 5e-3);
   assert((orientation_prior.gravity_m_s2 - normalized_gravity).norm() < 5e-3);
+
+  const ceres_cam_imu::Vec3 true_t_c_b(0.025, 0.032, -0.004);
+  const ceres_cam_imu::Vec3 true_accel_bias(0.04, -0.03, 0.02);
+  ceres_cam_imu::CameraExtrinsicBlock translation_init_extrinsic =
+      orientation_prior.T_c_b;
+  for (int i = 0; i < 3; ++i) {
+    translation_init_extrinsic.values[static_cast<std::size_t>(i)] = 0.0;
+  }
+  std::vector<ceres_cam_imu::ImuSample> translation_imu;
+  for (int i = 0; i <= 160; ++i) {
+    const double t = 0.2 + 0.01 * static_cast<double>(i);
+    const ceres_cam_imu::Vec6 curve =
+        shift_spline.evaluate(shift_controls, t, 0);
+    const ceres_cam_imu::Vec6 curve_dot =
+        shift_spline.evaluate(shift_controls, t, 1);
+    const ceres_cam_imu::Vec6 curve_ddot =
+        shift_spline.evaluate(shift_controls, t, 2);
+    const ceres_cam_imu::Mat3 R_w_c =
+        ceres_cam_imu::rotationVectorToMatrix(curve.tail<3>());
+    const ceres_cam_imu::Vec3 h_c =
+        R_w_c.transpose() * (curve_ddot.head<3>() - true_gravity);
+    const ceres_cam_imu::Vec3 omega_c =
+        ceres_cam_imu::bodyAngularVelocityFromCurve(curve, curve_dot);
+    const ceres_cam_imu::Vec3 alpha_c =
+        ceres_cam_imu::bodyAngularAccelerationFromCurve(curve, curve_ddot);
+    const ceres_cam_imu::Vec3 lever_c =
+        alpha_c.cross(true_t_c_b) +
+        omega_c.cross(omega_c.cross(true_t_c_b));
+    ceres_cam_imu::ImuSample sample;
+    sample.timestamp_s = t;
+    sample.accel_m_s2 = true_R_i_c * (h_c + lever_c) + true_accel_bias;
+    translation_imu.push_back(sample);
+  }
+  ceres_cam_imu::CameraTranslationInitializerOptions translation_options;
+  translation_options.pose_knots_per_second = 20.0;
+  translation_options.pose_fit_regularization = 1e-12;
+  translation_options.min_samples = 50;
+  const ceres_cam_imu::CameraTranslationInitializerResult translation_prior =
+      ceres_cam_imu::estimateCameraTranslationAndAccelBiasPrior(
+          shift_pose_observations, translation_imu, translation_init_extrinsic,
+          true_gravity, 0.0, translation_options);
+  assert(translation_prior.num_samples ==
+         static_cast<int>(translation_imu.size()));
+  assert((translation_prior.t_c_b_m - true_t_c_b).norm() < 2e-3);
+  assert((translation_prior.accel_bias_m_s2 - true_accel_bias).norm() < 2e-3);
 
   ceres_cam_imu::CalibrationOptions bias_init_options;
   bias_init_options.initial_gyro_bias_rad_s = true_gyro_bias;
@@ -1166,6 +1306,39 @@ int main() {
   for (int block = 2; block < 8; ++block) {
     finite_difference_block(block, 6);
   }
+
+  ceres_cam_imu::UniformBSpline padded_camera_spline(6, 6, 0.0, 1.0, 10);
+  std::vector<ceres_cam_imu::SplineSegmentMeta6> padded_camera_metas;
+  for (int segment = 2; segment <= 7; ++segment) {
+    const double segment_time =
+        padded_camera_spline.tMin() +
+        (static_cast<double>(segment) + 0.5) * padded_camera_spline.dt();
+    padded_camera_metas.push_back(
+        padded_camera_spline.segmentMeta6(segment_time));
+  }
+  const int padded_local_coeff_start = padded_camera_metas.front().coeff_start;
+  const int padded_local_coeff_end =
+      padded_camera_metas.back().coeff_start +
+      ceres_cam_imu::SplineSegmentMeta6::kOrder;
+  std::unique_ptr<ceres::CostFunction> padded_camera_cost(
+      ceres_cam_imu::createCameraReprojectionTimeOffsetResidual(
+          analytic_intr, analytic_corner, 0.355, padded_camera_metas,
+          padded_local_coeff_start, 0.25, 0.75, 1.3));
+  std::vector<std::vector<double>> padded_camera_blocks;
+  padded_camera_blocks.push_back(
+      {0.05, -0.03, 0.12, 0.03, -0.02, 0.04});
+  padded_camera_blocks.push_back({0.162});
+  for (int coeff = padded_local_coeff_start; coeff < padded_local_coeff_end;
+       ++coeff) {
+    padded_camera_blocks.push_back(
+        {0.015 * coeff,
+         -0.012 * coeff,
+         0.006 * coeff,
+         0.008 * std::sin(0.21 * coeff),
+         0.011 * std::cos(0.17 * coeff),
+         -0.007 * std::sin(0.31 * coeff)});
+  }
+  check_cost_jacobians(padded_camera_cost.get(), padded_camera_blocks, 1e-3);
 
   ceres_cam_imu::UniformBSpline gyro_pose_spline(6, 6, 0.0, 1.0, 5);
   ceres_cam_imu::UniformBSpline gyro_bias_spline(3, 6, 0.0, 1.0, 5);

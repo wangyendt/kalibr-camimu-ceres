@@ -27,7 +27,7 @@ struct CalibrationOptions {
   int spline_order = 6;
   double pose_knots_per_second = 20.0;
   double bias_knots_per_second = 10.0;
-  double pose_fit_diagonal_regularization = 1e-9;
+  double pose_fit_diagonal_regularization = 0.0;
   double pose_fit_motion_regularization = 0.0;
   bool pose_fit_add_boundary_anchors = false;
   // Matches Kalibr's --timeoffset-padding. The spline range pads both sides
@@ -55,6 +55,9 @@ struct CalibrationOptions {
   double pose_motion_local_translation_variance_scale = 1.0;
   double pose_motion_local_rotation_variance_scale = 1.0;
   bool fix_reference_imu_extrinsic = true;
+  bool fix_imu_extrinsics = false;
+  bool use_extrinsic_manifold = false;
+  bool use_pose_control_manifold = false;
   bool fix_pose_controls = false;
   bool fix_bias_controls = false;
   bool fix_camera_extrinsic = false;

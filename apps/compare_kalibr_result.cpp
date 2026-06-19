@@ -5,6 +5,8 @@
 #include <cmath>
 #include <iomanip>
 
+#include "ceres_cam_imu/core/se3.h"
+#include "ceres_cam_imu/core/so3.h"
 #include "ceres_cam_imu/io/calibration_result_reader.h"
 #include "ceres_cam_imu/io/kalibr_result_parser.h"
 
@@ -47,6 +49,33 @@ double relativeNorm(const ceres_cam_imu::Vec3& delta,
   return delta.norm() / denom;
 }
 
+ceres_cam_imu::Mat4 inverseRigidTransform(const ceres_cam_imu::Mat4& T) {
+  ceres_cam_imu::Mat4 inverse = ceres_cam_imu::Mat4::Identity();
+  const ceres_cam_imu::Mat3 R_t = T.block<3, 3>(0, 0).transpose();
+  inverse.block<3, 3>(0, 0) = R_t;
+  inverse.block<3, 1>(0, 3) = -R_t * T.block<3, 1>(0, 3);
+  return inverse;
+}
+
+ceres_cam_imu::Mat4 ceresImuTib(
+    const ceres_cam_imu::CalibrationResultImuExtrinsic& extrinsic) {
+  const ceres_cam_imu::Mat3 R_i_b =
+      ceres_cam_imu::rotationVectorToMatrix(extrinsic.r_i_b);
+  const ceres_cam_imu::Vec3 t_i_b = -R_i_b * extrinsic.r_b;
+  return ceres_cam_imu::rtToMatrix(R_i_b, t_i_b);
+}
+
+ceres_cam_imu::Mat4 kalibrImuTib(
+    const ceres_cam_imu::KalibrResult& result, const std::size_t imu_index) {
+  if (imu_index < result.imu_T_i_b.size()) {
+    return result.imu_T_i_b[imu_index];
+  }
+  if (imu_index == 0) {
+    return ceres_cam_imu::Mat4::Identity();
+  }
+  throw std::runtime_error("Kalibr result missing IMU chain entry");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -71,6 +100,17 @@ int main(int argc, char** argv) {
             << result.residuals.reprojection_normalized_mean
             << " gyro=" << result.residuals.gyro_normalized_mean
             << " accel=" << result.residuals.accel_normalized_mean << "\n";
+  for (std::size_t imu_index = 0; imu_index < result.imu_residuals.size();
+       ++imu_index) {
+    const ceres_cam_imu::KalibrImuResidualStats& residual =
+        result.imu_residuals[imu_index];
+    std::cout << "kalibr_imu_residual imu=" << imu_index
+              << " gyro_rad_s=" << residual.gyro_mean_rad_s
+              << " accel_m_s2=" << residual.accel_mean_m_s2
+              << " gyro_normalized=" << residual.gyro_normalized_mean
+              << " accel_normalized=" << residual.accel_normalized_mean
+              << "\n";
+  }
   for (std::size_t camera_index = 0;
        camera_index < result.camera_T_ci.size(); ++camera_index) {
     const double time_shift =
@@ -212,6 +252,26 @@ int main(int argc, char** argv) {
                 << ceres_result.kalibr_delta.time_shift_s
                 << " gravity_norm="
                 << ceres_result.kalibr_delta.gravity_norm << "\n";
+    }
+    const std::size_t imu_count =
+        std::min(ceres_result.imu_extrinsics.size(),
+                 result.imu_T_i_b.size());
+    for (std::size_t imu_index = 0; imu_index < imu_count; ++imu_index) {
+      const ceres_cam_imu::Mat4 ceres_T_c_i =
+          ceres_result.T_c_b *
+          inverseRigidTransform(ceresImuTib(
+              ceres_result.imu_extrinsics[imu_index]));
+      const ceres_cam_imu::Mat4 kalibr_T_c_i =
+          result.T_ci * inverseRigidTransform(kalibrImuTib(result, imu_index));
+      std::cout << "cam_to_imu_delta_ceres_minus_kalibr: imu="
+                << imu_index
+                << " rotation_deg="
+                << rotationDeltaDeg(ceres_T_c_i, kalibr_T_c_i)
+                << " translation_m="
+                << (ceres_T_c_i.block<3, 1>(0, 3) -
+                    kalibr_T_c_i.block<3, 1>(0, 3))
+                       .norm()
+                << "\n";
     }
   }
   return 0;

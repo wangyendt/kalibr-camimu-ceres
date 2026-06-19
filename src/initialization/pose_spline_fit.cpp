@@ -167,9 +167,14 @@ PoseSplineFitSummary fitPoseSplineControlsFromCameraPoses(
   if (options.add_boundary_anchors && !query_times.empty()) {
     const Vec6 first_pose = body_poses.front();
     const Vec6 last_pose = body_poses.back();
-    query_times.insert(query_times.begin(), pose_spline.tMin());
+    const double padding_s = std::max(0.0, options.boundary_anchor_padding_s);
+    const double first_anchor_time =
+        std::max(pose_spline.tMin(), query_times.front() - 2.0 * padding_s);
+    const double last_anchor_time =
+        std::min(pose_spline.tMax(), query_times.back() + 2.0 * padding_s);
+    query_times.insert(query_times.begin(), first_anchor_time);
     body_poses.insert(body_poses.begin(), first_pose);
-    query_times.push_back(pose_spline.tMax());
+    query_times.push_back(last_anchor_time);
     body_poses.push_back(last_pose);
     summary.boundary_anchor_observations = 2;
   }

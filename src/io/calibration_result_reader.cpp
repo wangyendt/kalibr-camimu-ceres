@@ -149,7 +149,9 @@ CalibrationResultFile readCalibrationResultYaml(
   bool in_residual_statistics = false;
   bool in_kalibr_delta = false;
   bool in_camera_chain = false;
+  bool in_imu_chain = false;
   int camera_chain_index = -1;
+  int imu_chain_index = -1;
   std::string residual_key;
 
   std::string line;
@@ -165,9 +167,18 @@ CalibrationResultFile readCalibrationResultYaml(
     }
     if (trimmed == "camera_chain:") {
       in_camera_chain = true;
+      in_imu_chain = false;
       in_residual_statistics = false;
       in_kalibr_delta = false;
       camera_chain_index = -1;
+      continue;
+    }
+    if (trimmed == "imu_chain:") {
+      in_camera_chain = false;
+      in_imu_chain = true;
+      in_residual_statistics = false;
+      in_kalibr_delta = false;
+      imu_chain_index = -1;
       continue;
     }
     if (in_camera_chain) {
@@ -191,6 +202,25 @@ CalibrationResultFile readCalibrationResultYaml(
           result.camera_time_shift_s
               [static_cast<std::size_t>(camera_chain_index)] =
                   parseScalarAfterColon(trimmed);
+        }
+        continue;
+      }
+    }
+    if (in_imu_chain) {
+      if (!line.empty() && line[0] != ' ') {
+        in_imu_chain = false;
+        imu_chain_index = -1;
+      } else {
+        if (startsWith(trimmed, "- imu_index:")) {
+          imu_chain_index = static_cast<int>(parseScalarAfterColon(trimmed));
+          ensureVectorSize(&result.imu_extrinsics, imu_chain_index,
+                           CalibrationResultImuExtrinsic{});
+        } else if (startsWith(trimmed, "r_b:") && imu_chain_index >= 0) {
+          result.imu_extrinsics[static_cast<std::size_t>(imu_chain_index)]
+              .r_b = parseVector3AfterColon(trimmed);
+        } else if (startsWith(trimmed, "r_i_b:") && imu_chain_index >= 0) {
+          result.imu_extrinsics[static_cast<std::size_t>(imu_chain_index)]
+              .r_i_b = parseVector3AfterColon(trimmed);
         }
         continue;
       }
@@ -254,6 +284,7 @@ CalibrationResultFile readCalibrationResultYaml(
       in_residual_statistics = true;
       in_kalibr_delta = false;
       in_camera_chain = false;
+      in_imu_chain = false;
       residual_key.clear();
       continue;
     }
@@ -261,6 +292,7 @@ CalibrationResultFile readCalibrationResultYaml(
       in_residual_statistics = false;
       in_kalibr_delta = true;
       in_camera_chain = false;
+      in_imu_chain = false;
       result.has_kalibr_delta = true;
       continue;
     }
@@ -268,6 +300,7 @@ CalibrationResultFile readCalibrationResultYaml(
       in_residual_statistics = false;
       in_kalibr_delta = false;
       in_camera_chain = false;
+      in_imu_chain = false;
       residual_key.clear();
     }
 
