@@ -3,15 +3,21 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <ceres/ceres.h>
 
+#include "ceres_cam_imu/camera/camera_model.h"
+#include "ceres_cam_imu/core/se3.h"
 #include "ceres_cam_imu/core/so3.h"
 #include "ceres_cam_imu/initialization/camera_translation_initializer.h"
 #include "ceres_cam_imu/initialization/multi_imu_initializer.h"
@@ -203,6 +209,213 @@ std::vector<std::string> parseStringList(const std::string &text) {
   return values;
 }
 
+void printYellowWarning(const std::string &message) {
+  std::cerr << "\033[33mwarning: " << message << "\033[0m\n";
+}
+
+long long timestampKeyNs(const double timestamp_s) {
+  return static_cast<long long>(std::llround(timestamp_s * 1e9));
+}
+
+ceres_cam_imu::CameraExtrinsicBlock
+matrixToExtrinsicBlock(const ceres_cam_imu::Mat4 &T) {
+  ceres_cam_imu::CameraExtrinsicBlock block;
+  const ceres_cam_imu::Vec6 pose = ceres_cam_imu::matrixToPose6(T);
+  for (int i = 0; i < 6; ++i) {
+    block.values[static_cast<std::size_t>(i)] = pose(i);
+  }
+  return block;
+}
+
+std::vector<ceres_cam_imu::Mat4> cameraChainPriorsFromExtrinsics(
+    const std::vector<ceres_cam_imu::CameraExtrinsicBlock> &extrinsics) {
+  std::vector<ceres_cam_imu::Mat4> priors(
+      extrinsics.size(), ceres_cam_imu::Mat4::Identity());
+  if (extrinsics.empty()) {
+    return priors;
+  }
+  const ceres_cam_imu::Mat4 T_c0_b =
+      ceres_cam_imu::pose6ToMatrix(extrinsics.front());
+  const ceres_cam_imu::Mat4 T_b_c0 = T_c0_b.inverse();
+  for (std::size_t camera_index = 1; camera_index < extrinsics.size();
+       ++camera_index) {
+    priors[camera_index] =
+        ceres_cam_imu::pose6ToMatrix(extrinsics[camera_index]) * T_b_c0;
+  }
+  return priors;
+}
+
+void applyCameraChainPriorsToInitialExtrinsics(
+    const std::vector<ceres_cam_imu::Mat4> &camera_chain_T_ci_c0,
+    std::vector<ceres_cam_imu::CameraExtrinsicBlock> *extrinsics) {
+  if (!extrinsics || extrinsics->empty() ||
+      camera_chain_T_ci_c0.size() < extrinsics->size()) {
+    return;
+  }
+  const ceres_cam_imu::Mat4 T_c0_b =
+      ceres_cam_imu::pose6ToMatrix(extrinsics->front());
+  for (std::size_t camera_index = 1; camera_index < extrinsics->size();
+       ++camera_index) {
+    (*extrinsics)[camera_index] =
+        matrixToExtrinsicBlock(camera_chain_T_ci_c0[camera_index] * T_c0_b);
+  }
+}
+
+class TargetPoseProjectionFunctor {
+public:
+  TargetPoseProjectionFunctor(ceres_cam_imu::CameraIntrinsics intrinsics,
+                              ceres_cam_imu::CornerMeasurement corner)
+      : camera_(std::move(intrinsics)), corner_(std::move(corner)) {}
+
+  bool operator()(const double *const T_t_c_params, double *residuals) const {
+    ceres_cam_imu::Vec6 pose;
+    for (int i = 0; i < 6; ++i) {
+      pose(i) = T_t_c_params[i];
+    }
+    const ceres_cam_imu::Mat4 T_t_c = ceres_cam_imu::pose6ToMatrix(pose);
+    const ceres_cam_imu::Mat3 R_t_c = T_t_c.block<3, 3>(0, 0);
+    const ceres_cam_imu::Vec3 t_t_c = T_t_c.block<3, 1>(0, 3);
+    const ceres_cam_imu::Vec3 p_c =
+        R_t_c.transpose() * (corner_.target_point - t_t_c);
+    ceres_cam_imu::Vec2 pixel;
+    if (!camera_.projectWithJacobian(p_c, &pixel, nullptr)) {
+      return false;
+    }
+    residuals[0] = corner_.pixel.x() - pixel.x();
+    residuals[1] = corner_.pixel.y() - pixel.y();
+    return true;
+  }
+
+private:
+  ceres_cam_imu::CameraModel camera_;
+  ceres_cam_imu::CornerMeasurement corner_;
+};
+
+bool estimateTargetToCameraPose(
+    const ceres_cam_imu::CameraIntrinsics &intrinsics,
+    const ceres_cam_imu::ImageObservation &image,
+    const ceres_cam_imu::Mat4 &initial_T_t_c, ceres_cam_imu::Mat4 *T_t_c,
+    double *rms_px) {
+  if (!T_t_c || image.corners.size() < 12) {
+    return false;
+  }
+  ceres_cam_imu::Vec6 pose = ceres_cam_imu::matrixToPose6(initial_T_t_c);
+  ceres::Problem problem;
+  for (const ceres_cam_imu::CornerMeasurement &corner : image.corners) {
+    problem.AddResidualBlock(
+        new ceres::NumericDiffCostFunction<TargetPoseProjectionFunctor,
+                                           ceres::CENTRAL, 2, 6>(
+            new TargetPoseProjectionFunctor(intrinsics, corner)),
+        nullptr, pose.data());
+  }
+  ceres::Solver::Options options;
+  options.max_num_iterations = 25;
+  options.linear_solver_type = ceres::DENSE_QR;
+  options.minimizer_progress_to_stdout = false;
+  options.num_threads = 1;
+  ceres::Solver::Summary summary;
+  ceres::Solve(options, &problem, &summary);
+  if (!summary.IsSolutionUsable()) {
+    return false;
+  }
+
+  *T_t_c = ceres_cam_imu::pose6ToMatrix(pose);
+  double sum_sq = 0.0;
+  int count = 0;
+  const ceres_cam_imu::CameraModel camera(intrinsics);
+  const ceres_cam_imu::Mat3 R_t_c = T_t_c->block<3, 3>(0, 0);
+  const ceres_cam_imu::Vec3 t_t_c = T_t_c->block<3, 1>(0, 3);
+  for (const ceres_cam_imu::CornerMeasurement &corner : image.corners) {
+    const ceres_cam_imu::Vec3 p_c =
+        R_t_c.transpose() * (corner.target_point - t_t_c);
+    ceres_cam_imu::Vec2 pixel;
+    if (!camera.projectWithJacobian(p_c, &pixel, nullptr)) {
+      continue;
+    }
+    sum_sq += (corner.pixel - pixel).squaredNorm();
+    ++count;
+  }
+  if (count <= 0) {
+    return false;
+  }
+  if (rms_px) {
+    *rms_px = std::sqrt(sum_sq / static_cast<double>(count));
+  }
+  return true;
+}
+
+bool estimateCameraBaselineFromObservations(
+    const ceres_cam_imu::CameraObservationDataset &camera,
+    const std::vector<ceres_cam_imu::PoseObservation> &cam0_poses,
+    ceres_cam_imu::Mat4 *T_ci_c0, int *used_frames, double *mean_rms_px) {
+  if (!T_ci_c0 || cam0_poses.empty()) {
+    return false;
+  }
+  std::map<long long, ceres_cam_imu::Mat4> cam0_pose_by_time;
+  for (const ceres_cam_imu::PoseObservation &pose : cam0_poses) {
+    cam0_pose_by_time[timestampKeyNs(pose.timestamp_s)] = pose.T_t_c;
+  }
+
+  std::vector<ceres_cam_imu::Mat4> baselines;
+  std::vector<double> rms_values;
+  baselines.reserve(50);
+  rms_values.reserve(50);
+  for (const ceres_cam_imu::ImageObservation &image : camera.images) {
+    if (baselines.size() >= 50) {
+      break;
+    }
+    const auto cam0_pose_it = cam0_pose_by_time.find(
+        timestampKeyNs(image.timestamp_s));
+    if (cam0_pose_it == cam0_pose_by_time.end()) {
+      continue;
+    }
+    ceres_cam_imu::Mat4 T_t_ci = ceres_cam_imu::Mat4::Identity();
+    double rms_px = 0.0;
+    if (!estimateTargetToCameraPose(camera.intrinsics, image,
+                                    cam0_pose_it->second, &T_t_ci, &rms_px)) {
+      continue;
+    }
+    if (!std::isfinite(rms_px) || rms_px > 5.0) {
+      continue;
+    }
+    baselines.push_back(T_t_ci.inverse() * cam0_pose_it->second);
+    rms_values.push_back(rms_px);
+  }
+  if (baselines.size() < 3) {
+    return false;
+  }
+
+  ceres_cam_imu::Vec3 translation = ceres_cam_imu::Vec3::Zero();
+  Eigen::Vector4d quat_sum = Eigen::Vector4d::Zero();
+  Eigen::Quaterniond reference_q(baselines.front().block<3, 3>(0, 0));
+  for (const ceres_cam_imu::Mat4 &baseline : baselines) {
+    translation += baseline.block<3, 1>(0, 3);
+    Eigen::Quaterniond q(baseline.block<3, 3>(0, 0));
+    if (q.coeffs().dot(reference_q.coeffs()) < 0.0) {
+      q.coeffs() *= -1.0;
+    }
+    quat_sum += q.coeffs();
+  }
+  translation /= static_cast<double>(baselines.size());
+  Eigen::Quaterniond mean_q(quat_sum(3), quat_sum(0), quat_sum(1),
+                            quat_sum(2));
+  mean_q.normalize();
+  *T_ci_c0 = ceres_cam_imu::Mat4::Identity();
+  T_ci_c0->block<3, 3>(0, 0) = mean_q.toRotationMatrix();
+  T_ci_c0->block<3, 1>(0, 3) = translation;
+  if (used_frames) {
+    *used_frames = static_cast<int>(baselines.size());
+  }
+  if (mean_rms_px) {
+    double sum = 0.0;
+    for (const double rms : rms_values) {
+      sum += rms;
+    }
+    *mean_rms_px = sum / static_cast<double>(rms_values.size());
+  }
+  return true;
+}
+
 void usage() {
   std::cout
       << "calibrate_cam_imu --cam camchain.yaml --imu imu.yaml --target "
@@ -235,6 +448,7 @@ void usage() {
          "[--stop-on-stage-failure] "
          "[--time-padding S|--timeoffset-padding S] "
          "[--fix-poses] [--fix-biases] [--fix-camera-extrinsic] "
+         "[--fix-camera-chain-extrinsics] "
          "[--fix-time-shift] [--fix-gravity] [--fix-imu-extrinsics] "
          "[--extrinsic-manifold] "
          "[--estimate-gravity-length] "
@@ -310,9 +524,15 @@ void usage() {
          "the gyro-norm initializer when both are provided.\n";
   std::cout
       << "  --init-from-camchain reads T_cam_imu and timeshift_cam_imu from "
-         "the --cam YAML when those keys are present. Multi-camera runs use "
-         "camchain initialization automatically unless initialized from a "
-         "complete prior result.\n";
+         "the --cam YAML when those keys are present. If a later camera has "
+         "T_cn_cnm1 but no T_cam_imu, its initial T_cam_imu is composed from "
+         "the previous camera. If camchain extrinsics are incomplete, the "
+         "program warns in yellow and attempts an observation-based camera "
+         "chain fallback when cam0 poses are available.\n";
+  std::cout
+      << "  --fix-camera-chain-extrinsics keeps the initialized multi-camera "
+         "baseline fixed relative to cam0 with tight relative extrinsic "
+         "priors while still allowing cam0-to-IMU to optimize.\n";
   std::cout
       << "  --imu and --imu-data may be repeated for multi-IMU joint "
          "optimization. Counts must match, order matters, and the first IMU "
@@ -414,6 +634,7 @@ void printBuildSummary(const std::string &prefix,
             << " pose_priors=" << build.pose_motion_priors
             << " local_pose_priors=" << build.local_pose_motion_priors
             << " time_priors=" << build.time_shift_priors
+            << " camera_chain_priors=" << build.camera_chain_priors
             << " gravity_tangent=" << build.gravity_tangent_size
             << " residual_blocks=" << build.residual_blocks
             << " scalar_residuals=" << build.scalar_residuals
@@ -1121,6 +1342,19 @@ int main(int argc, char **argv) {
   options.fix_pose_controls = hasFlag(argc, argv, "--fix-poses");
   options.fix_bias_controls = hasFlag(argc, argv, "--fix-biases");
   options.fix_camera_extrinsic = hasFlag(argc, argv, "--fix-camera-extrinsic");
+  options.fix_camera_chain_extrinsics =
+      hasFlag(argc, argv, "--fix-camera-chain-extrinsics");
+  options.camera_chain_translation_sigma_m =
+      doubleArg(argc, argv, "--camera-chain-translation-sigma-m",
+                options.camera_chain_translation_sigma_m);
+  options.camera_chain_rotation_sigma_rad =
+      doubleArg(argc, argv, "--camera-chain-rotation-sigma-rad",
+                options.camera_chain_rotation_sigma_rad);
+  if (options.camera_chain_translation_sigma_m <= 0.0 ||
+      options.camera_chain_rotation_sigma_rad <= 0.0) {
+    std::cerr << "camera-chain prior sigmas must be positive\n";
+    return 2;
+  }
   options.fix_imu_extrinsics = hasFlag(argc, argv, "--fix-imu-extrinsics");
   options.use_extrinsic_manifold = hasFlag(argc, argv, "--extrinsic-manifold");
   options.use_pose_control_manifold =
@@ -1659,9 +1893,13 @@ int main(int argc, char **argv) {
       cameras.size());
   std::vector<double> initial_camera_time_shifts(cameras.size(),
                                                  options.initial_camera_time_shift_s);
+  std::vector<ceres_cam_imu::Mat4> initial_camera_chain_T_ci_c0(
+      cameras.size(), ceres_cam_imu::Mat4::Identity());
   bool have_initial_camera_blocks = false;
+  bool have_initial_camera_chain_prior = false;
   ceres_cam_imu::Vec3 initial_gravity = ceres_cam_imu::Vec3::Zero();
   bool have_initial_gravity = false;
+  bool did_initialize_from_camchain = false;
   if (init_from_result) {
     options.initial_camera_time_shift_s = init_result.time_shift_s;
     initial_camera_time_shifts[0] = init_result.time_shift_s;
@@ -1690,6 +1928,11 @@ int main(int argc, char **argv) {
           init_result.camera_time_shift_s[camera_index];
     }
     have_initial_camera_blocks = true;
+    if (multi_camera) {
+      initial_camera_chain_T_ci_c0 =
+          cameraChainPriorsFromExtrinsics(initial_camera_extrinsics);
+      have_initial_camera_chain_prior = true;
+    }
     initial_gravity = init_result.gravity;
     have_initial_gravity = true;
     const std::streamsize old_precision = std::cout.precision();
@@ -1722,62 +1965,159 @@ int main(int argc, char **argv) {
     initial_T_c_b = initial_camera_extrinsics[0];
     options.initial_camera_time_shift_s = initial_camera_time_shifts[0];
     have_initial_camera_blocks = true;
+    if (multi_camera) {
+      initial_camera_chain_T_ci_c0 =
+          cameraChainPriorsFromExtrinsics(initial_camera_extrinsics);
+      have_initial_camera_chain_prior = true;
+    }
     initial_gravity = kalibr.gravity;
     have_initial_gravity = true;
   }
   if (init_from_camchain) {
+    std::vector<ceres_cam_imu::CamchainImuPrior> camchain_priors(
+        cameras.size());
+    std::vector<ceres_cam_imu::Mat4> camera_T_c_b(
+        cameras.size(), ceres_cam_imu::Mat4::Identity());
+    std::vector<char> have_camera_T_c_b(cameras.size(), 0);
+    int direct_initializations = 0;
+    int chained_initializations = 0;
+    int observation_fallback_initializations = 0;
+
     for (std::size_t camera_index = 0; camera_index < cameras.size();
          ++camera_index) {
       const std::string &camera_yaml =
           shared_camchain_yaml ? cam_yamls.front() : cam_yamls[camera_index];
-      const ceres_cam_imu::CamchainImuPrior camchain_prior =
-          ceres_cam_imu::readCamchainImuPrior(
-              camera_yaml, shared_camchain_yaml ? static_cast<int>(camera_index)
-                                                : 0);
-      if (!camchain_prior.has_T_cam_imu) {
-        std::cerr << (auto_init_from_camchain
-                          ? "multi-camera calibration requires T_cam_imu in "
-                            "camchain YAML for camera "
-                          : "--init-from-camchain requires T_cam_imu for "
-                            "camera ")
-                  << camera_index << "\n";
-        return 2;
-      }
+      camchain_priors[camera_index] = ceres_cam_imu::readCamchainImuPrior(
+          camera_yaml,
+          shared_camchain_yaml ? static_cast<int>(camera_index) : 0);
+      const ceres_cam_imu::CamchainImuPrior &camchain_prior =
+          camchain_priors[camera_index];
       if (camchain_prior.has_timeshift_cam_imu) {
         initial_camera_time_shifts[camera_index] =
             camchain_prior.timeshift_cam_imu_s;
       }
-      const ceres_cam_imu::Vec6 T_c_b =
-          ceres_cam_imu::matrixToPose6(camchain_prior.T_cam_imu);
-      for (int i = 0; i < 6; ++i) {
-        initial_camera_extrinsics[camera_index]
-            .values[static_cast<std::size_t>(i)] = T_c_b(i);
+      if (camchain_prior.has_T_cam_imu) {
+        camera_T_c_b[camera_index] = camchain_prior.T_cam_imu;
+        have_camera_T_c_b[camera_index] = 1;
+        ++direct_initializations;
       }
     }
-    initial_T_c_b = initial_camera_extrinsics[0];
-    options.initial_camera_time_shift_s = initial_camera_time_shifts[0];
-    have_initial_camera_blocks = true;
-    const std::streamsize old_precision = std::cout.precision();
-    std::cout << std::setprecision(17)
-              << "initialized from camchain"
-              << (auto_init_from_camchain ? " (auto multi-camera)" : "")
-              << ": time_shift_s="
-              << options.initial_camera_time_shift_s
-              << " translation_m=" << initial_T_c_b.values[0] << " "
-              << initial_T_c_b.values[1] << " " << initial_T_c_b.values[2];
-    if (have_kalibr_result) {
-      const ceres_cam_imu::Mat4 initial_T =
-          ceres_cam_imu::pose6ToMatrix(initial_T_c_b);
-      std::cout << " kalibr_translation_delta_m="
-                << (initial_T.block<3, 1>(0, 3) -
-                    kalibr.T_ci.block<3, 1>(0, 3))
-                       .norm()
-                << " kalibr_time_delta_s="
-                << (options.initial_camera_time_shift_s -
-                    kalibr.timeshift_cam_to_imu_s);
+
+    for (std::size_t camera_index = 1; camera_index < cameras.size();
+         ++camera_index) {
+      if (!have_camera_T_c_b[camera_index] &&
+          have_camera_T_c_b[camera_index - 1] &&
+          camchain_priors[camera_index].has_T_cam_cam_prev) {
+        camera_T_c_b[camera_index] =
+            camchain_priors[camera_index].T_cam_cam_prev *
+            camera_T_c_b[camera_index - 1];
+        have_camera_T_c_b[camera_index] = 1;
+        ++chained_initializations;
+      }
     }
-    std::cout << "\n";
-    std::cout.precision(old_precision);
+
+    if (!std::all_of(have_camera_T_c_b.begin(), have_camera_T_c_b.end(),
+                     [](const char value) { return value != 0; }) &&
+        !poses.empty() && have_camera_T_c_b[0]) {
+      for (std::size_t camera_index = 1; camera_index < cameras.size();
+           ++camera_index) {
+        if (have_camera_T_c_b[camera_index]) {
+          continue;
+        }
+        ceres_cam_imu::Mat4 T_ci_c0 = ceres_cam_imu::Mat4::Identity();
+        int used_frames = 0;
+        double mean_rms_px = 0.0;
+        if (!estimateCameraBaselineFromObservations(
+                cameras[camera_index], poses, &T_ci_c0, &used_frames,
+                &mean_rms_px)) {
+          continue;
+        }
+        printYellowWarning(
+            "falling back to observation-based camera-chain initialization for "
+            "camera " +
+            std::to_string(camera_index) +
+            " because camchain YAML does not provide T_cam_imu/T_cn_cnm1");
+        camera_T_c_b[camera_index] = T_ci_c0 * camera_T_c_b[0];
+        have_camera_T_c_b[camera_index] = 1;
+        ++observation_fallback_initializations;
+        const std::streamsize old_precision = std::cout.precision();
+        std::cout << std::setprecision(17)
+                  << "camera-chain observation fallback: camera="
+                  << camera_index << " frames=" << used_frames
+                  << " mean_pnp_rms_px=" << mean_rms_px
+                  << " translation_m=" << T_ci_c0(0, 3) << " "
+                  << T_ci_c0(1, 3) << " " << T_ci_c0(2, 3) << "\n";
+        std::cout.precision(old_precision);
+      }
+    }
+
+    const bool have_complete_camera_chain =
+        std::all_of(have_camera_T_c_b.begin(), have_camera_T_c_b.end(),
+                    [](const char value) { return value != 0; });
+    if (have_camera_T_c_b[0]) {
+      initial_T_c_b = matrixToExtrinsicBlock(camera_T_c_b[0]);
+      initial_camera_extrinsics[0] = initial_T_c_b;
+      options.initial_camera_time_shift_s = initial_camera_time_shifts[0];
+    }
+    if (have_complete_camera_chain) {
+      for (std::size_t camera_index = 0; camera_index < cameras.size();
+           ++camera_index) {
+        initial_camera_extrinsics[camera_index] =
+            matrixToExtrinsicBlock(camera_T_c_b[camera_index]);
+      }
+      initial_T_c_b = initial_camera_extrinsics[0];
+      options.initial_camera_time_shift_s = initial_camera_time_shifts[0];
+      have_initial_camera_blocks = true;
+      initial_camera_chain_T_ci_c0 =
+          cameraChainPriorsFromExtrinsics(initial_camera_extrinsics);
+      have_initial_camera_chain_prior = multi_camera;
+      did_initialize_from_camchain = true;
+      const std::streamsize old_precision = std::cout.precision();
+      std::cout << std::setprecision(17)
+                << "initialized from camchain"
+                << (auto_init_from_camchain ? " (auto multi-camera)" : "")
+                << ": direct=" << direct_initializations
+                << " chained=" << chained_initializations
+                << " observation_fallback="
+                << observation_fallback_initializations
+                << " time_shift_s=" << options.initial_camera_time_shift_s
+                << " translation_m=" << initial_T_c_b.values[0] << " "
+                << initial_T_c_b.values[1] << " " << initial_T_c_b.values[2];
+      if (have_kalibr_result) {
+        const ceres_cam_imu::Mat4 initial_T =
+            ceres_cam_imu::pose6ToMatrix(initial_T_c_b);
+        std::cout << " kalibr_translation_delta_m="
+                  << (initial_T.block<3, 1>(0, 3) -
+                      kalibr.T_ci.block<3, 1>(0, 3))
+                         .norm()
+                  << " kalibr_time_delta_s="
+                  << (options.initial_camera_time_shift_s -
+                      kalibr.timeshift_cam_to_imu_s);
+      }
+      std::cout << "\n";
+      std::cout.precision(old_precision);
+    } else {
+      std::ostringstream missing;
+      for (std::size_t camera_index = 0; camera_index < cameras.size();
+           ++camera_index) {
+        if (!have_camera_T_c_b[camera_index]) {
+          if (missing.tellp() > 0) {
+            missing << ",";
+          }
+          missing << camera_index;
+        }
+      }
+      printYellowWarning(
+          "camchain initialization is incomplete for camera(s) " +
+          missing.str() +
+          "; falling back to the regular cold-start path for missing camera "
+          "extrinsics");
+      if (options.fix_camera_chain_extrinsics) {
+        std::cerr << "--fix-camera-chain-extrinsics requires complete "
+                     "camera-chain initialization\n";
+        return 2;
+      }
+    }
   }
 
   if (hasFlag(argc, argv, "--estimate-time-shift-prior")) {
@@ -1839,7 +2179,7 @@ int main(int argc, char **argv) {
       hasFlag(argc, argv, "--estimate-camera-translation-prior") &&
       estimate_orientation_gravity_prior &&
       !hasFlag(argc, argv, "--no-estimate-camera-translation-prior") &&
-      !init_from_kalibr && !init_from_result && !init_from_camchain;
+      !init_from_kalibr && !init_from_result && !did_initialize_from_camchain;
 
   if (estimate_orientation_gravity_prior) {
     if (poses.empty()) {
@@ -1992,6 +2332,28 @@ int main(int argc, char **argv) {
       std::cerr << "failed to estimate camera translation prior: "
                 << e.what() << "\n";
     }
+  }
+
+  if (have_initial_camera_blocks && have_initial_camera_chain_prior) {
+    initial_camera_extrinsics[0] = initial_T_c_b;
+    applyCameraChainPriorsToInitialExtrinsics(initial_camera_chain_T_ci_c0,
+                                             &initial_camera_extrinsics);
+    if (options.fix_camera_chain_extrinsics) {
+      options.camera_chain_T_ci_c0_prior = initial_camera_chain_T_ci_c0;
+      std::cout << "camera-chain extrinsics fixed: priors="
+                << (initial_camera_chain_T_ci_c0.size() > 0
+                        ? initial_camera_chain_T_ci_c0.size() - 1
+                        : 0)
+                << " translation_sigma_m="
+                << options.camera_chain_translation_sigma_m
+                << " rotation_sigma_rad="
+                << options.camera_chain_rotation_sigma_rad << "\n";
+    }
+  } else if (options.fix_camera_chain_extrinsics) {
+    std::cerr << "--fix-camera-chain-extrinsics requires a complete "
+                 "multi-camera initialization from camchain, Kalibr, result, or "
+                 "observation fallback\n";
+    return 2;
   }
 
   if (options.add_time_shift_prior || !stage_time_shift_prior_sigmas.empty()) {

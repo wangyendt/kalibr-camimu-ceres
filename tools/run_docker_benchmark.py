@@ -155,9 +155,11 @@ def run_metadata(args):
     metadata = {
         "ceres_mode": args.ceres_mode,
         "ceres_platform": args.ceres_platform if args.ceres_mode == "docker" else "native",
+        "ceres_extra_args": " ".join(args.ceres_extra_arg),
         "ceres_repo_commit": short_git_revision(repo_dir()),
         "kalibr_docker_repo": str(args.kalibr_docker_repo),
         "kalibr_docker_repo_commit": short_git_revision(args.kalibr_docker_repo),
+        "kalibr_extra_args": " ".join(args.kalibr_extra_arg),
     }
     if args.ceres_mode == "docker":
         metadata["ceres_image"] = args.ceres_image
@@ -446,6 +448,8 @@ def kalibr_bag_command(args, bag: pathlib.Path, cams: pathlib.Path,
         "--bias-knots-per-second",
         str(args.bias_knots_per_second),
     ]
+    if args.kalibr_extra_arg:
+        kalibr_args.extend(args.kalibr_extra_arg)
     script = (
         "set -euo pipefail; "
         "mkdir -p /out/input; "
@@ -1035,6 +1039,8 @@ def write_summary(path: pathlib.Path, rows):
         "kalibr_image_id",
         "ceres_mode",
         "ceres_platform",
+        "ceres_extra_args",
+        "kalibr_extra_args",
         "ceres_repo_commit",
         "kalibr_docker_repo_commit",
         "kalibr_return_code",

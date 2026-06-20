@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <ceres/manifold.h>
@@ -54,6 +55,57 @@ Mat4 cameraExtrinsicToMatrix(const CameraExtrinsicBlock &pose) {
     p(i) = pose.values[static_cast<std::size_t>(i)];
   }
   return ceres_cam_imu::pose6ToMatrix(p);
+}
+
+Mat4 cameraExtrinsicArrayToMatrix(const double *pose) {
+  Vec6 p;
+  for (int i = 0; i < 6; ++i) {
+    p(i) = pose[i];
+  }
+  return ceres_cam_imu::pose6ToMatrix(p);
+}
+
+class CameraChainExtrinsicPriorFunctor {
+public:
+  CameraChainExtrinsicPriorFunctor(Mat4 T_ci_c0,
+                                   const double translation_sigma_m,
+                                   const double rotation_sigma_rad)
+      : T_ci_c0_(std::move(T_ci_c0)),
+        T_c0_ci_(T_ci_c0_.inverse()),
+        inv_translation_sigma_m_(1.0 / std::max(1e-12, translation_sigma_m)),
+        inv_rotation_sigma_rad_(1.0 / std::max(1e-12, rotation_sigma_rad)) {}
+
+  bool operator()(const double *const T_c0_b_params,
+                  const double *const T_ci_b_params,
+                  double *residuals) const {
+    const Mat4 T_c0_b = cameraExtrinsicArrayToMatrix(T_c0_b_params);
+    const Mat4 T_ci_b = cameraExtrinsicArrayToMatrix(T_ci_b_params);
+    const Mat4 T_ci_c0_est = T_ci_b * T_c0_b.inverse();
+    const Mat4 delta = T_c0_ci_ * T_ci_c0_est;
+    const Vec3 translation = delta.block<3, 1>(0, 3);
+    const Vec3 rotation =
+        rotationMatrixToVector(delta.block<3, 3>(0, 0));
+    for (int i = 0; i < 3; ++i) {
+      residuals[i] = inv_translation_sigma_m_ * translation(i);
+      residuals[3 + i] = inv_rotation_sigma_rad_ * rotation(i);
+    }
+    return true;
+  }
+
+private:
+  Mat4 T_ci_c0_ = Mat4::Identity();
+  Mat4 T_c0_ci_ = Mat4::Identity();
+  double inv_translation_sigma_m_ = 1.0;
+  double inv_rotation_sigma_rad_ = 1.0;
+};
+
+ceres::CostFunction *createCameraChainExtrinsicPrior(
+    const Mat4 &T_ci_c0, const double translation_sigma_m,
+    const double rotation_sigma_rad) {
+  return new ceres::NumericDiffCostFunction<CameraChainExtrinsicPriorFunctor,
+                                            ceres::CENTRAL, 6, 6, 6>(
+      new CameraChainExtrinsicPriorFunctor(T_ci_c0, translation_sigma_m,
+                                           rotation_sigma_rad));
 }
 
 class KalibrMEstimatorLoss final : public ceres::LossFunction {
@@ -1434,6 +1486,20 @@ buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
     }
     if (options.fix_time_shift) {
       problem->SetParameterBlockConstant(dataPtr(time_shift));
+    }
+    if (options.fix_camera_chain_extrinsics) {
+      if (options.camera_chain_T_ci_c0_prior.size() <= camera_index) {
+        throw std::runtime_error(
+            "--fix-camera-chain-extrinsics requires a camera-chain prior for "
+            "each non-reference camera");
+      }
+      problem->AddResidualBlock(
+          createCameraChainExtrinsicPrior(
+              options.camera_chain_T_ci_c0_prior[camera_index],
+              options.camera_chain_translation_sigma_m,
+              options.camera_chain_rotation_sigma_rad),
+          nullptr, dataPtr(state->T_c_b), dataPtr(T_c_b));
+      ++summary.camera_chain_priors;
     }
     if (options.add_time_shift_prior &&
         options.time_shift_prior_sigma_s > 0.0) {

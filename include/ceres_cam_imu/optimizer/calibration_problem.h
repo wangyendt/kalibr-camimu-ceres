@@ -61,6 +61,10 @@ struct CalibrationOptions {
   bool fix_pose_controls = false;
   bool fix_bias_controls = false;
   bool fix_camera_extrinsic = false;
+  bool fix_camera_chain_extrinsics = false;
+  double camera_chain_translation_sigma_m = 1e-6;
+  double camera_chain_rotation_sigma_rad = 1e-6;
+  std::vector<Mat4> camera_chain_T_ci_c0_prior;
   bool fix_time_shift = false;
   bool optimize_imu_time_offsets = false;
   double imu_time_offset_bound_s = 0.005;
@@ -134,6 +138,7 @@ struct CalibrationBuildSummary {
   int pose_motion_priors = 0;
   int local_pose_motion_priors = 0;
   int time_shift_priors = 0;
+  int camera_chain_priors = 0;
   int gravity_tangent_size = 3;
   int residual_blocks = 0;
   int scalar_residuals = 0;

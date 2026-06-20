@@ -325,6 +325,8 @@ CamchainImuPrior readCamchainImuPrior(const std::string &yaml_path,
   CamchainImuPrior prior;
   prior.has_T_cam_imu =
       tryMatrix4AfterKey(lines, "T_cam_imu", &prior.T_cam_imu);
+  prior.has_T_cam_cam_prev =
+      tryMatrix4AfterKey(lines, "T_cn_cnm1", &prior.T_cam_cam_prev);
   prior.has_timeshift_cam_imu =
       tryNumericScalar(lines, "timeshift_cam_imu", &prior.timeshift_cam_imu_s);
   return prior;

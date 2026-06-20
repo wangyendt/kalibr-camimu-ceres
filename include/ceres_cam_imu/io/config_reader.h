@@ -8,8 +8,10 @@ namespace ceres_cam_imu {
 
 struct CamchainImuPrior {
   Mat4 T_cam_imu = Mat4::Identity();
+  Mat4 T_cam_cam_prev = Mat4::Identity();
   double timeshift_cam_imu_s = 0.0;
   bool has_T_cam_imu = false;
+  bool has_T_cam_cam_prev = false;
   bool has_timeshift_cam_imu = false;
 };
 
