@@ -13,16 +13,16 @@
 
 `1cam+1imu` 时，time shift 是优化变量；所以直觉上会认为 `1cam+4imu` 时每路 IMU 也应该各自有一个 time offset 优化变量。
 
-但当前实现不是这样：
+023e1e6 之前和 Kalibr 的默认多 IMU 语义接近；2026-06-21 后，Ceres 又把非参考 IMU 的 offset 升级成了可优化变量：
 
 | 实现 | camera 到参考 IMU time shift | 非参考 IMU 相对 IMU0 time offset |
 |---|---|---|
 | Kalibr `1cam+1imu` | 优化变量 | 不存在 |
 | Kalibr `1cam+多imu` | 优化变量 | `--imu-delay-by-correlation` 估计后固定 |
 | 当前 Ceres `1cam+1imu` | 优化变量 | 不存在 |
-| 当前 Ceres `1cam+多imu` | 优化变量 | gyro correlation 估计后固定 |
+| 当前 Ceres `1cam+多imu` | 优化变量 | gyro correlation 给初值，imu1..N-1 作为 Ceres 变量小窗口优化；`--fix-imu-time-offsets` 可退回固定 |
 
-所以问题不是“多 IMU 关掉了 `1cam+1imu` 里的 time shift 优化”，而是“多 IMU 多出来的 IMU 间相对 time offset 目前没有作为 bundle 变量优化”。
+所以问题不是“多 IMU 关掉了 `1cam+1imu` 里的 time shift 优化”，而是要分清两类时间变量：camera-to-reference-IMU time shift 一直是 Ceres 变量；non-reference IMU 相对 IMU0 的 offset 是 2026-06-21 后新增的多 IMU 变量。
 
 ## 源码对应
 
@@ -51,28 +51,36 @@ tk = im.stamp.toSec() + self.timeOffset
 
 这个 `self.timeOffset` 不是 expression，也没有 `problem.addDesignVariable(...)`。因此它不是 bundle optimization 里的优化变量。
 
-当前 Ceres 与这个 Kalibr 语义对齐：
+023e1e6 的 Ceres 与这个 Kalibr 固定 correction 语义对齐：
 
 - `CalibrationState.camera_time_shift_s` 是 Ceres 变量。
 - `CalibrationState.imu_time_offsets_s` 是多 IMU 的固定时间修正常量。
 - multi-IMU residual 用 `sample.timestamp_s + imu_time_offsets_s[i]` 查询 spline。
 - `imu_time_offsets_s` 不增加 Ceres parameter block，不增加 residual，也没有 Jacobian。
 
+2026-06-21 后的 Ceres 改成：
+
+- `CalibrationState.camera_time_shift_s` 仍是 camera 到参考 IMU 的 Ceres 变量。
+- `CalibrationState.imu_time_offsets_s[0]` 固定为 `0`，定义参考 IMU 时间轴。
+- `CalibrationState.imu_time_offsets_s[1..N-1]` 在多 IMU、`calibrated` IMU 模型下默认加入 Ceres problem。
+- 初值仍来自 gyro correlation delay correction；每个非参考 IMU offset 默认只在初值附近 `±0.005s` 内优化。
+- `--fix-imu-time-offsets` 保留 023e1e6 的固定 correction 行为；`--imu-time-offset-bound-s` 调整窗口。
+
 ## Book 状态
 
-`docs/books/kalibr_cam_imu_from_equations_to_ceres` 里已经推了“如果 IMU time offset 也作为变量”的 Jacobian，但这不是当前实现状态。
+`docs/books/kalibr_cam_imu_from_equations_to_ceres` 里已经推了“如果 IMU time offset 也作为变量”的 Jacobian。这个方向现在已经在 `calibrated` IMU 模型里落地，但实现方式比书里的公式更工程化：offset Jacobian 先采用局部数值差分，其他参数仍走解析 Jacobian。
 
 关键语义是：
 
 - 公式层面可以把 IMU time offset 作为可选 design variable。
-- 当前实现层面，per-IMU time offset 是 residual 查询时间里的常量。
-- 第 13 章记录的多 IMU 新增主变量主要是非参考 IMU 的外参旋转和杠杆臂；per-IMU time offset 当时还不是 bundle 变量。
+- 当前实现层面，per-IMU time offset 已在 `calibrated` IMU 模型下作为 Ceres 变量接入。
+- 第 13 章记录的多 IMU 新增主变量主要是非参考 IMU 的外参旋转和杠杆臂；per-IMU time offset 是后续补进来的变量。
 
-因此读 book 时要区分“可推导的扩展模型”和“当前已经接进优化器的变量集合”。公式上有 Jacobian，不代表当前 Ceres problem 里已经加了对应 parameter block。
+因此读 book 时要区分“可推导的扩展模型”和“当前已经接进优化器的变量集合”。公式上推到的内容未必逐项采用同一种实现；这次先把变量接进 problem，并把 offset 方向的导数实现为局部数值差分。
 
-## 正确的下一版目标
+## 当前实现目标
 
-更完整的多 IMU 时间模型应该是：
+当前 Ceres 的多 IMU 时间模型是：
 
 ```text
 camera_time_shift_s: Ceres 变量
@@ -105,7 +113,15 @@ timeshift(cam0 -> imui) = camera_time_shift_s - imu_time_offsets_s[i]
 | 增大 support | residual 绑定更宽的控制点窗口，允许小范围跨 segment | parameter block 更多，代码更复杂 |
 | 迭代重建 problem | 优化一段后按新 offset 重建 residual/support | 不是“一气呵成”，调度复杂 |
 
-优先建议第一种：先用 gyro correlation 提供接近正确的初值，再给每个非参考 IMU offset 加强 prior 或 box bounds，使其只在几毫秒范围内修正。生产数据里当前最大问题是几十毫秒量级的 IMU 间 delay；correlation 已经能把它拉到约 `1ms` 级，bundle 变量更适合做小范围精修。
+当前实现采用第一种的 bounded refinement 变体：
+
+- problem build 时按 `sample.timestamp_s + initial_offset` 和 `imu_time_offset_bound_s` 生成 pose/gyro-bias/accel-bias segment buffer。
+- residual 运行时按当前 `sample.timestamp_s + imu_time_offsets_s[i]` 动态选择 buffer 内的 active segment。
+- offset 本身是 Ceres `1` 维 parameter block，并对 `initial_offset ± bound` 设置 box bound。
+- residual 对 offset 的 Jacobian 使用局部数值差分；对 extrinsic、pose control、bias control 仍沿用解析 Jacobian。
+- 为避免优化过程中越界，靠近 spline 边界、无法覆盖 `t + offset ± bound` 的 IMU sample 会在建图时跳过。
+
+生产数据里当前最大问题是几十毫秒量级的 IMU 间 delay；correlation 负责把初值拉到毫秒级附近，Ceres 变量负责在几毫秒窗口内精修。
 
 ## 验证方法
 
@@ -119,10 +135,19 @@ timeshift(cam0 -> imui) = camera_time_shift_s - imu_time_offsets_s[i]
 | 对单 IMU 对齐 | 组合后的 effective time shift 相对 4 次单 IMU 仍保持毫秒级 |
 | 平移 | 单独观察 `T_c_b` 是否改善；不要把 time offset 成功和 translation 成功混为一谈 |
 
+2026-06-21 的 smoke 验证使用 `2025_03_14_00_34_14`、4IMU、小样本 `max_frames=20`、每路 `max_imu_residuals=100`、`max_iterations=2`：
+
+| 口径 | offset 优化 | parameter_blocks | active_parameter_blocks | offsets |
+|---|---|---:|---:|---|
+| 默认 | enabled | `24154` | `24153` | `0; -0.0192207; -0.0981117; -0.1197944` |
+| `--fix-imu-time-offsets --dry-run` | disabled | `24151` | `24150` | 固定为 correlation 初值 |
+
+差值正好是 `N-1=3`，证明 imu1..imu3 的 time offset 作为独立 Ceres 变量进入了同一个 problem。YAML 顶层 `imu_time_offsets_s` 已写出优化后的值。
+
 相关实验记录见 `docs/experiment/20260620_4IMU时间偏移与结果可信度定位.md`。该实验已经证明固定 correction 能把 effective time shift 拉到约 `1ms`，但 reference IMU 的 `T_c_b` 平移仍需单独定位。
 
 ## 结论
 
-当前 Ceres 的多 IMU delay correction 是必要且合理的第一步，但它只是对齐 Kalibr `--imu-delay-by-correlation` 的固定 correction 语义。下一版如果要更符合直觉和完整模型，应该把 `imu_time_offsets_s[1..N-1]` 升级为 Ceres 变量，并且仍保持单个 Ceres problem 联合优化。
+当前 Ceres 的多 IMU delay correction 已经分成两层：gyro correlation 给初值，Ceres 在同一个 problem 里对非参考 IMU offset 做小窗口联合优化。这个实现比 Kalibr `--imu-delay-by-correlation` 更进一步，因为 Kalibr 的 non-reference IMU offset 仍是固定 correction。
 
-实现时必须处理 spline support、offset prior/bounds 和 YAML/compare 工具，否则很容易出现“变量加了，但 residual 查询时间和控制点集合不一致”的隐性错误。
+后续如果要扩大优化窗口或支持 scale/misalignment IMU 模型，仍必须继续处理 spline support、offset bounds 和扩展模型 residual 的 Jacobian，否则很容易出现“变量加了，但 residual 查询时间和控制点集合不一致”的隐性错误。

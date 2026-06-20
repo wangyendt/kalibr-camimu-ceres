@@ -251,6 +251,8 @@ void usage() {
          "[--no-estimate-imu-chain-lever-prior] "
          "[--imu-delay-correction auto|on|off] "
          "[--no-imu-delay-correction] "
+         "[--optimize-imu-time-offsets] [--fix-imu-time-offsets] "
+         "[--imu-time-offset-bound-s S] "
          "[--imu-chain-prior-max-lever-m M] "
          "[--estimate-camera-translation-prior] "
          "[--no-estimate-camera-translation-prior] "
@@ -325,6 +327,8 @@ void usage() {
          "--no-estimate-imu-chain-prior to disable the whole chain prior, "
          "--no-imu-delay-correction to keep all IMU residual timestamps "
          "uncorrected, "
+         "--fix-imu-time-offsets to keep delay correction fixed, "
+         "--imu-time-offset-bound-s S to bound the Ceres refinement window, "
          "--imu-chain-prior-max-offset-s S to bound time search, and "
          "--imu-chain-prior-stride N to downsample initialization samples.\n";
   std::cout
@@ -1125,6 +1129,13 @@ int main(int argc, char **argv) {
   options.fix_gravity = hasFlag(argc, argv, "--fix-gravity");
   options.imu_model = ceres_cam_imu::parseImuCalibrationModel(
       argValue(argc, argv, "--imu-model", "calibrated"));
+  options.imu_time_offset_bound_s =
+      doubleArg(argc, argv, "--imu-time-offset-bound-s",
+                options.imu_time_offset_bound_s);
+  if (options.imu_time_offset_bound_s < 0.0) {
+    std::cerr << "--imu-time-offset-bound-s must be non-negative\n";
+    return 2;
+  }
   options.fix_imu_intrinsics = hasFlag(argc, argv, "--fix-imu-intrinsics");
   options.estimate_gravity_length =
       hasFlag(argc, argv, "--estimate-gravity-length");
@@ -1537,6 +1548,30 @@ int main(int argc, char **argv) {
     std::cerr << "--imu-delay-correction must be auto, on, or off\n";
     return 2;
   }
+  const bool requested_imu_time_offset_optimization =
+      multi_imu && !hasFlag(argc, argv, "--fix-imu-time-offsets") &&
+      (enable_imu_delay_correction ||
+       hasFlag(argc, argv, "--optimize-imu-time-offsets"));
+  if (requested_imu_time_offset_optimization &&
+      options.imu_model != ceres_cam_imu::ImuCalibrationModel::kCalibrated) {
+    if (hasFlag(argc, argv, "--optimize-imu-time-offsets")) {
+      std::cerr << "--optimize-imu-time-offsets currently requires "
+                   "--imu-model calibrated\n";
+      return 2;
+    }
+    std::cerr << "warning: IMU time offset optimization is disabled for "
+                 "non-calibrated IMU models; fixed delay correction remains "
+                 "enabled\n";
+  }
+  options.optimize_imu_time_offsets =
+      requested_imu_time_offset_optimization &&
+      options.imu_model == ceres_cam_imu::ImuCalibrationModel::kCalibrated;
+  if (options.optimize_imu_time_offsets &&
+      options.imu_time_offset_bound_s <= 0.0) {
+    std::cerr << "--imu-time-offset-bound-s must be positive when IMU time "
+                 "offset optimization is enabled\n";
+    return 2;
+  }
   std::cout << "imu inputs: count=" << imus.size();
   for (std::size_t imu_index = 0; imu_index < imus.size(); ++imu_index) {
     std::cout << " " << imus[imu_index].label << "_samples="
@@ -1544,6 +1579,9 @@ int main(int argc, char **argv) {
   }
   std::cout << " delay_correction="
             << (enable_imu_delay_correction ? "enabled" : "disabled")
+            << " imu_time_offset_optimization="
+            << (options.optimize_imu_time_offsets ? "enabled" : "disabled")
+            << " imu_time_offset_bound_s=" << options.imu_time_offset_bound_s
             << "\n";
   (void)ceres_cam_imu::readAprilGridConfig(target_yaml);
 

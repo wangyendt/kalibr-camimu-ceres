@@ -62,6 +62,8 @@ struct CalibrationOptions {
   bool fix_bias_controls = false;
   bool fix_camera_extrinsic = false;
   bool fix_time_shift = false;
+  bool optimize_imu_time_offsets = false;
+  double imu_time_offset_bound_s = 0.005;
   bool fix_gravity = false;
   ImuCalibrationModel imu_model = ImuCalibrationModel::kCalibrated;
   bool fix_imu_intrinsics = false;

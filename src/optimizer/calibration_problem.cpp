@@ -469,6 +469,18 @@ ImuSample shiftedImuSample(const ImuSample &sample,
   return shifted;
 }
 
+bool shouldOptimizeImuTimeOffsetForIndex(const CalibrationOptions &options,
+                                         const std::size_t imu_index) {
+  return options.optimize_imu_time_offsets && imu_index > 0 &&
+         options.imu_model == ImuCalibrationModel::kCalibrated;
+}
+
+bool isValidTimeWindow(const UniformBSpline &spline, const double center_time_s,
+                       const double half_window_s) {
+  return spline.isValidTime(center_time_s - half_window_s) &&
+         spline.isValidTime(center_time_s + half_window_s);
+}
+
 void addImuParameterBlocksForIndex(const std::size_t imu_index,
                                    const CalibrationOptions &options,
                                    CalibrationState *state,
@@ -497,6 +509,20 @@ void addImuParameterBlocksForIndex(const std::size_t imu_index,
       problem->SetParameterBlockConstant(dataPtr(control));
     }
   }
+
+  if (shouldOptimizeImuTimeOffsetForIndex(options, imu_index)) {
+    if (options.imu_time_offset_bound_s <= 0.0) {
+      throw std::invalid_argument(
+          "IMU time offset optimization requires a positive bound");
+    }
+    double *time_offset = &state->imu_time_offsets_s.at(imu_index);
+    const double initial_offset = *time_offset;
+    problem->AddParameterBlock(time_offset, 1);
+    problem->SetParameterLowerBound(
+        time_offset, 0, initial_offset - options.imu_time_offset_bound_s);
+    problem->SetParameterUpperBound(
+        time_offset, 0, initial_offset + options.imu_time_offset_bound_s);
+  }
 }
 
 void addImuResidualBlocksForIndex(
@@ -511,6 +537,8 @@ void addImuResidualBlocksForIndex(
   std::vector<BiasControlBlock> &accel_bias_controls =
       accelBiasControlsFor(state, imu_index);
   const double imu_time_offset_s = imuTimeOffsetFor(*state, imu_index);
+  const bool optimize_imu_time_offset =
+      shouldOptimizeImuTimeOffsetForIndex(options, imu_index);
 
   int added_imu = 0;
   const int stride = std::max(1, options.imu_stride);
@@ -522,6 +550,95 @@ void addImuResidualBlocksForIndex(
     }
     const ImuSample sample = shiftedImuSample(imu.samples[i],
                                               imu_time_offset_s);
+    if (optimize_imu_time_offset) {
+      const double offset_bound_s = options.imu_time_offset_bound_s;
+      const double query_time_s = sample.timestamp_s;
+      if (!isValidTimeWindow(state->pose_spline, query_time_s,
+                             offset_bound_s) ||
+          !isValidTimeWindow(state->gyro_bias_spline, query_time_s,
+                             offset_bound_s) ||
+          !isValidTimeWindow(state->accel_bias_spline, query_time_s,
+                             offset_bound_s)) {
+        ++summary->skipped_imu_samples;
+        continue;
+      }
+
+      const PoseSegmentBuffer pose_buffer =
+          makePoseSegmentBuffer(state->pose_spline, query_time_s,
+                                offset_bound_s);
+      const PoseSegmentBuffer gyro_bias_buffer =
+          makePoseSegmentBuffer(state->gyro_bias_spline, query_time_s,
+                                offset_bound_s);
+      const PoseSegmentBuffer accel_bias_buffer =
+          makePoseSegmentBuffer(state->accel_bias_spline, query_time_s,
+                                offset_bound_s);
+      for (const SplineSegmentMeta6 &meta : pose_buffer.metas) {
+        markActiveSegment(meta, active_pose_segments);
+      }
+
+      std::unique_ptr<ceres::LossFunction> gyro_loss =
+          makeLoss(options.gyro_loss_type, options.gyro_loss_width);
+      ceres::CostFunction *gyro_cost = createGyroscopeTimeOffsetResidual(
+          imu.samples[i], imu.noise, pose_buffer.metas,
+          pose_buffer.local_coeff_start, gyro_bias_buffer.metas,
+          gyro_bias_buffer.local_coeff_start,
+          std::max(pose_buffer.buffer_start_s,
+                   gyro_bias_buffer.buffer_start_s),
+          std::min(pose_buffer.buffer_end_s, gyro_bias_buffer.buffer_end_s));
+      std::vector<double *> gyro_parameter_blocks;
+      gyro_parameter_blocks.reserve(
+          static_cast<std::size_t>(2 + pose_buffer.local_coeff_end -
+                                   pose_buffer.local_coeff_start +
+                                   gyro_bias_buffer.local_coeff_end -
+                                   gyro_bias_buffer.local_coeff_start));
+      gyro_parameter_blocks.push_back(dataPtr(imu_extrinsic));
+      gyro_parameter_blocks.push_back(&state->imu_time_offsets_s.at(imu_index));
+      for (int coeff = pose_buffer.local_coeff_start;
+           coeff < pose_buffer.local_coeff_end; ++coeff) {
+        gyro_parameter_blocks.push_back(dataPtr(state->pose_controls.at(coeff)));
+      }
+      for (int coeff = gyro_bias_buffer.local_coeff_start;
+           coeff < gyro_bias_buffer.local_coeff_end; ++coeff) {
+        gyro_parameter_blocks.push_back(dataPtr(gyro_bias_controls.at(coeff)));
+      }
+      problem->AddResidualBlock(gyro_cost, gyro_loss.release(),
+                                gyro_parameter_blocks);
+      ++summary->gyro_residuals;
+
+      std::unique_ptr<ceres::LossFunction> accel_loss =
+          makeLoss(options.accel_loss_type, options.accel_loss_width);
+      ceres::CostFunction *accel_cost = createAccelerometerTimeOffsetResidual(
+          imu.samples[i], imu.noise, pose_buffer.metas,
+          pose_buffer.local_coeff_start, accel_bias_buffer.metas,
+          accel_bias_buffer.local_coeff_start,
+          std::max(pose_buffer.buffer_start_s,
+                   accel_bias_buffer.buffer_start_s),
+          std::min(pose_buffer.buffer_end_s,
+                   accel_bias_buffer.buffer_end_s));
+      std::vector<double *> accel_parameter_blocks;
+      accel_parameter_blocks.reserve(
+          static_cast<std::size_t>(3 + pose_buffer.local_coeff_end -
+                                   pose_buffer.local_coeff_start +
+                                   accel_bias_buffer.local_coeff_end -
+                                   accel_bias_buffer.local_coeff_start));
+      accel_parameter_blocks.push_back(dataPtr(imu_extrinsic));
+      accel_parameter_blocks.push_back(dataPtr(state->gravity));
+      accel_parameter_blocks.push_back(&state->imu_time_offsets_s.at(imu_index));
+      for (int coeff = pose_buffer.local_coeff_start;
+           coeff < pose_buffer.local_coeff_end; ++coeff) {
+        accel_parameter_blocks.push_back(
+            dataPtr(state->pose_controls.at(coeff)));
+      }
+      for (int coeff = accel_bias_buffer.local_coeff_start;
+           coeff < accel_bias_buffer.local_coeff_end; ++coeff) {
+        accel_parameter_blocks.push_back(dataPtr(accel_bias_controls.at(coeff)));
+      }
+      problem->AddResidualBlock(accel_cost, accel_loss.release(),
+                                accel_parameter_blocks);
+      ++summary->accel_residuals;
+      ++added_imu;
+      continue;
+    }
     if (!state->pose_spline.isValidTime(sample.timestamp_s) ||
         !state->gyro_bias_spline.isValidTime(sample.timestamp_s) ||
         !state->accel_bias_spline.isValidTime(sample.timestamp_s)) {
