@@ -59,6 +59,45 @@
 | `--inspect-times` | 空 | 逗号分隔多个检查时间 | 与 `--inspect-window` 配合 |
 | `--inspect-window` | `0.02` | 检查时间窗口秒数 | 越大输出越多 |
 
+## 多 IMU、delay correction 与 time offset
+
+多 IMU 入口通过重复传 `--imu` 和 `--imu-data` 打开，第一路 IMU 是 reference IMU。当前默认不是多 stage：camera residual、每路 IMU gyro/accel residual、bias/pose prior、IMU chain extrinsic 和可选 per-IMU time offset 都在同一个 Ceres problem 里联合优化。
+
+| 参数 | 默认 | 背景 | 影响 |
+|---|---:|---|---|
+| `--imu-delay-correction auto|on|off` | `auto` | 多 IMU 时用 gyro correlation 估非参考 IMU 相对 IMU0 的 delay | `auto` 在多 IMU 默认启用；单 IMU 不启用 |
+| `--no-imu-delay-correction` | 关闭 | 禁用 IMU 间 delay correction | 所有 IMU residual 使用原始 timestamp；生产 4IMU 数据通常不应这么跑 |
+| `--fix-imu-time-offsets` | 关闭 | 保留 023e1e6 的固定 correction 语义 | correlation 估出的 `imu_time_offsets_s` 只作为常量，不进入 Ceres parameter block |
+| `--optimize-imu-time-offsets` | 隐式 | 显式要求优化非参考 IMU offset | 多 IMU + `calibrated` 模型下，delay correction enabled 时默认已经启用；非 `calibrated` 模型当前不支持 |
+| `--imu-time-offset-bound-s` | `0.005` | 每路非参考 IMU offset 的 box bound 半宽 | `imu_time_offsets_s[i]` 在 correlation 初值附近 `±S` 内优化；太大可能跨 spline support |
+| `--no-estimate-imu-chain-prior` | 关闭 | 禁用多 IMU chain prior | 会失去非参考 IMU rotation/delay 初值，通常只用于消融 |
+| `--imu-chain-prior-max-offset-s` | `0.2` | gyro correlation 的 delay 搜索窗口 | 要覆盖真实 IMU 间 delay；生产数据见过 20ms 到 126ms |
+| `--imu-chain-prior-stride` | `1` | chain prior 初始化下采样 | 大于 1 加速初始化，但可能影响 correlation 峰值 |
+| `--imu-chain-prior-min-samples` | `200` | chain prior 最少匹配样本 | 过少会拒绝估计 |
+| `--imu-chain-prior-min-excitation` | `1e-8` | rotation prior 最小激励阈值 | 动作太弱时会拒绝估计 |
+| `--no-imu-chain-prior-ceres-refine` | 关闭 | 跳过 IMU chain 小 Ceres refine | 只保留 correlation/closed-form 初值 |
+| `--imu-chain-prior-refine-iterations` | `50` | IMU chain 小 refine 迭代数 | 只影响 solve 前的 pair prior refine |
+| `--estimate-imu-chain-lever-prior` | 关闭 | 从加速度差估非参考 IMU lever arm 初值 | 实验功能；默认只估 rotation 和 delay |
+| `--no-estimate-imu-chain-lever-prior` | 关闭 | 显式关闭 lever prior | 与上项配合 |
+| `--imu-chain-prior-min-lever-excitation` | `1e-8` | lever prior 最小激励阈值 | 激励不足时不估 lever |
+| `--imu-chain-prior-max-lever-m` | `1.0` | lever prior 最大模长 | 过滤异常 lever 解 |
+
+时间变量语义：
+
+| 变量 | 是否优化 | 说明 |
+|---|---|---|
+| `camera_time_shift_s` | 是 | cam0 到 reference IMU 的 time shift；单 IMU 和多 IMU 都存在 |
+| `imu_time_offsets_s[0]` | 否 | 固定 `0`，定义 reference IMU 时间轴 |
+| `imu_time_offsets_s[1..N-1]` | 默认是 | 多 IMU + `calibrated` 模型下作为 Ceres 变量；初值来自 gyro correlation |
+
+组合每路 camera-to-IMU effective time shift 时用：
+
+```text
+timeshift(cam0 -> imui) = camera_time_shift_s - imu_time_offsets_s[i]
+```
+
+实测状态：2026-06-21 已在 `2025_03_14_00_34_14` 做 4IMU smoke 验证，限制 `--max-frames 20 --max-imu-residuals 100 --max-iterations 2`。默认 offset 优化时 `parameter_blocks=24154`，加 `--fix-imu-time-offsets --dry-run` 后 `parameter_blocks=24151`，差值正好是 `N-1=3`；输出 YAML 顶层 `imu_time_offsets_s` 写出了优化后的 `0; -0.0192207; -0.0981117; -0.1197944`。这证明变量已经进了同一个 Ceres problem，并完成了小样本求解验证；完整 `1imu/2imu/4imu` 全量回归还需要单独补跑。
+
 ## 固定变量与模型
 
 | 参数 | 默认 | 背景 | 影响 |
@@ -160,5 +199,7 @@
 
 - 主求解器不依赖 Kalibr result，但 pkl/bag/euroc 转换阶段仍可能依赖 Kalibr Docker/ROS。
 - 多相机支持 shared camchain + 多 `--corners` 的非 staged joint 优化；staged multi-camera 还未实现。
+- 多 IMU per-IMU time offset 优化当前只接入 `calibrated` IMU 模型；`scale-misalignment` 和 `scale-misalignment-size-effect` 仍使用固定 delay correction。
+- 2026-06-21 的 per-IMU time offset 变量化已通过 4IMU smoke 实测，但尚未完成全量生产数据回归。
 - 相机内参目前固定，不参与 Ceres 优化。
 - 速度结论来自当前机器和当前 Docker/native 组合，跨平台评估必须重新跑实验。
