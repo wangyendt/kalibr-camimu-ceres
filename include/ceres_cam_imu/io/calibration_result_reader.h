@@ -24,6 +24,7 @@ struct CalibrationResultFile {
   Mat4 T_c_b = Mat4::Identity();
   Mat4 T_b_c = Mat4::Identity();
   double time_shift_s = 0.0;
+  std::vector<double> imu_time_offsets_s;
   Vec3 gravity = Vec3::Zero();
   KalibrResidualStats residuals;
   std::vector<Mat4> camera_T_c_b;

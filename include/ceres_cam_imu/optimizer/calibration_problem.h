@@ -118,6 +118,7 @@ struct CalibrationState {
   std::vector<TimeShiftBlock> camera_time_shifts;
   std::vector<ImuExtrinsicBlock> imu_extrinsics;
   std::vector<ImuIntrinsicBlocks> imu_intrinsics_by_imu;
+  std::vector<double> imu_time_offsets_s;
   std::vector<std::vector<BiasControlBlock>> gyro_bias_controls_by_imu;
   std::vector<std::vector<BiasControlBlock>> accel_bias_controls_by_imu;
 };

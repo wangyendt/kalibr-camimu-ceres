@@ -221,6 +221,11 @@ CalibrationResultFile readCalibrationResultYaml(
         } else if (startsWith(trimmed, "r_i_b:") && imu_chain_index >= 0) {
           result.imu_extrinsics[static_cast<std::size_t>(imu_chain_index)]
               .r_i_b = parseVector3AfterColon(trimmed);
+        } else if (startsWith(trimmed, "time_offset_s:") &&
+                   imu_chain_index >= 0) {
+          ensureVectorSize(&result.imu_time_offsets_s, imu_chain_index, 0.0);
+          result.imu_time_offsets_s[static_cast<std::size_t>(imu_chain_index)] =
+              parseScalarAfterColon(trimmed);
         }
         continue;
       }
@@ -238,6 +243,11 @@ CalibrationResultFile readCalibrationResultYaml(
         (line.empty() || line[0] != ' ')) {
       result.time_shift_s = parseScalarAfterColon(trimmed);
       have_time_shift = true;
+      continue;
+    }
+    if (startsWith(trimmed, "imu_time_offsets_s:") &&
+        (line.empty() || line[0] != ' ')) {
+      result.imu_time_offsets_s = parseDoubles(valueAfterColon(trimmed));
       continue;
     }
     if (startsWith(trimmed, "gravity:")) {

@@ -9,7 +9,7 @@
 namespace ceres_cam_imu {
 
 struct ImuChainInitializerOptions {
-  double max_time_offset_search_s = 0.0;
+  double max_time_offset_search_s = 0.2;
   int sample_stride = 1;
   int min_samples = 200;
   double min_rotation_excitation = 1e-8;

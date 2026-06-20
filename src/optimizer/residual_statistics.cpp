@@ -165,6 +165,21 @@ const std::vector<BiasControlBlock> &accelBiasControlsFor(
   return state.accel_bias_controls_by_imu.at(imu_index);
 }
 
+double imuTimeOffsetFor(const CalibrationState &state,
+                        const std::size_t imu_index) {
+  if (imu_index < state.imu_time_offsets_s.size()) {
+    return state.imu_time_offsets_s[imu_index];
+  }
+  return 0.0;
+}
+
+ImuSample shiftedImuSample(const ImuSample &sample,
+                           const double time_offset_s) {
+  ImuSample shifted = sample;
+  shifted.timestamp_s += time_offset_s;
+  return shifted;
+}
+
 void appendImuResidualStatistics(
     const std::size_t imu_index, const ImuObservationDataset &imu,
     const CalibrationOptions &options, const CalibrationState &state,
@@ -186,6 +201,7 @@ void appendImuResidualStatistics(
       1.0 / std::max(1e-12, imu.noise.gyroDiscreteSigma());
   const double accel_scale =
       1.0 / std::max(1e-12, imu.noise.accelDiscreteSigma());
+  const double imu_time_offset_s = imuTimeOffsetFor(state, imu_index);
 
   int added_imu = 0;
   const int stride = std::max(1, options.imu_stride);
@@ -195,7 +211,8 @@ void appendImuResidualStatistics(
         added_imu >= options.max_imu_residuals) {
       break;
     }
-    const ImuSample &sample = imu.samples[i];
+    const ImuSample sample = shiftedImuSample(imu.samples[i],
+                                              imu_time_offset_s);
     if (!state.pose_spline.isValidTime(sample.timestamp_s) ||
         !state.gyro_bias_spline.isValidTime(sample.timestamp_s) ||
         !state.accel_bias_spline.isValidTime(sample.timestamp_s)) {

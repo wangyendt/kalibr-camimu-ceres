@@ -417,6 +417,9 @@ void ensureMultiImuStateSize(CalibrationState *state,
       state->accel_bias_controls_by_imu[0] = state->accel_bias_controls;
     }
   }
+  if (state->imu_time_offsets_s.size() < imu_count) {
+    state->imu_time_offsets_s.resize(imu_count, 0.0);
+  }
 }
 
 ImuExtrinsicBlock &imuExtrinsicFor(CalibrationState *state,
@@ -449,6 +452,21 @@ std::vector<BiasControlBlock> &accelBiasControlsFor(
     return state->accel_bias_controls;
   }
   return state->accel_bias_controls_by_imu.at(imu_index);
+}
+
+double imuTimeOffsetFor(const CalibrationState &state,
+                        const std::size_t imu_index) {
+  if (imu_index < state.imu_time_offsets_s.size()) {
+    return state.imu_time_offsets_s[imu_index];
+  }
+  return 0.0;
+}
+
+ImuSample shiftedImuSample(const ImuSample &sample,
+                           const double time_offset_s) {
+  ImuSample shifted = sample;
+  shifted.timestamp_s += time_offset_s;
+  return shifted;
 }
 
 void addImuParameterBlocksForIndex(const std::size_t imu_index,
@@ -492,6 +510,7 @@ void addImuResidualBlocksForIndex(
       gyroBiasControlsFor(state, imu_index);
   std::vector<BiasControlBlock> &accel_bias_controls =
       accelBiasControlsFor(state, imu_index);
+  const double imu_time_offset_s = imuTimeOffsetFor(*state, imu_index);
 
   int added_imu = 0;
   const int stride = std::max(1, options.imu_stride);
@@ -501,7 +520,8 @@ void addImuResidualBlocksForIndex(
         added_imu >= options.max_imu_residuals) {
       break;
     }
-    const ImuSample &sample = imu.samples[i];
+    const ImuSample sample = shiftedImuSample(imu.samples[i],
+                                              imu_time_offset_s);
     if (!state->pose_spline.isValidTime(sample.timestamp_s) ||
         !state->gyro_bias_spline.isValidTime(sample.timestamp_s) ||
         !state->accel_bias_spline.isValidTime(sample.timestamp_s)) {

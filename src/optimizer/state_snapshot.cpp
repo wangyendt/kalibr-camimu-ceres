@@ -19,6 +19,7 @@ snapshotCalibrationState(const CalibrationState &state) {
   snapshot.camera_time_shifts = state.camera_time_shifts;
   snapshot.imu_extrinsics = state.imu_extrinsics;
   snapshot.imu_intrinsics_by_imu = state.imu_intrinsics_by_imu;
+  snapshot.imu_time_offsets_s = state.imu_time_offsets_s;
   snapshot.gyro_bias_controls_by_imu = state.gyro_bias_controls_by_imu;
   snapshot.accel_bias_controls_by_imu = state.accel_bias_controls_by_imu;
   return snapshot;
@@ -36,6 +37,8 @@ bool isCompatibleStateSnapshot(const CalibrationStateSnapshot &snapshot,
          snapshot.imu_extrinsics.size() == state.imu_extrinsics.size() &&
          snapshot.imu_intrinsics_by_imu.size() ==
              state.imu_intrinsics_by_imu.size() &&
+         snapshot.imu_time_offsets_s.size() ==
+             state.imu_time_offsets_s.size() &&
          snapshot.gyro_bias_controls_by_imu.size() ==
              state.gyro_bias_controls_by_imu.size() &&
          snapshot.accel_bias_controls_by_imu.size() ==
@@ -63,6 +66,7 @@ void restoreCalibrationState(const CalibrationStateSnapshot &snapshot,
   state->camera_time_shifts = snapshot.camera_time_shifts;
   state->imu_extrinsics = snapshot.imu_extrinsics;
   state->imu_intrinsics_by_imu = snapshot.imu_intrinsics_by_imu;
+  state->imu_time_offsets_s = snapshot.imu_time_offsets_s;
   state->gyro_bias_controls_by_imu = snapshot.gyro_bias_controls_by_imu;
   state->accel_bias_controls_by_imu = snapshot.accel_bias_controls_by_imu;
 }

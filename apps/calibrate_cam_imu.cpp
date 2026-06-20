@@ -249,6 +249,8 @@ void usage() {
          "[--no-orientation-prior-ceres-refine] "
          "[--estimate-imu-chain-lever-prior] "
          "[--no-estimate-imu-chain-lever-prior] "
+         "[--imu-delay-correction auto|on|off] "
+         "[--no-imu-delay-correction] "
          "[--imu-chain-prior-max-lever-m M] "
          "[--estimate-camera-translation-prior] "
          "[--no-estimate-camera-translation-prior] "
@@ -315,10 +317,14 @@ void usage() {
          "is the fixed reference IMU by default.\n";
   std::cout
       << "  Multi-IMU cold starts estimate non-reference IMU rotations from "
-         "gyro correlation by default. Experimental non-reference lever-arm "
+         "gyro correlation by default and apply the same gyro-correlation "
+         "time offsets as IMU delay correction. Experimental non-reference "
+         "lever-arm "
          "initialization from accelerometer differences is available through "
          "--estimate-imu-chain-lever-prior. Use "
          "--no-estimate-imu-chain-prior to disable the whole chain prior, "
+         "--no-imu-delay-correction to keep all IMU residual timestamps "
+         "uncorrected, "
          "--imu-chain-prior-max-offset-s S to bound time search, and "
          "--imu-chain-prior-stride N to downsample initialization samples.\n";
   std::cout
@@ -414,6 +420,22 @@ void printBuildSummary(const std::string &prefix,
             << " kalibr_style_error_terms=" << build.kalibr_style_error_terms
             << " skipped_camera_frames=" << build.skipped_camera_frames
             << " skipped_imu_samples=" << build.skipped_imu_samples << "\n";
+}
+
+void printSolverTiming(const std::string &prefix,
+                       const ceres::Solver::Summary &summary) {
+  const std::streamsize old_precision = std::cout.precision();
+  std::cout << std::setprecision(17) << prefix
+            << " total_time_s=" << summary.total_time_in_seconds
+            << " preprocessor_time_s="
+            << summary.preprocessor_time_in_seconds
+            << " minimizer_time_s=" << summary.minimizer_time_in_seconds
+            << " postprocessor_time_s="
+            << summary.postprocessor_time_in_seconds
+            << " num_successful_steps=" << summary.num_successful_steps
+            << " num_unsuccessful_steps=" << summary.num_unsuccessful_steps
+            << "\n";
+  std::cout.precision(old_precision);
 }
 
 void setLowerTriangularBlock(
@@ -556,6 +578,30 @@ void initializeImuExtrinsicsFromKalibr(
             << imu_count << "\n";
 }
 
+void initializeImuTimeOffsets(
+    const std::vector<double> &time_offsets_s, const std::size_t imu_count,
+    const std::string &source, ceres_cam_imu::CalibrationState *state) {
+  if (!state || imu_count == 0 || time_offsets_s.empty()) {
+    return;
+  }
+  state->imu_time_offsets_s.assign(imu_count, 0.0);
+  const std::size_t count = std::min(imu_count, time_offsets_s.size());
+  for (std::size_t imu_index = 0; imu_index < count; ++imu_index) {
+    state->imu_time_offsets_s[imu_index] = time_offsets_s[imu_index];
+  }
+  state->imu_time_offsets_s[0] = 0.0;
+  const std::streamsize old_precision = std::cout.precision();
+  std::cout << std::setprecision(17)
+            << "initialized IMU time offsets from " << source << ":";
+  for (std::size_t imu_index = 0; imu_index < state->imu_time_offsets_s.size();
+       ++imu_index) {
+    std::cout << " imu" << imu_index << "="
+              << state->imu_time_offsets_s[imu_index];
+  }
+  std::cout << "\n";
+  std::cout.precision(old_precision);
+}
+
 void initializeImuIntrinsicsFromResult(
     const ceres_cam_imu::CalibrationResultFile &result,
     ceres_cam_imu::CalibrationState *state) {
@@ -621,6 +667,19 @@ bool printFinalState(const ceres_cam_imu::CalibrationState &state,
       ceres_cam_imu::pose6ToMatrix(state.T_c_b);
   std::cout << "T_c_b:\n" << final_T_c_b << "\n";
   std::cout << "time_shift_s: " << state.camera_time_shift_s.value << "\n";
+  if (state.imu_time_offsets_s.size() > 1) {
+    const std::streamsize old_precision = std::cout.precision();
+    std::cout << std::setprecision(17);
+    for (std::size_t imu_index = 0; imu_index < state.imu_time_offsets_s.size();
+         ++imu_index) {
+      const double offset_s = state.imu_time_offsets_s[imu_index];
+      std::cout << "imu_time_offset_state imu=" << imu_index
+                << " time_offset_s=" << offset_s
+                << " camera0_effective_time_shift_s="
+                << (state.camera_time_shift_s.value - offset_s) << "\n";
+    }
+    std::cout.precision(old_precision);
+  }
   std::cout << "gravity: " << state.gravity.values[0] << " "
             << state.gravity.values[1] << " " << state.gravity.values[2]
             << "\n";
@@ -1459,12 +1518,33 @@ int main(int argc, char **argv) {
   const ceres_cam_imu::ImuNoise &imu_noise = imus.front().noise;
   const std::vector<ceres_cam_imu::ImuSample> &imu_samples =
       imus.front().samples;
+  const std::string imu_delay_correction_arg =
+      argValue(argc, argv, "--imu-delay-correction", "auto");
+  bool enable_imu_delay_correction =
+      multi_imu && !hasFlag(argc, argv, "--no-imu-delay-correction");
+  if (imu_delay_correction_arg == "off" ||
+      imu_delay_correction_arg == "false" ||
+      imu_delay_correction_arg == "0" || imu_delay_correction_arg == "no") {
+    enable_imu_delay_correction = false;
+  } else if (imu_delay_correction_arg == "on" ||
+             imu_delay_correction_arg == "true" ||
+             imu_delay_correction_arg == "1" ||
+             imu_delay_correction_arg == "yes" ||
+             imu_delay_correction_arg == "auto") {
+    enable_imu_delay_correction =
+        enable_imu_delay_correction && imu_delay_correction_arg != "off";
+  } else {
+    std::cerr << "--imu-delay-correction must be auto, on, or off\n";
+    return 2;
+  }
   std::cout << "imu inputs: count=" << imus.size();
   for (std::size_t imu_index = 0; imu_index < imus.size(); ++imu_index) {
     std::cout << " " << imus[imu_index].label << "_samples="
               << imus[imu_index].samples.size();
   }
-  std::cout << "\n";
+  std::cout << " delay_correction="
+            << (enable_imu_delay_correction ? "enabled" : "disabled")
+            << "\n";
   (void)ceres_cam_imu::readAprilGridConfig(target_yaml);
 
   const std::string corner_poses_csv = argValue(argc, argv, "--corner-poses");
@@ -1942,11 +2022,19 @@ int main(int argc, char **argv) {
   }
   if (init_from_result) {
     initializeImuIntrinsicsFromResult(init_result, &state);
+    if (enable_imu_delay_correction) {
+      initializeImuTimeOffsets(init_result.imu_time_offsets_s, imus.size(),
+                               "Ceres result", &state);
+    }
   }
   if (init_from_kalibr) {
     initializeImuIntrinsicsFromKalibr(kalibr, &state);
     if (multi_imu) {
       initializeImuExtrinsicsFromKalibr(kalibr, imus.size(), &state);
+      if (enable_imu_delay_correction) {
+        initializeImuTimeOffsets(kalibr.imu_time_offset_s, imus.size(),
+                                 "Kalibr result", &state);
+      }
     }
   }
   if (multi_imu && estimate_imu_chain_prior && !init_from_kalibr) {
@@ -1965,18 +2053,30 @@ int main(int argc, char **argv) {
         if (imu_result.imu_index >= state.imu_extrinsics.size()) {
           continue;
         }
-        if (init_from_result &&
-            imu_result.imu_index < result_imu_count) {
-          continue;
+        const bool keep_result_extrinsic =
+            init_from_result && imu_result.imu_index < result_imu_count;
+        if (!keep_result_extrinsic) {
+          state.imu_extrinsics[imu_result.imu_index] =
+              ceres_cam_imu::imuExtrinsicFromRotationAndLever(
+                  imu_result.R_i_b, imu_result.r_b);
         }
-        state.imu_extrinsics[imu_result.imu_index] =
-            ceres_cam_imu::imuExtrinsicFromRotationAndLever(
-                imu_result.R_i_b, imu_result.r_b);
+        if (enable_imu_delay_correction) {
+          if (state.imu_time_offsets_s.size() < imus.size()) {
+            state.imu_time_offsets_s.resize(imus.size(), 0.0);
+          }
+          if (imu_result.imu_index >= init_result.imu_time_offsets_s.size()) {
+            state.imu_time_offsets_s[imu_result.imu_index] =
+                imu_result.time_offset_s;
+          }
+          state.imu_time_offsets_s[0] = 0.0;
+        }
         const std::streamsize old_precision = std::cout.precision();
         std::cout << std::setprecision(17)
                   << "estimated IMU chain prior: imu="
                   << imu_result.imu_index
                   << " time_offset_s=" << imu_result.time_offset_s
+                  << " delay_correction_applied="
+                  << (enable_imu_delay_correction ? 1 : 0)
                   << " discrete_shift_samples="
                   << imu_result.discrete_shift_samples
                   << " sample_dt_s=" << imu_result.sample_dt_s
@@ -2133,6 +2233,8 @@ int main(int argc, char **argv) {
       std::cout.precision(old_precision);
       std::cout << "stage complete [" << stage_result.name
                 << "]: " << stage_result.solver.BriefReport() << "\n";
+      printSolverTiming("stage timing [" + stage_result.name + "]: ",
+                        stage_result.solver);
       if (!stage_result.solver.IsSolutionUsable() && stop_on_stage_failure) {
         std::cerr << "stage failure stopped calibration: " << stage_result.name
                   << "\n";
@@ -2204,6 +2306,7 @@ int main(int argc, char **argv) {
   const ceres::Solver::Summary summary =
       ceres_cam_imu::solveCalibrationProblem(options, &state, &problem);
   std::cout << summary.BriefReport() << "\n";
+  printSolverTiming("solver timing: ", summary);
   // The first camera always optimizes the scalar state.T_c_b /
   // camera_time_shift_s blocks (single-camera build path), even in multi-IMU
   // runs. The camera_extrinsics[0] / camera_time_shifts[0] vector slots are
@@ -2239,11 +2342,18 @@ int main(int argc, char **argv) {
       const ceres_cam_imu::ImuExtrinsicBlock &imu_extrinsic =
           imu_index == 0 ? state.imu_extrinsic
                          : state.imu_extrinsics[imu_index];
+      const double imu_time_offset_s =
+          imu_index < state.imu_time_offsets_s.size()
+              ? state.imu_time_offsets_s[imu_index]
+              : 0.0;
       std::cout << "imu_chain_state imu=" << imu_index
                 << " r_b_m=" << imu_extrinsic.values[0] << " "
                 << imu_extrinsic.values[1] << " " << imu_extrinsic.values[2]
                 << " r_i_b=" << imu_extrinsic.values[3] << " "
                 << imu_extrinsic.values[4] << " " << imu_extrinsic.values[5]
+                << " time_offset_s=" << imu_time_offset_s
+                << " camera0_effective_time_shift_s="
+                << (state.camera_time_shift_s.value - imu_time_offset_s)
                 << "\n";
     }
   }

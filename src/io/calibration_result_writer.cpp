@@ -73,6 +73,17 @@ void writeStdArray(std::ostream& os, const std::array<double, N>& value) {
   os << "]";
 }
 
+void writeDoubleVector(std::ostream& os, const std::vector<double>& value) {
+  os << "[";
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    if (i != 0) {
+      os << ", ";
+    }
+    os << value[i];
+  }
+  os << "]";
+}
+
 template <typename Spline>
 void writeSplineMetadata(std::ostream& os, const Spline& spline,
                          const std::string& indent) {
@@ -141,6 +152,11 @@ void writeCalibrationResultYaml(
   writeMatrix4(output, T_b_c);
   output << "\n";
   output << "time_shift_s: " << state.camera_time_shift_s.value << "\n";
+  if (!state.imu_time_offsets_s.empty()) {
+    output << "imu_time_offsets_s: ";
+    writeDoubleVector(output, state.imu_time_offsets_s);
+    output << "\n";
+  }
   output << "gravity: ";
   writeVector3(output, gravity);
   output << "\n";
@@ -197,6 +213,13 @@ void writeCalibrationResultYaml(
                                 imu_extrinsic.values[4],
                                 imu_extrinsic.values[5]));
       output << "\n";
+      const double imu_time_offset =
+          imu_index < state.imu_time_offsets_s.size()
+              ? state.imu_time_offsets_s[imu_index]
+              : 0.0;
+      output << "    time_offset_s: " << imu_time_offset << "\n";
+      output << "    camera0_effective_time_shift_s: "
+             << (state.camera_time_shift_s.value - imu_time_offset) << "\n";
       output << "    accel_M: ";
       writeMatrix3(output, lowerTriangularMatrix(imu_intrinsics.accel_M.data()));
       output << "\n";
