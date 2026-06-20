@@ -13,9 +13,13 @@ import sys
 import time
 
 
-KALIBR_IMAGE = "wang121ye/kalibr-camera-calibration:20.04"
+KALIBR_AMD64_IMAGE = "kalibr-camera-calibration:20.04-amd64"
+KALIBR_ARM64_IMAGE = "kalibr-camera-calibration:20.04-arm64"
 CERES_IMAGE = "kalibr-camimu-ceres-solver:20.04"
 KALIBR_BIN = "/catkin_ws/devel/lib/kalibr/kalibr_calibrate_imu_camera"
+KALIBR_DOCKER_REPO = pathlib.Path(
+    "/Users/wayne/Documents/work/code/project/ffalcon/kalibr-docker"
+)
 
 BENCHMARK_ROOT = pathlib.Path(
     "/Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data"
@@ -69,6 +73,18 @@ def require_file(path: pathlib.Path, label: str) -> pathlib.Path:
     return path
 
 
+def short_git_revision(path: pathlib.Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--short=12", "HEAD"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
 def docker_image_exists(image: str) -> bool:
     result = subprocess.run(
         ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
@@ -81,6 +97,18 @@ def docker_image_exists(image: str) -> bool:
     return image in {line.strip() for line in result.stdout.splitlines()}
 
 
+def docker_image_id(image: str) -> str:
+    result = subprocess.run(
+        ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
 def pull_image(image: str, print_only: bool = False) -> None:
     command = ["docker", "pull", image]
     print(quote_command(command), flush=True)
@@ -88,9 +116,68 @@ def pull_image(image: str, print_only: bool = False) -> None:
         subprocess.check_call(command)
 
 
+def kalibr_variant_configs(args):
+    platforms = args.kalibr_platform or ["linux/amd64", "linux/arm64"]
+    variants = []
+    seen = set()
+    for platform in platforms:
+        if platform in seen:
+            continue
+        seen.add(platform)
+        if platform == "linux/amd64":
+            variants.append({
+                "label": "amd64",
+                "platform": platform,
+                "image": args.kalibr_amd64_image,
+            })
+        elif platform == "linux/arm64":
+            variants.append({
+                "label": "arm64",
+                "platform": platform,
+                "image": args.kalibr_arm64_image,
+            })
+        else:
+            raise ValueError(f"unsupported Kalibr platform: {platform}")
+    return variants
+
+
+def select_kalibr_run(kalibr_runs, preferred_label: str):
+    for run in kalibr_runs:
+        if run["variant"]["label"] == preferred_label and run["result"]:
+            return run
+    for run in kalibr_runs:
+        if run["result"]:
+            return run
+    return None
+
+
+def run_metadata(args):
+    metadata = {
+        "ceres_mode": args.ceres_mode,
+        "ceres_platform": args.ceres_platform if args.ceres_mode == "docker" else "native",
+        "ceres_repo_commit": short_git_revision(repo_dir()),
+        "kalibr_docker_repo": str(args.kalibr_docker_repo),
+        "kalibr_docker_repo_commit": short_git_revision(args.kalibr_docker_repo),
+    }
+    if args.ceres_mode == "docker":
+        metadata["ceres_image"] = args.ceres_image
+        metadata["ceres_image_id"] = docker_image_id(args.ceres_image)
+    else:
+        metadata["ceres_binary"] = str(args.ceres_bin)
+    return metadata
+
+
 def ensure_images(args) -> None:
     if args.pull_kalibr:
-        pull_image(args.kalibr_image, args.print_only)
+        for variant in args.kalibr_variants:
+            pull_image(variant["image"], args.print_only)
+    if not args.print_only:
+        for variant in args.kalibr_variants:
+            if not docker_image_exists(variant["image"]):
+                raise RuntimeError(
+                    f"Kalibr Docker image not found for {variant['label']}: "
+                    f"{variant['image']}. Build it from kalibr-docker first."
+                )
     if (
         args.ceres_mode == "docker"
         and not args.print_only
@@ -154,7 +241,7 @@ def container_copy_script(names):
 
 
 def kalibr_corner_command(args, dataset: pathlib.Path, run_dir: pathlib.Path,
-                          imu_data_names):
+                          imu_data_names, variant):
     required = [
         "cam0_640x400_corners.pkl",
         "0_save_timestamp.txt",
@@ -204,14 +291,14 @@ def kalibr_corner_command(args, dataset: pathlib.Path, run_dir: pathlib.Path,
         "run",
         "--rm",
         "--platform",
-        args.platform,
+        variant["platform"],
         "-v",
         f"{dataset}:/data:ro",
         "-v",
         f"{run_dir}:/out",
         "-w",
         "/out",
-        args.kalibr_image,
+        variant["image"],
         "/bin/bash",
         "-lc",
         script,
@@ -239,7 +326,7 @@ def ceres_corner_command(args, dataset: pathlib.Path, run_dir: pathlib.Path,
             "run",
             "--rm",
             "--platform",
-            args.platform,
+            args.ceres_platform,
             "-v",
             f"{dataset}:/data:ro",
             "-v",
@@ -331,7 +418,8 @@ def ceres_corner_command(args, dataset: pathlib.Path, run_dir: pathlib.Path,
 
 def kalibr_bag_command(args, bag: pathlib.Path, cams: pathlib.Path,
                        imu: pathlib.Path, target: pathlib.Path,
-                       run_dir: pathlib.Path, imu_model="scale-misalignment"):
+                       run_dir: pathlib.Path, variant,
+                       imu_model="scale-misalignment"):
     if not args.print_only:
         for path, label in [(bag, "bag"), (cams, "camchain"), (imu, "imu yaml"),
                             (target, "target")]:
@@ -388,7 +476,7 @@ def kalibr_bag_command(args, bag: pathlib.Path, cams: pathlib.Path,
         "run",
         "--rm",
         "--platform",
-        args.platform,
+        variant["platform"],
         "-v",
         f"{bag.parent}:/bag:ro",
         "-v",
@@ -401,7 +489,7 @@ def kalibr_bag_command(args, bag: pathlib.Path, cams: pathlib.Path,
         f"{run_dir}:/out",
         "-w",
         "/out",
-        args.kalibr_image,
+        variant["image"],
         "/bin/bash",
         "-lc",
         script,
@@ -421,6 +509,10 @@ def prepare_tum_command(args, source_type: str, out_dir: pathlib.Path,
         str(tum_root / "dataset-calib-imu2_512_16/dso/imu_config.yaml"),
         "--target",
         str(tum_root / "april_6x6_80x80cm.yaml"),
+        "--image",
+        args.kalibr_prepare_image,
+        "--platform",
+        args.kalibr_prepare_platform,
         "--out-dir",
         str(out_dir),
     ]
@@ -450,7 +542,7 @@ def ceres_tum_command(args, input_dir: pathlib.Path, run_dir: pathlib.Path,
             "run",
             "--rm",
             "--platform",
-            args.platform,
+            args.ceres_platform,
             "-v",
             f"{input_dir}:/input:ro",
             "-v",
@@ -659,7 +751,7 @@ def compare_command(args, kalibr_result: pathlib.Path,
         "run",
         "--rm",
         "--platform",
-        args.platform,
+        args.ceres_platform,
         "-v",
         f"{kalibr_result.parent}:/kalibr:ro",
         "-v",
@@ -695,10 +787,11 @@ def summarize_yaml(path: pathlib.Path):
     return row
 
 
-def run_compare(args, row, run_dir, kalibr_result, ceres_result):
+def run_compare(args, row, run_dir, kalibr_result, ceres_result,
+                compare_label="compare"):
     if not kalibr_result or not ceres_result.is_file():
         return row
-    compare_dir = run_dir / "compare"
+    compare_dir = run_dir / compare_label
     command = compare_command(args, kalibr_result, ceres_result, compare_dir)
     code, elapsed, text = run_logged(command, compare_dir, "compare", args.print_only)
     row["compare_return_code"] = str(code)
@@ -711,47 +804,82 @@ def run_compare(args, row, run_dir, kalibr_result, ceres_result):
 def run_benchmark_case(args, name, dataset: pathlib.Path, out_root: pathlib.Path,
                        imu_data_names, label: str):
     case_dir = out_root / name / label
-    kalibr_dir = case_dir / "kalibr"
     ceres_dir = case_dir / "ceres"
-    row = {
+    base_row = {
         "case": name,
         "label": label,
         "dataset": str(dataset),
         "imu_count": str(len(imu_data_names)),
         "imu_data": ",".join(imu_data_names),
     }
-    print(f"[{name}/{label}] Kalibr", flush=True)
-    k_cmd = kalibr_corner_command(args, dataset, kalibr_dir, imu_data_names)
-    k_code, k_elapsed, k_log = run_logged(k_cmd, kalibr_dir, "kalibr", args.print_only)
-    kalibr_result = first_result_txt(kalibr_dir)
-    row.update(
-        {
+    base_row.update(args.metadata)
+
+    kalibr_runs = []
+    for variant in args.kalibr_variants:
+        kalibr_dir = case_dir / f"kalibr_{variant['label']}"
+        print(f"[{name}/{label}] Kalibr {variant['label']}", flush=True)
+        k_cmd = kalibr_corner_command(
+            args, dataset, kalibr_dir, imu_data_names, variant
+        )
+        k_code, k_elapsed, k_log = run_logged(
+            k_cmd, kalibr_dir, "kalibr", args.print_only
+        )
+        kalibr_result = first_result_txt(kalibr_dir)
+        kalibr_row = {
+            "kalibr_variant": variant["label"],
+            "kalibr_platform": variant["platform"],
+            "kalibr_image": variant["image"],
+            "kalibr_image_id": variant.get("image_id", ""),
             "kalibr_return_code": str(k_code),
             "kalibr_elapsed_s": f"{k_elapsed:.6f}",
             "kalibr_log": str(kalibr_dir / "kalibr.clean.log"),
             "kalibr_result": str(kalibr_result or ""),
         }
-    )
-    row.update(parse_kalibr_log(k_log))
-    if kalibr_result:
-        row.update(parse_kalibr_result(kalibr_result))
+        kalibr_row.update(parse_kalibr_log(k_log))
+        if kalibr_result:
+            kalibr_row.update(parse_kalibr_result(kalibr_result))
+        kalibr_runs.append({
+            "variant": variant,
+            "result": kalibr_result,
+            "row": kalibr_row,
+        })
 
     print(f"[{name}/{label}] Ceres", flush=True)
+    init_run = select_kalibr_run(kalibr_runs, args.ceres_init_kalibr_variant)
+    init_result = init_run["result"] if init_run else None
     c_cmd = ceres_corner_command(args, dataset, ceres_dir, imu_data_names,
-                                 kalibr_result)
+                                 init_result)
     c_code, c_elapsed, c_log = run_logged(c_cmd, ceres_dir, "ceres", args.print_only)
     ceres_result = ceres_dir / "result.yaml"
-    row.update(
-        {
-            "ceres_return_code": str(c_code),
-            "ceres_elapsed_s": f"{c_elapsed:.6f}",
-            "ceres_log": str(ceres_dir / "ceres.clean.log"),
-            "ceres_result": str(ceres_result if ceres_result.is_file() else ""),
-        }
-    )
-    row.update(parse_ceres_log(c_log))
-    row.update(summarize_yaml(ceres_result))
-    return run_compare(args, row, case_dir, kalibr_result, ceres_result)
+    ceres_row = {
+        "ceres_return_code": str(c_code),
+        "ceres_elapsed_s": f"{c_elapsed:.6f}",
+        "ceres_log": str(ceres_dir / "ceres.clean.log"),
+        "ceres_result": str(ceres_result if ceres_result.is_file() else ""),
+        "ceres_init_kalibr_variant": (
+            init_run["variant"]["label"] if init_run else ""
+        ),
+        "ceres_init_kalibr_result": str(init_result or ""),
+    }
+    ceres_row.update(parse_ceres_log(c_log))
+    ceres_row.update(summarize_yaml(ceres_result))
+
+    rows = []
+    for kalibr_run in kalibr_runs:
+        row = {}
+        row.update(base_row)
+        row.update(kalibr_run["row"])
+        row.update(ceres_row)
+        row = run_compare(
+            args,
+            row,
+            case_dir,
+            kalibr_run["result"],
+            ceres_result,
+            f"compare_{kalibr_run['variant']['label']}",
+        )
+        rows.append(row)
+    return rows
 
 
 def run_benchmark_single(args, out_root: pathlib.Path):
@@ -760,32 +888,37 @@ def run_benchmark_single(args, out_root: pathlib.Path):
     for index, session in enumerate(sessions, start=1):
         dataset = (args.benchmark_root / session / "cam_imu").resolve()
         name = f"benchmark_{index:02d}_{session}"
-        rows.append(run_benchmark_case(args, name, dataset, out_root,
+        rows.extend(run_benchmark_case(args, name, dataset, out_root,
                                        ["data1.csv"], "single_imu1"))
         write_summary(out_root / "benchmark_single_summary.csv", rows)
     return rows
 
 
 def run_benchmark_multi(args, out_root: pathlib.Path):
-    session = args.multi_session or (args.session[0] if args.session else BENCHMARK_SESSIONS[0])
-    dataset = (args.benchmark_root / session / "cam_imu").resolve()
-    name = f"benchmark_multi_{session}"
-    rows = [
-        run_benchmark_case(
-            args, name, dataset, out_root,
-            ["data1.csv", "data2.csv", "data3.csv", "data4.csv"],
-            "joint_4imu",
-        )
-    ]
-    for imu_index in range(1, 5):
-        rows.append(
+    sessions = [args.multi_session] if args.multi_session else (
+        args.session or BENCHMARK_SESSIONS
+    )
+    rows = []
+    for index, session in enumerate(sessions, start=1):
+        dataset = (args.benchmark_root / session / "cam_imu").resolve()
+        name = f"benchmark_multi_{index:02d}_{session}"
+        rows.extend(
             run_benchmark_case(
                 args, name, dataset, out_root,
-                [f"data{imu_index}.csv"],
-                f"single_imu{imu_index}",
+                ["data1.csv", "data2.csv", "data3.csv", "data4.csv"],
+                "joint_4imu",
             )
         )
         write_summary(out_root / "benchmark_multi_imu_summary.csv", rows)
+        for imu_index in range(1, 5):
+            rows.extend(
+                run_benchmark_case(
+                    args, name, dataset, out_root,
+                    [f"data{imu_index}.csv"],
+                    f"single_imu{imu_index}",
+                )
+            )
+            write_summary(out_root / "benchmark_multi_imu_summary.csv", rows)
     return rows
 
 
@@ -805,58 +938,84 @@ def run_tum_case(args, name, source_type: str, out_root: pathlib.Path):
         "prepare_elapsed_s": f"{prep_elapsed:.6f}",
         "prepared_dir": str(prepared_dir),
     }
+    row.update(args.metadata)
     if source_type == "bag":
         bag = tum_root / "dataset-calib-imu1_512_16.bag"
     else:
         bag = prepared_dir / "euroc_input.bag"
-    kalibr_dir = case_dir / "kalibr"
-    k_cmd = kalibr_bag_command(
-        args,
-        bag,
-        tum_root / "dataset-calib-imu2_512_16/dso/camchain.yaml",
-        tum_root / "dataset-calib-imu2_512_16/dso/imu_config.yaml",
-        tum_root / "april_6x6_80x80cm.yaml",
-        kalibr_dir,
-    )
-    print(f"[{name}] Kalibr", flush=True)
-    k_code, k_elapsed, k_log = run_logged(
-        k_cmd, kalibr_dir, "kalibr", args.print_only
-    )
-    kalibr_result = first_result_txt(kalibr_dir)
-    row.update(
-        {
+
+    kalibr_runs = []
+    for variant in args.kalibr_variants:
+        kalibr_dir = case_dir / f"kalibr_{variant['label']}"
+        k_cmd = kalibr_bag_command(
+            args,
+            bag,
+            tum_root / "dataset-calib-imu2_512_16/dso/camchain.yaml",
+            tum_root / "dataset-calib-imu2_512_16/dso/imu_config.yaml",
+            tum_root / "april_6x6_80x80cm.yaml",
+            kalibr_dir,
+            variant,
+        )
+        print(f"[{name}] Kalibr {variant['label']}", flush=True)
+        k_code, k_elapsed, k_log = run_logged(
+            k_cmd, kalibr_dir, "kalibr", args.print_only
+        )
+        kalibr_result = first_result_txt(kalibr_dir)
+        kalibr_row = {
+            "kalibr_variant": variant["label"],
+            "kalibr_platform": variant["platform"],
+            "kalibr_image": variant["image"],
+            "kalibr_image_id": variant.get("image_id", ""),
             "kalibr_return_code": str(k_code),
             "kalibr_elapsed_s": f"{k_elapsed:.6f}",
             "kalibr_result": str(kalibr_result or ""),
             "kalibr_log": str(kalibr_dir / "kalibr.clean.log"),
         }
-    )
-    row.update(parse_kalibr_log(k_log))
-    if kalibr_result:
-        row.update(parse_kalibr_result(kalibr_result))
+        kalibr_row.update(parse_kalibr_log(k_log))
+        if kalibr_result:
+            kalibr_row.update(parse_kalibr_result(kalibr_result))
+        kalibr_runs.append({
+            "variant": variant,
+            "result": kalibr_result,
+            "row": kalibr_row,
+        })
+
     ceres_dir = case_dir / "ceres"
     c_cmd = ceres_tum_command(args, prepared_dir, ceres_dir, tum_root)
     print(f"[{name}] Ceres", flush=True)
     c_code, c_elapsed, c_log = run_logged(c_cmd, ceres_dir, "ceres", args.print_only)
     ceres_result = ceres_dir / "result.yaml"
-    row.update(
-        {
-            "ceres_return_code": str(c_code),
-            "ceres_elapsed_s": f"{c_elapsed:.6f}",
-            "ceres_result": str(ceres_result if ceres_result.is_file() else ""),
-            "ceres_log": str(ceres_dir / "ceres.clean.log"),
-        }
-    )
-    row.update(parse_ceres_log(c_log))
-    row.update(summarize_yaml(ceres_result))
-    return run_compare(args, row, case_dir, kalibr_result, ceres_result)
+    ceres_row = {
+        "ceres_return_code": str(c_code),
+        "ceres_elapsed_s": f"{c_elapsed:.6f}",
+        "ceres_result": str(ceres_result if ceres_result.is_file() else ""),
+        "ceres_log": str(ceres_dir / "ceres.clean.log"),
+    }
+    ceres_row.update(parse_ceres_log(c_log))
+    ceres_row.update(summarize_yaml(ceres_result))
+
+    rows = []
+    for kalibr_run in kalibr_runs:
+        case_row = {}
+        case_row.update(row)
+        case_row.update(kalibr_run["row"])
+        case_row.update(ceres_row)
+        case_row = run_compare(
+            args,
+            case_row,
+            case_dir,
+            kalibr_run["result"],
+            ceres_result,
+            f"compare_{kalibr_run['variant']['label']}",
+        )
+        rows.append(case_row)
+    return rows
 
 
 def run_tum(args, out_root: pathlib.Path):
-    rows = [
-        run_tum_case(args, "tum_imu1_bag", "bag", out_root),
-        run_tum_case(args, "tum_imu2_euroc_kalibr_export", "euroc", out_root),
-    ]
+    rows = []
+    rows.extend(run_tum_case(args, "tum_imu1_bag", "bag", out_root))
+    rows.extend(run_tum_case(args, "tum_imu2_euroc_kalibr_export", "euroc", out_root))
     write_summary(out_root / "tum_summary.csv", rows)
     return rows
 
@@ -870,6 +1029,14 @@ def write_summary(path: pathlib.Path, rows):
         "label",
         "imu_count",
         "imu_data",
+        "kalibr_variant",
+        "kalibr_platform",
+        "kalibr_image",
+        "kalibr_image_id",
+        "ceres_mode",
+        "ceres_platform",
+        "ceres_repo_commit",
+        "kalibr_docker_repo_commit",
         "kalibr_return_code",
         "ceres_return_code",
         "compare_return_code",
@@ -892,6 +1059,7 @@ def write_summary(path: pathlib.Path, rows):
         "result_camera_chain_count",
         "kalibr_result",
         "ceres_result",
+        "ceres_init_kalibr_variant",
         "dataset",
     ]
     all_keys = set()
@@ -925,15 +1093,30 @@ def parse_args():
                         help="Benchmark session name. Repeat to run a subset.")
     parser.add_argument("--multi-session",
                         help="Benchmark session used by --suite benchmark-multi-imu.")
-    parser.add_argument("--kalibr-image", default=KALIBR_IMAGE)
+    parser.add_argument("--kalibr-amd64-image", default=KALIBR_AMD64_IMAGE)
+    parser.add_argument("--kalibr-arm64-image", default=KALIBR_ARM64_IMAGE)
+    parser.add_argument("--kalibr-platform", action="append",
+                        choices=["linux/amd64", "linux/arm64"],
+                        default=[],
+                        help="Kalibr Docker platform to run. Repeat to select a subset; default runs both.")
+    parser.add_argument("--kalibr-prepare-image",
+                        help="Kalibr image used by TUM input preparation; default is the arm64 image.")
+    parser.add_argument("--kalibr-prepare-platform",
+                        choices=["linux/amd64", "linux/arm64"],
+                        help="Docker platform used by TUM input preparation; default is linux/arm64.")
+    parser.add_argument("--kalibr-docker-repo", type=pathlib.Path,
+                        default=KALIBR_DOCKER_REPO)
     parser.add_argument("--ceres-image", default=CERES_IMAGE)
     parser.add_argument("--ceres-mode", choices=["native", "docker"],
                         default="native")
+    parser.add_argument("--ceres-platform", default="linux/amd64")
+    parser.add_argument("--ceres-init-kalibr-variant",
+                        choices=["arm64", "amd64"], default="arm64",
+                        help="Kalibr result used to initialize multi-IMU Ceres.")
     parser.add_argument("--ceres-bin", type=pathlib.Path,
                         default=repo_dir() / "build" / "calibrate_cam_imu")
     parser.add_argument("--compare-bin", type=pathlib.Path,
                         default=repo_dir() / "build" / "compare_kalibr_result")
-    parser.add_argument("--platform", default="linux/amd64")
     parser.add_argument("--pull-kalibr", action="store_true")
     parser.add_argument("--print-only", action="store_true")
     parser.add_argument("--kalibr-max-iter", type=int, default=30)
@@ -959,10 +1142,19 @@ def main():
     args.tum_root = args.tum_root.expanduser().resolve()
     args.ceres_bin = args.ceres_bin.expanduser().resolve()
     args.compare_bin = args.compare_bin.expanduser().resolve()
+    args.kalibr_docker_repo = args.kalibr_docker_repo.expanduser().resolve()
+    if args.kalibr_prepare_image is None:
+        args.kalibr_prepare_image = args.kalibr_arm64_image
+    if args.kalibr_prepare_platform is None:
+        args.kalibr_prepare_platform = "linux/arm64"
+    args.kalibr_variants = kalibr_variant_configs(args)
     suites = set(args.suite or ["all"])
     if "all" in suites:
         suites.update(["benchmark-single", "benchmark-multi-imu", "tum"])
     ensure_images(args)
+    for variant in args.kalibr_variants:
+        variant["image_id"] = docker_image_id(variant["image"])
+    args.metadata = run_metadata(args)
 
     all_rows = []
     if "benchmark-single" in suites:
