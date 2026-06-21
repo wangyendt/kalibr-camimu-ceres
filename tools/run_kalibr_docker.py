@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 
 KALIBR_LOCAL_IMAGE = "kalibr-camera-calibration:20.04"
@@ -29,6 +30,12 @@ def _timestamp():
 
 def _container_path(base_dir, name):
     return base_dir + "/" + pathlib.PurePosixPath(name).name
+
+
+def _as_list(value):
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
 def _require_file(dataset, filename, label):
@@ -117,13 +124,13 @@ def build_kalibr_args(args, input_dir="/out/input"):
         "--image_timestamp_file",
         _container_path(input_dir, args.image_timestamp_file),
         "--imu_data_file",
-        _container_path(input_dir, args.imu_data_file),
+        *(_container_path(input_dir, name) for name in _as_list(args.imu_data_file)),
         "--target",
         _container_path(input_dir, args.target),
         "--cams",
         _container_path(input_dir, args.cams),
         "--imu",
-        _container_path(input_dir, args.imu),
+        *(_container_path(input_dir, name) for name in _as_list(args.imu)),
         "--dont-show-report",
         "--max-iter",
         str(args.max_iter),
@@ -148,10 +155,10 @@ def build_docker_command(args, run_dir):
     staged_names = [
         args.corner_file,
         args.image_timestamp_file,
-        args.imu_data_file,
+        *_as_list(args.imu_data_file),
         args.target,
         args.cams,
-        args.imu,
+        *_as_list(args.imu),
     ]
     copy_inputs = [
         "mkdir -p /out/input",
@@ -205,10 +212,10 @@ def parse_args():
     parser.add_argument("--platform", default="linux/amd64")
     parser.add_argument("--corner-file", default="cam0_640x400_corners.pkl")
     parser.add_argument("--image-timestamp-file", default="0_save_timestamp.txt")
-    parser.add_argument("--imu-data-file", default="data1.csv")
+    parser.add_argument("--imu-data-file", nargs="+", default=["data1.csv"])
     parser.add_argument("--target", default="aprilgrid.yaml")
     parser.add_argument("--cams", default="cam0-camchain-640x400.yaml")
-    parser.add_argument("--imu", default="imu.yaml")
+    parser.add_argument("--imu", nargs="+", default=["imu.yaml"])
     parser.add_argument("--out-root", type=pathlib.Path,
                         default=_repo_dir() / "out" / "kalibr_runs")
     parser.add_argument("--run-name")
@@ -239,10 +246,10 @@ def main():
     for label, filename in [
         ("corner pickle", args.corner_file),
         ("image timestamp file", args.image_timestamp_file),
-        ("IMU data file", args.imu_data_file),
+        *((f"IMU data file {idx}", name) for idx, name in enumerate(_as_list(args.imu_data_file))),
         ("target yaml", args.target),
         ("camera chain yaml", args.cams),
-        ("IMU yaml", args.imu),
+        *((f"IMU yaml {idx}", name) for idx, name in enumerate(_as_list(args.imu))),
     ]:
         _require_file(args.dataset, filename, label)
     args.resolved_image = _resolve_kalibr_image(args)
@@ -268,6 +275,7 @@ def main():
     raw_log_path = run_dir / "kalibr_raw.log"
     clean_log_path = run_dir / "kalibr_clean.log"
     with raw_log_path.open("w", encoding="utf-8") as raw_log:
+        start = time.perf_counter()
         proc = subprocess.Popen(
             docker_command,
             stdout=subprocess.PIPE,
@@ -282,12 +290,13 @@ def main():
                 sys.stdout.flush()
             raw_log.write(line)
         ret = proc.wait()
+        elapsed_wall_s = time.perf_counter() - start
 
     raw_text = raw_log_path.read_text(encoding="utf-8", errors="replace")
     clean_text = _strip_log(raw_text)
     _write_text(clean_log_path, clean_text)
     summary = _extract_summary(clean_text)
-    summary_text = "\n".join(summary + [f"return_code={ret}"]) + "\n"
+    summary_text = "\n".join(summary + [f"elapsed_wall_s={elapsed_wall_s:.3f}", f"return_code={ret}"]) + "\n"
     _write_text(run_dir / "summary.txt", summary_text)
     print(summary_text, end="")
     return ret

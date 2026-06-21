@@ -24,6 +24,7 @@ include/     Ceres cam-IMU 头文件，命名空间保留 ceres_cam_imu
 src/         相机模型、B-spline、IMU residual、初始化、优化器
 tests/       轻量数值检查和 Jacobian finite-difference 复核
 tools/       数据转换、Kalibr Docker 基线、批量 sweep、两阶段诊断
+simulation/  cam-IMU 仿真系统、示例数据、Ceres-compatible 输出
 docs/books/  Kalibr cam-IMU 推导成书
 docs/        plan/todo/experiment/knowhow/常用命令
 ```
@@ -51,6 +52,15 @@ build/calibrate_cam_imu --corner-defaults --cam /ABS/cam_imu/cam0-camchain-640x4
 ```bash
 build/compare_kalibr_result --kalibr-result /ABS/cam_imu/cam0_640x400_corners-1-results-imucam.txt --ceres-result /private/tmp/ceres_independent.yaml
 ```
+
+## 生成仿真数据
+
+```bash
+python3 simulation/scripts/generate_examples.py
+simulation/generated/one_cam_one_imu/run_calibration.sh --dry-run
+```
+
+仿真系统说明见 [simulation/README.md](simulation/README.md)。当前示例会生成 1cam-1imu、1cam-4imu、2cam-2imu 三组 Ceres-compatible 数据。
 
 ## 和 Kalibr Docker 配合
 

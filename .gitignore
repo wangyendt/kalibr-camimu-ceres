@@ -4,6 +4,7 @@
 /.cache/
 /external/
 /cmake-build-*/
+/simulation/generated/
 /*.csv
 /*.txt
 # /*.txt above is meant for stray root-level data dumps, but it also swallows
