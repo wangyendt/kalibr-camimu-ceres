@@ -11,10 +11,12 @@
 #include <vector>
 
 #include <ceres/manifold.h>
+#include <ceres/sized_cost_function.h>
 #include <ceres/sphere_manifold.h>
 
 #include "ceres_cam_imu/core/se3.h"
 #include "ceres_cam_imu/core/so3.h"
+#include "ceres_cam_imu/core/so3_jacobians.h"
 #include "ceres_cam_imu/initialization/pose_spline_fit.h"
 #include "ceres_cam_imu/optimizer/parameter_delta_tracker.h"
 #include "ceres_cam_imu/residuals/accelerometer_residual.h"
@@ -49,6 +51,17 @@ std::pair<double, double> timeSpan(const std::vector<ImageObservation> &images,
 
 template <typename Block> double *dataPtr(Block &block) { return block.data(); }
 
+template <typename Derived>
+void writeRowMajor(const Eigen::MatrixBase<Derived> &matrix,
+                   const int block_size, double *output,
+                   const int col_offset = 0) {
+  for (int row = 0; row < matrix.rows(); ++row) {
+    for (int col = 0; col < matrix.cols(); ++col) {
+      output[row * block_size + col_offset + col] = matrix(row, col);
+    }
+  }
+}
+
 Mat4 cameraExtrinsicToMatrix(const CameraExtrinsicBlock &pose) {
   Vec6 p;
   for (int i = 0; i < 6; ++i) {
@@ -57,38 +70,81 @@ Mat4 cameraExtrinsicToMatrix(const CameraExtrinsicBlock &pose) {
   return ceres_cam_imu::pose6ToMatrix(p);
 }
 
-Mat4 cameraExtrinsicArrayToMatrix(const double *pose) {
-  Vec6 p;
-  for (int i = 0; i < 6; ++i) {
-    p(i) = pose[i];
-  }
-  return ceres_cam_imu::pose6ToMatrix(p);
-}
-
-class CameraChainExtrinsicPriorFunctor {
+class CameraChainExtrinsicPriorCost final
+    : public ceres::SizedCostFunction<6, 6, 6> {
 public:
-  CameraChainExtrinsicPriorFunctor(Mat4 T_ci_c0,
-                                   const double translation_sigma_m,
-                                   const double rotation_sigma_rad)
+  CameraChainExtrinsicPriorCost(Mat4 T_ci_c0,
+                                const double translation_sigma_m,
+                                const double rotation_sigma_rad)
       : T_ci_c0_(std::move(T_ci_c0)),
         T_c0_ci_(T_ci_c0_.inverse()),
         inv_translation_sigma_m_(1.0 / std::max(1e-12, translation_sigma_m)),
         inv_rotation_sigma_rad_(1.0 / std::max(1e-12, rotation_sigma_rad)) {}
 
-  bool operator()(const double *const T_c0_b_params,
-                  const double *const T_ci_b_params,
-                  double *residuals) const {
-    const Mat4 T_c0_b = cameraExtrinsicArrayToMatrix(T_c0_b_params);
-    const Mat4 T_ci_b = cameraExtrinsicArrayToMatrix(T_ci_b_params);
-    const Mat4 T_ci_c0_est = T_ci_b * T_c0_b.inverse();
-    const Mat4 delta = T_c0_ci_ * T_ci_c0_est;
-    const Vec3 translation = delta.block<3, 1>(0, 3);
-    const Vec3 rotation =
-        rotationMatrixToVector(delta.block<3, 3>(0, 0));
+  bool Evaluate(double const *const *parameters, double *residuals,
+                double **jacobians) const override {
+    const Eigen::Map<const Vec3> t_c0_b(parameters[0]);
+    const Eigen::Map<const Vec3> r_c0_b(parameters[0] + 3);
+    const Eigen::Map<const Vec3> t_ci_b(parameters[1]);
+    const Eigen::Map<const Vec3> r_ci_b(parameters[1] + 3);
+
+    const Mat3 R_c0_b = rotationVectorToMatrix(r_c0_b);
+    const Mat3 R_ci_b = rotationVectorToMatrix(r_ci_b);
+    const Mat3 R_c0_ci = T_c0_ci_.block<3, 3>(0, 0);
+    const Vec3 t_c0_ci = T_c0_ci_.block<3, 1>(0, 3);
+    const Mat3 R_b_c0 = R_c0_b.transpose();
+    const Vec3 t_ci_c0_est = t_ci_b - R_ci_b * R_b_c0 * t_c0_b;
+    const Mat3 R_delta = R_c0_ci * R_ci_b * R_b_c0;
+    const Vec3 translation = R_c0_ci * t_ci_c0_est + t_c0_ci;
+    const Vec3 rotation = rotationMatrixToVector(R_delta);
+
     for (int i = 0; i < 3; ++i) {
       residuals[i] = inv_translation_sigma_m_ * translation(i);
       residuals[3 + i] = inv_rotation_sigma_rad_ * rotation(i);
     }
+
+    if (!jacobians) {
+      return true;
+    }
+
+    const Mat3 J_left_rotation_inv = leftJacobianSO3(rotation).inverse();
+    const Mat3 J_left_minus_rotation_inv =
+        leftJacobianSO3(-rotation).inverse();
+    const Mat3 J_left_r_c0_b = leftJacobianSO3(r_c0_b);
+    const Mat3 J_left_r_ci_b = leftJacobianSO3(r_ci_b);
+
+    if (jacobians[0]) {
+      std::fill(jacobians[0], jacobians[0] + 36, 0.0);
+      const Mat3 d_translation_d_t_c0_b = -R_c0_ci * R_ci_b * R_b_c0;
+      const Mat3 d_translation_d_r_c0_b =
+          -R_c0_ci * R_ci_b *
+          rotationTransposeTimesVectorDerivative(r_c0_b, t_c0_b);
+      const Mat3 d_rotation_d_r_c0_b =
+          -J_left_minus_rotation_inv * R_c0_ci * R_ci_b * J_left_r_c0_b;
+      writeRowMajor(inv_translation_sigma_m_ * d_translation_d_t_c0_b, 6,
+                    jacobians[0], 0);
+      writeRowMajor(inv_translation_sigma_m_ * d_translation_d_r_c0_b, 6,
+                    jacobians[0], 3);
+      writeRowMajor(inv_rotation_sigma_rad_ * d_rotation_d_r_c0_b, 6,
+                    jacobians[0] + 18, 3);
+    }
+
+    if (jacobians[1]) {
+      std::fill(jacobians[1], jacobians[1] + 36, 0.0);
+      const Mat3 d_translation_d_t_ci_b = R_c0_ci;
+      const Vec3 t_b_c0_in_ci = R_b_c0 * t_c0_b;
+      const Mat3 d_translation_d_r_ci_b =
+          -R_c0_ci * R_ci_b * skew(t_b_c0_in_ci) * J_left_r_ci_b;
+      const Mat3 d_rotation_d_r_ci_b =
+          J_left_rotation_inv * R_c0_b * J_left_r_ci_b;
+      writeRowMajor(inv_translation_sigma_m_ * d_translation_d_t_ci_b, 6,
+                    jacobians[1], 0);
+      writeRowMajor(inv_translation_sigma_m_ * d_translation_d_r_ci_b, 6,
+                    jacobians[1], 3);
+      writeRowMajor(inv_rotation_sigma_rad_ * d_rotation_d_r_ci_b, 6,
+                    jacobians[1] + 18, 3);
+    }
+
     return true;
   }
 
@@ -102,10 +158,8 @@ private:
 ceres::CostFunction *createCameraChainExtrinsicPrior(
     const Mat4 &T_ci_c0, const double translation_sigma_m,
     const double rotation_sigma_rad) {
-  return new ceres::NumericDiffCostFunction<CameraChainExtrinsicPriorFunctor,
-                                            ceres::CENTRAL, 6, 6, 6>(
-      new CameraChainExtrinsicPriorFunctor(T_ci_c0, translation_sigma_m,
-                                           rotation_sigma_rad));
+  return new CameraChainExtrinsicPriorCost(T_ci_c0, translation_sigma_m,
+                                           rotation_sigma_rad);
 }
 
 class KalibrMEstimatorLoss final : public ceres::LossFunction {
@@ -177,23 +231,9 @@ public:
     for (int i = 0; i < 3; ++i) {
       jacobian[i * 6 + i] = 1.0;
     }
-
-    constexpr double kEps = 1e-8;
-    double delta_plus[6] = {};
-    double delta_minus[6] = {};
-    double x_plus[6] = {};
-    double x_minus[6] = {};
-    for (int col = 3; col < 6; ++col) {
-      std::fill(std::begin(delta_plus), std::end(delta_plus), 0.0);
-      std::fill(std::begin(delta_minus), std::end(delta_minus), 0.0);
-      delta_plus[col] = kEps;
-      delta_minus[col] = -kEps;
-      Plus(x, delta_plus, x_plus);
-      Plus(x, delta_minus, x_minus);
-      for (int row = 3; row < 6; ++row) {
-        jacobian[row * 6 + col] = (x_plus[row] - x_minus[row]) / (2.0 * kEps);
-      }
-    }
+    const Eigen::Map<const Vec3> r(x + 3);
+    const Mat3 rotation_jacobian = leftJacobianSO3(-r).inverse();
+    writeRowMajor(rotation_jacobian, 6, jacobian + 18, 3);
     return true;
   }
 
@@ -218,26 +258,9 @@ public:
     for (int i = 0; i < 3; ++i) {
       jacobian[i * 6 + i] = 1.0;
     }
-
-    constexpr double kEps = 1e-8;
-    double y_plus[6] = {};
-    double y_minus[6] = {};
-    double diff_plus[6] = {};
-    double diff_minus[6] = {};
-    std::copy(x, x + 6, y_plus);
-    std::copy(x, x + 6, y_minus);
-    for (int col = 3; col < 6; ++col) {
-      std::copy(x, x + 6, y_plus);
-      std::copy(x, x + 6, y_minus);
-      y_plus[col] += kEps;
-      y_minus[col] -= kEps;
-      Minus(y_plus, x, diff_plus);
-      Minus(y_minus, x, diff_minus);
-      for (int row = 3; row < 6; ++row) {
-        jacobian[row * 6 + col] =
-            (diff_plus[row] - diff_minus[row]) / (2.0 * kEps);
-      }
-    }
+    const Eigen::Map<const Vec3> r(x + 3);
+    const Mat3 rotation_jacobian = rotationVectorToMatrix(r) * leftJacobianSO3(r);
+    writeRowMajor(rotation_jacobian, 6, jacobian + 18, 3);
     return true;
   }
 };

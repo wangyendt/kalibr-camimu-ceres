@@ -170,6 +170,45 @@ $$
 
 Camera residual 对 gyro/accel bias、IMU 内参、IMU lever arm、gravity 的直接 Jacobian 为零。
 
+## C.4.1 Camera-chain extrinsic prior（当前 Ceres）
+
+这个 residual 不是 Kalibr 原始 camera reprojection residual，而是当前 Ceres 迁移版在 `--fix-camera-chain-extrinsics` 下加入的相对外参先验。它约束：
+
+$$
+\Delta\mathbf T
+=
+(\mathbf T^p_{c_i c_0})^{-1}
+\mathbf T_{c_i b}\mathbf T_{c_0 b}^{-1},
+\qquad
+\mathbf e^{cc}
+=
+\begin{bmatrix}
+\sigma_t^{-1}\mathbf t_\Delta\\
+\sigma_R^{-1}\mathbf r_\Delta
+\end{bmatrix}.
+$$
+
+令 $(\mathbf T^p_{c_i c_0})^{-1}=[\mathbf A,\mathbf b]$，$\mathbf T_{c_0b}=[\mathbf R_0,\mathbf t_0]$，$\mathbf T_{c_ib}=[\mathbf R_i,\mathbf t_i]$，$\mathbf q_0=\mathbf R_0^\top\mathbf t_0$，则：
+
+$$
+\mathbf R_\Delta=\mathbf A\mathbf R_i\mathbf R_0^\top,
+\qquad
+\mathbf t_\Delta=\mathbf A(\mathbf t_i-\mathbf R_i\mathbf q_0)+\mathbf b,
+\qquad
+\mathbf r_\Delta=\mathrm{Log}_K(\mathbf R_\Delta).
+$$
+
+当前 Ceres 实现直接写白化后的 block；若要和几何 Jacobian 对照，去掉表中前三行的 $\sigma_t^{-1}$ 和后三行的 $\sigma_R^{-1}$。
+
+| design variable | translation rows | rotation rows | 维度 |
+|---|---|---|---:|
+| $\mathbf T_{c_0b}$ 的 $\mathbf t_0$ | $\sigma_t^{-1}(-\mathbf A\mathbf R_i\mathbf R_0^\top)$ | $\mathbf 0$ | $6\times3$ |
+| $\mathbf T_{c_0b}$ 的 $\mathbf r_0$ | $\sigma_t^{-1}[-\mathbf A\mathbf R_i\mathbf D_{R^\top v}(\mathbf r_0,\mathbf t_0)]$ | $\sigma_R^{-1}[-\mathbf J_l(-\mathbf r_\Delta)^{-1}\mathbf A\mathbf R_i\mathbf J_l(\mathbf r_0)]$ | $6\times3$ |
+| $\mathbf T_{c_ib}$ 的 $\mathbf t_i$ | $\sigma_t^{-1}\mathbf A$ | $\mathbf 0$ | $6\times3$ |
+| $\mathbf T_{c_ib}$ 的 $\mathbf r_i$ | $\sigma_t^{-1}[-\mathbf A\mathbf R_i[\mathbf q_0]_\times\mathbf J_l(\mathbf r_i)]$ | $\sigma_R^{-1}[\mathbf J_l(\mathbf r_\Delta)^{-1}\mathbf R_0\mathbf J_l(\mathbf r_i)]$ | $6\times3$ |
+
+推导出处：8.6.2 节。源码位置：`src/optimizer/calibration_problem.cpp` 的 `CameraChainExtrinsicPriorCost::Evaluate()`。
+
 ## C.5 Ordinary gyro residual
 
 比较的是轨迹角速度旋转到 IMU frame 加 bias 后的预测读数和陀螺仪读数。
@@ -485,3 +524,26 @@ $$
 | gyro sensing rotation $\mathbf R_{g_mi_m}$ | 按 rotation design variable 更新 |
 
 最后提醒一句：这张表的每个结论都可以用附录 B 的 finite-difference 框架数值验证。如果某个 block 和你的数值对不上，先按 C.2 的第 4 步排查两类符号来源，再检查是不是把 whitened Jacobian 当成了几何 Jacobian（C.1），再检查是不是把 residual 连到了错误的 sensor index（第 13 章）。
+
+## C.13 当前 Ceres raw manifold Jacobian
+
+这一节不是 residual Jacobian，而是当前 Ceres `Pose6Manifold` 接口自己的 raw Plus/Minus Jacobian。它只用于 `ceres::Manifold::PlusJacobian()` 和 `MinusJacobian()`；residual 内部若沿用 Kalibr expression tangent，仍查 0.10.1-0.10.3 的 `boxMinus`、`boxTimes` 和 $\mathbf S(\mathbf T)$。
+
+当前参数块存为：
+
+$$
+\mathbf x=
+\begin{bmatrix}
+\mathbf t\\
+\mathbf r
+\end{bmatrix},
+\qquad
+\mathbf C(\mathbf r)=\mathrm{Exp}(-[\mathbf r]_\times).
+$$
+
+| Ceres 接口 | 定义 | Jacobian |
+|---|---|---|
+| `Plus(x, delta)` | $\mathbf t^+=\mathbf t+\delta\mathbf t,\ \mathbf C(\mathbf r^+)=\mathbf C(\delta\mathbf r)\mathbf C(\mathbf r)$ | $\begin{bmatrix}\mathbf I&\mathbf 0\\\mathbf 0&\mathbf J_l(-\mathbf r)^{-1}\end{bmatrix}$ |
+| `Minus(y, x)` 对 $\mathbf y$ | $\mathbf y\boxminus\mathbf x=[\mathbf t_y-\mathbf t_x,\ \mathrm{Log}_K(\mathbf C(\mathbf r_y)\mathbf C(\mathbf r_x)^\top)]^\top$ | $\begin{bmatrix}\mathbf I&\mathbf 0\\\mathbf 0&\mathbf C(\mathbf r)\mathbf J_l(\mathbf r)\end{bmatrix}$ |
+
+推导出处：0.10.4 节。源码位置：`src/optimizer/calibration_problem.cpp` 的 `Pose6Manifold`。

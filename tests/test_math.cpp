@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -354,6 +355,61 @@ int main() {
   assert(gravity_problem.HasManifold(gravity_state.gravity.data()));
   assert(gravity_problem.ParameterBlockTangentSize(
              gravity_state.gravity.data()) == 2);
+  const ceres::Manifold *pose6_manifold =
+      gravity_problem.GetManifold(gravity_state.T_c_b.data());
+  assert(pose6_manifold != nullptr);
+  std::array<double, 6> manifold_x = {0.11, -0.07, 0.05,
+                                      0.21, -0.13, 0.07};
+  std::array<double, 36> plus_jacobian{};
+  std::array<double, 36> minus_jacobian{};
+  assert(pose6_manifold->PlusJacobian(manifold_x.data(),
+                                      plus_jacobian.data()));
+  assert(pose6_manifold->MinusJacobian(manifold_x.data(),
+                                       minus_jacobian.data()));
+  for (int col = 0; col < 6; ++col) {
+    constexpr double plus_eps = 1e-7;
+    std::array<double, 6> delta_plus{};
+    std::array<double, 6> delta_minus{};
+    delta_plus[static_cast<std::size_t>(col)] = plus_eps;
+    delta_minus[static_cast<std::size_t>(col)] = -plus_eps;
+    std::array<double, 6> x_plus{};
+    std::array<double, 6> x_minus{};
+    assert(pose6_manifold->Plus(manifold_x.data(), delta_plus.data(),
+                                x_plus.data()));
+    assert(pose6_manifold->Plus(manifold_x.data(), delta_minus.data(),
+                                x_minus.data()));
+    for (int row = 0; row < 6; ++row) {
+      const double numeric =
+          (x_plus[static_cast<std::size_t>(row)] -
+           x_minus[static_cast<std::size_t>(row)]) /
+          (2.0 * plus_eps);
+      const double analytic =
+          plus_jacobian[static_cast<std::size_t>(row * 6 + col)];
+      assert(std::abs(numeric - analytic) < 1e-6);
+    }
+  }
+  for (int col = 0; col < 6; ++col) {
+    constexpr double minus_eps = 1e-4;
+    std::array<double, 6> y_plus = manifold_x;
+    std::array<double, 6> y_minus = manifold_x;
+    y_plus[static_cast<std::size_t>(col)] += minus_eps;
+    y_minus[static_cast<std::size_t>(col)] -= minus_eps;
+    std::array<double, 6> diff_plus{};
+    std::array<double, 6> diff_minus{};
+    assert(pose6_manifold->Minus(y_plus.data(), manifold_x.data(),
+                                 diff_plus.data()));
+    assert(pose6_manifold->Minus(y_minus.data(), manifold_x.data(),
+                                 diff_minus.data()));
+    for (int row = 0; row < 6; ++row) {
+      const double numeric =
+          (diff_plus[static_cast<std::size_t>(row)] -
+           diff_minus[static_cast<std::size_t>(row)]) /
+          (2.0 * minus_eps);
+      const double analytic =
+          minus_jacobian[static_cast<std::size_t>(row * 6 + col)];
+      assert(std::abs(numeric - analytic) < 1e-6);
+    }
+  }
 
   ceres_cam_imu::CalibrationOptions pose_manifold_options;
   pose_manifold_options.use_pose_control_manifold = true;
@@ -1084,7 +1140,103 @@ int main() {
     }
   };
 
+  auto check_problem_jacobians =
+      [](ceres::Problem *problem, const std::vector<double *> &parameter_blocks,
+         const double tolerance) {
+        ceres::Problem::EvaluateOptions options;
+        options.apply_loss_function = false;
+        options.parameter_blocks = parameter_blocks;
+
+        std::vector<double> residuals;
+        ceres::CRSMatrix jacobian;
+        assert(problem->Evaluate(options, nullptr, &residuals, nullptr,
+                                 &jacobian));
+        std::vector<double> dense(
+            static_cast<std::size_t>(jacobian.num_rows * jacobian.num_cols),
+            0.0);
+        for (int row = 0; row < jacobian.num_rows; ++row) {
+          for (int idx = jacobian.rows[static_cast<std::size_t>(row)];
+               idx < jacobian.rows[static_cast<std::size_t>(row + 1)]; ++idx) {
+            dense[static_cast<std::size_t>(
+                row * jacobian.num_cols +
+                jacobian.cols[static_cast<std::size_t>(idx)])] =
+                jacobian.values[static_cast<std::size_t>(idx)];
+          }
+        }
+
+        std::vector<int> block_offsets;
+        block_offsets.reserve(parameter_blocks.size());
+        int total_cols = 0;
+        for (double *block : parameter_blocks) {
+          block_offsets.push_back(total_cols);
+          total_cols += problem->ParameterBlockTangentSize(block);
+        }
+        assert(total_cols == jacobian.num_cols);
+
+        constexpr double eps = 1e-6;
+        for (std::size_t block_index = 0;
+             block_index < parameter_blocks.size(); ++block_index) {
+          double *block = parameter_blocks[block_index];
+          const int block_size = problem->ParameterBlockSize(block);
+          const int col_offset = block_offsets[block_index];
+          for (int col = 0; col < block_size; ++col) {
+            const double original = block[col];
+            block[col] = original + eps;
+            std::vector<double> plus;
+            assert(problem->Evaluate(options, nullptr, &plus, nullptr,
+                                     nullptr));
+            block[col] = original - eps;
+            std::vector<double> minus;
+            assert(problem->Evaluate(options, nullptr, &minus, nullptr,
+                                     nullptr));
+            block[col] = original;
+            for (int row = 0; row < jacobian.num_rows; ++row) {
+              const double numeric =
+                  (plus[static_cast<std::size_t>(row)] -
+                   minus[static_cast<std::size_t>(row)]) /
+                  (2.0 * eps);
+              const double analytic =
+                  dense[static_cast<std::size_t>(
+                      row * jacobian.num_cols + col_offset + col)];
+              const double scaled_tolerance =
+                  tolerance * std::max(1.0, std::abs(numeric));
+              assert(std::abs(numeric - analytic) < scaled_tolerance);
+            }
+          }
+        }
+      };
+
   check_cost_jacobians(time_shift_prior.get(), {{0.13}}, 1e-8);
+
+  ceres_cam_imu::CalibrationOptions chain_prior_options;
+  chain_prior_options.fix_camera_chain_extrinsics = true;
+  chain_prior_options.add_bias_motion_prior = false;
+  chain_prior_options.add_pose_motion_prior = false;
+  chain_prior_options.camera_chain_translation_sigma_m = 1.0;
+  chain_prior_options.camera_chain_rotation_sigma_rad = 1.0;
+  ceres_cam_imu::Vec6 chain_prior_pose;
+  chain_prior_pose << 0.04, -0.02, 0.01, 0.02, 0.03, -0.01;
+  chain_prior_options.camera_chain_T_ci_c0_prior = {
+      ceres_cam_imu::Mat4::Identity(),
+      ceres_cam_imu::pose6ToMatrix(chain_prior_pose)};
+  std::vector<ceres_cam_imu::CameraObservationDataset> chain_cameras(2);
+  chain_cameras[0].intrinsics = intr;
+  chain_cameras[1].intrinsics = intr;
+  ceres_cam_imu::CalibrationState chain_state;
+  chain_state.T_c_b.values = {0.05, -0.03, 0.08, 0.11, -0.07, 0.04};
+  chain_state.camera_extrinsics.resize(2);
+  chain_state.camera_extrinsics[1].values = {0.09, -0.04, 0.12,
+                                             -0.03, 0.08, -0.02};
+  ceres::Problem chain_problem;
+  const ceres_cam_imu::CalibrationBuildSummary chain_build =
+      ceres_cam_imu::buildCalibrationProblem(
+          chain_cameras, ceres_cam_imu::ImuNoise{}, std::vector<ceres_cam_imu::ImuSample>{},
+          chain_prior_options, &chain_state, &chain_problem);
+  assert(chain_build.camera_chain_priors == 1);
+  check_problem_jacobians(
+      &chain_problem,
+      {chain_state.T_c_b.data(), chain_state.camera_extrinsics[1].data()},
+      1e-5);
 
   ceres_cam_imu::UniformBSpline bias_spline(3, 6, 0.0, 1.0, 1);
   const ceres_cam_imu::SplineSegmentMeta6 bias_meta =
@@ -1440,6 +1592,59 @@ int main() {
     finite_difference_gyro_block(block, 3);
   }
 
+  std::vector<ceres_cam_imu::SplineSegmentMeta6> gyro_offset_pose_metas;
+  std::vector<ceres_cam_imu::SplineSegmentMeta6> gyro_offset_bias_metas;
+  for (int segment = 1; segment <= 4; ++segment) {
+    const double segment_time =
+        gyro_pose_spline.tMin() +
+        (static_cast<double>(segment) + 0.5) * gyro_pose_spline.dt();
+    gyro_offset_pose_metas.push_back(
+        gyro_pose_spline.segmentMeta6(segment_time));
+    gyro_offset_bias_metas.push_back(
+        gyro_bias_spline.segmentMeta6(segment_time));
+  }
+  const int gyro_offset_pose_start =
+      gyro_offset_pose_metas.front().coeff_start;
+  const int gyro_offset_bias_start =
+      gyro_offset_bias_metas.front().coeff_start;
+  const int gyro_offset_pose_end =
+      gyro_offset_pose_metas.back().coeff_start +
+      ceres_cam_imu::SplineSegmentMeta6::kOrder;
+  const int gyro_offset_bias_end =
+      gyro_offset_bias_metas.back().coeff_start +
+      ceres_cam_imu::SplineSegmentMeta6::kOrder;
+  ceres_cam_imu::ImuSample gyro_offset_sample = gyro_sample;
+  gyro_offset_sample.timestamp_s = 0.40;
+  std::unique_ptr<ceres::CostFunction> gyro_offset_cost(
+      ceres_cam_imu::createGyroscopeTimeOffsetResidual(
+          gyro_offset_sample, gyro_noise, gyro_offset_pose_metas,
+          gyro_offset_pose_start, gyro_offset_bias_metas,
+          gyro_offset_bias_start,
+          gyro_offset_pose_metas.front().segment_start_s,
+          gyro_offset_pose_metas.back().segment_start_s +
+              gyro_offset_pose_metas.back().dt_s));
+  std::vector<std::vector<double>> gyro_offset_blocks;
+  gyro_offset_blocks.push_back(
+      {0.01, -0.02, 0.03, 0.04, -0.03, 0.02});
+  gyro_offset_blocks.push_back({0.07});
+  for (int coeff = gyro_offset_pose_start; coeff < gyro_offset_pose_end;
+       ++coeff) {
+    gyro_offset_blocks.push_back(
+        {0.018 * coeff,
+         -0.011 * coeff,
+         0.007 * std::sin(0.19 * coeff),
+         0.035 * std::sin(0.27 * coeff),
+         -0.025 + 0.009 * coeff,
+         0.017 * std::cos(0.33 * coeff)});
+  }
+  for (int coeff = gyro_offset_bias_start; coeff < gyro_offset_bias_end;
+       ++coeff) {
+    gyro_offset_blocks.push_back({0.0007 * coeff,
+                                  -0.0015 + 0.0004 * coeff,
+                                  0.001 * std::sin(0.41 * coeff)});
+  }
+  check_cost_jacobians(gyro_offset_cost.get(), gyro_offset_blocks, 2e-3);
+
   std::unique_ptr<ceres::CostFunction> scale_gyro_cost(
       ceres_cam_imu::createScaleMisalignedGyroscopeResidual(
           gyro_sample, gyro_noise, gyro_pose_meta, gyro_bias_meta));
@@ -1555,6 +1760,39 @@ int main() {
   for (int block = 8; block < 14; ++block) {
     finite_difference_accel_block(block, 3);
   }
+
+  ceres_cam_imu::ImuSample accel_offset_sample = accel_sample;
+  accel_offset_sample.timestamp_s = 0.40;
+  std::unique_ptr<ceres::CostFunction> accel_offset_cost(
+      ceres_cam_imu::createAccelerometerTimeOffsetResidual(
+          accel_offset_sample, accel_noise, gyro_offset_pose_metas,
+          gyro_offset_pose_start, gyro_offset_bias_metas,
+          gyro_offset_bias_start,
+          gyro_offset_pose_metas.front().segment_start_s,
+          gyro_offset_pose_metas.back().segment_start_s +
+              gyro_offset_pose_metas.back().dt_s));
+  std::vector<std::vector<double>> accel_offset_blocks;
+  accel_offset_blocks.push_back(
+      {0.03, -0.015, 0.02, 0.035, -0.025, 0.015});
+  accel_offset_blocks.push_back({0.1, -9.81, 0.05});
+  accel_offset_blocks.push_back({0.07});
+  for (int coeff = gyro_offset_pose_start; coeff < gyro_offset_pose_end;
+       ++coeff) {
+    accel_offset_blocks.push_back(
+        {0.024 * std::sin(0.18 * coeff),
+         -0.018 + 0.009 * coeff,
+         0.033 * std::cos(0.28 * coeff),
+         0.031 * std::sin(0.23 * coeff),
+         -0.017 + 0.010 * coeff,
+         0.016 * std::cos(0.39 * coeff)});
+  }
+  for (int coeff = gyro_offset_bias_start; coeff < gyro_offset_bias_end;
+       ++coeff) {
+    accel_offset_blocks.push_back({0.008 * std::sin(0.17 * coeff),
+                                   -0.012 + 0.003 * coeff,
+                                   0.005 * std::cos(0.43 * coeff)});
+  }
+  check_cost_jacobians(accel_offset_cost.get(), accel_offset_blocks, 3e-3);
 
   std::unique_ptr<ceres::CostFunction> scale_accel_cost(
       ceres_cam_imu::createScaleMisalignedAccelerometerResidual(

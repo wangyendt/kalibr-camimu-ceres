@@ -225,11 +225,15 @@ struct AccelerometerTimeOffsetEvaluation {
   std::array<double, 6> pose_weights = {};
   std::array<double, 6> pose_dot_weights = {};
   std::array<double, 6> pose_ddot_weights = {};
+  std::array<double, 6> pose_dddot_weights = {};
   std::array<double, 6> bias_weights = {};
+  std::array<double, 6> bias_dot_weights = {};
   Vec6 curve = Vec6::Zero();
   Vec6 curve_dot = Vec6::Zero();
   Vec6 curve_ddot = Vec6::Zero();
+  Vec6 curve_dddot = Vec6::Zero();
   Vec3 bias = Vec3::Zero();
+  Vec3 bias_dot = Vec3::Zero();
   Vec3 r_w_b = Vec3::Zero();
   Mat3 R_b_w = Mat3::Identity();
   Vec3 q_w = Vec3::Zero();
@@ -344,8 +348,24 @@ public:
     }
 
     if (jacobians[2]) {
-      writeTimeOffsetJacobian(parameters, query_time_s, residuals,
-                              jacobians[2]);
+      const Vec3 omega_dot_b =
+          d_omega_d_r * evaluation.curve_dot.tail<3>() +
+          d_omega_d_r_dot * evaluation.curve_ddot.tail<3>();
+      const Vec3 alpha_dot_b =
+          d_alpha_d_r * evaluation.curve_dot.tail<3>() +
+          d_alpha_d_r_ddot * evaluation.curve_dddot.tail<3>();
+      const Vec3 h_dot_b =
+          d_h_d_r * evaluation.curve_dot.tail<3>() +
+          evaluation.R_b_w * evaluation.curve_dddot.head<3>();
+      const Vec3 body_dot_b =
+          h_dot_b + d_lever_d_alpha * alpha_dot_b +
+          d_lever_d_omega * omega_dot_b;
+      const Vec3 J_time =
+          inv_sigma_ * (evaluation.R_i_b * body_dot_b +
+                        evaluation.bias_dot);
+      jacobians[2][0] = J_time.x();
+      jacobians[2][1] = J_time.y();
+      jacobians[2][2] = J_time.z();
     }
 
     for (int control = 0; control < pose_local_coeff_count_; ++control) {
@@ -430,7 +450,9 @@ private:
     local.pose_weights = pose_segment->weights(query_time_s, 0);
     local.pose_dot_weights = pose_segment->weights(query_time_s, 1);
     local.pose_ddot_weights = pose_segment->weights(query_time_s, 2);
+    local.pose_dddot_weights = pose_segment->weights(query_time_s, 3);
     local.bias_weights = bias_segment->weights(query_time_s, 0);
+    local.bias_dot_weights = bias_segment->weights(query_time_s, 1);
 
     for (int i = 0; i < SplineSegmentMeta6::kOrder; ++i) {
       const Eigen::Map<const Vec6> control(
@@ -440,6 +462,8 @@ private:
           local.pose_dot_weights[static_cast<std::size_t>(i)] * control;
       local.curve_ddot +=
           local.pose_ddot_weights[static_cast<std::size_t>(i)] * control;
+      local.curve_dddot +=
+          local.pose_dddot_weights[static_cast<std::size_t>(i)] * control;
     }
 
     const int bias_block_offset = 3 + pose_local_coeff_count_;
@@ -447,6 +471,8 @@ private:
       const Eigen::Map<const Vec3> control(
           parameters[bias_block_offset + bias_active_offset + i]);
       local.bias += local.bias_weights[static_cast<std::size_t>(i)] * control;
+      local.bias_dot +=
+          local.bias_dot_weights[static_cast<std::size_t>(i)] * control;
     }
 
     local.r_w_b = local.curve.tail<3>();
@@ -472,38 +498,6 @@ private:
       *evaluation = local;
     }
     return true;
-  }
-
-  void writeTimeOffsetJacobian(double const *const *parameters,
-                               const double query_time_s,
-                               const double *residuals,
-                               double *jacobian) const {
-    constexpr double kEps = 1e-6;
-    double plus[3] = {};
-    double minus[3] = {};
-    const bool plus_ok =
-        evaluateAtTime(parameters, query_time_s + kEps, plus, nullptr);
-    const bool minus_ok =
-        evaluateAtTime(parameters, query_time_s - kEps, minus, nullptr);
-    if (plus_ok && minus_ok) {
-      for (int row = 0; row < 3; ++row) {
-        jacobian[row] = (plus[row] - minus[row]) / (2.0 * kEps);
-      }
-      return;
-    }
-    if (plus_ok) {
-      for (int row = 0; row < 3; ++row) {
-        jacobian[row] = (plus[row] - residuals[row]) / kEps;
-      }
-      return;
-    }
-    if (minus_ok) {
-      for (int row = 0; row < 3; ++row) {
-        jacobian[row] = (residuals[row] - minus[row]) / kEps;
-      }
-      return;
-    }
-    std::fill(jacobian, jacobian + 3, 0.0);
   }
 
   ImuSample sample_;
