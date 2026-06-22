@@ -1,5 +1,26 @@
 # TUM双目cam-imu loop error对比
 
+## 结论先行
+
+上一版把 Kalibr 默认 fixed camera-chain 和 Ceres free camera-chain 混在一起比较，结论不公平。本轮按 fixed 和 free 两个口径重跑后，Ceres 与 Kalibr 的双目 loop consistency 已经是同量级。
+
+| 口径 | Kalibr | Ceres | 结论 |
+|---|---|---|---|
+| fixed camera-chain | 默认固定 `T_cn_cnm1` | `--fix-camera-chain-extrinsics` tight prior | 两者 loop error 都接近 0 |
+| free camera-chain | `--recompute-camera-chain-extrinsics` | 不加 fixed-chain 约束 | 两者 loop error 都在 `0.21-0.24 mm`、`0.03-0.035 deg` |
+
+核心结论：上一版“Kalibr 按 loop error 胜出”只适用于 Kalibr fixed vs Ceres free 的混合默认口径，不应作为 solver 精度结论。
+
+## 指标口径
+
+| 指标 | 含义 |
+|---|---|
+| `Loop rot deg` | `inv(T_cam1_cam0) * (T_cam1_imu * T_imu_cam0)` 的旋转角 |
+| `Loop trans mm` | 同一 loop error 的平移模长 |
+| `fixed` | 双目 baseline 固定或强约束，主要验证约束口径是否一致 |
+| `free` | 双目 baseline 作为自由变量重估，主要比较同自由度下的 loop consistency |
+| `Reproj/Gyro/Accel mean` | 优化后观测残差均值，用于确认不是靠牺牲 residual 换 loop |
+
 ## 背景
 
 这次实验重新回答同一个问题：在两组 TUM 双目 + 单 IMU 数据上，`kalibr-docker` arm64 和 Ceres native 的双目 baseline loop consistency 如何比较。

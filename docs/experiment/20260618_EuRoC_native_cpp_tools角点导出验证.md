@@ -1,5 +1,25 @@
 # EuRoC native cpp_tools 角点导出验证
 
+## 结论先行
+
+EuRoC/mav0 输入已经可以不依赖 Kalibr Docker 生成本工程需要的 IMU CSV、角点 CSV 和 corner pose CSV。官方 `step=1` 口径下，在同一 Kalibr Docker/OpenCV 4.2/Linux 环境里运行 native cpp_tools exporter，输出的 `cam0_corners.csv` 和 `cam1_corners.csv` 与 Kalibr 导出结果逐字节一致。
+
+| 对比项 | 结论 | 数字 |
+|---|---|---:|
+| native-in-Kalibr-Docker vs Kalibr | byte-level 对齐 | cam0/cam1 mean、RMS、max 都为 `0 px`，`byte_equal=True` |
+| host native vs Kalibr | 数值等价但非 byte-level | mean `0.0007-0.0009 px`，P95 约 `0.002 px` |
+| EuRoC 转换依赖 | 默认不再依赖 Kalibr Docker | `.bag` / `.pkl` 仍依赖 Kalibr Docker |
+
+## 指标口径
+
+| 指标 | 含义 |
+|---|---|
+| `reference/candidate` | Kalibr 导出的角点数 / native 导出的角点数 |
+| `common` | timestamp 和 `corner_id` 完全匹配的角点数 |
+| `reference_only/candidate_only` | 只被一侧检测到的角点数 |
+| `mean/RMS/P95/max` | 公共角点像素误差统计 |
+| `byte_equal` | CSV 文本内容是否逐字节一致 |
+
 ## 背景
 
 当前 `pkl` 和 `bag` 输入仍然依赖 Kalibr Docker，因为它们分别需要读取 Kalibr pickle 对象和 ROS bag。EuRoC 目录格式本身已经包含 `mav0/camN/data.csv`、图片和 `imu0/data.csv`，理论上可以绕过 Kalibr Docker，直接生成本工程 C++ 标定器需要的中立 CSV。

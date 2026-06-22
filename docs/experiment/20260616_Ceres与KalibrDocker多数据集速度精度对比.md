@@ -1,5 +1,38 @@
 # Ceres 与 Kalibr Docker 多数据集速度精度对比
 
+## 阅读定位
+
+这篇是 Ceres/Kalibr 长周期 benchmark 的主索引，不是单一实验记录。它同时覆盖匿名基准、Kalibr 热启动、速度口径、扩展 IMU、多 camera/TUM 和多 IMU joint 定位。阅读时先看本节和“结论”，再按结果地图进入具体实验。
+
+核心口径：
+
+- 匿名基准独立标定：Ceres 不读取 Kalibr 结果，直接从本项目初始化链路求解。
+- 热启动诊断：Ceres 读取 Kalibr 标定结果，只用于判断两套优化问题的固有距离。
+- 速度对比：正式主线是 macOS native Ceres vs Kalibr Docker；Docker parity 只用于解释环境差异。
+- TUM 和多 IMU：后续修正较多，历史失败保留为定位证据，不能脱离对应小节直接引用旧结论。
+
+## 结论先行
+
+| 对比项 | 当前结论 | 关键数字 | 结论边界 |
+|---|---|---|---|
+| 匿名基准独立标定 | Ceres 全部收敛，reprojection 与 Kalibr 基本一致 | 平均 reproj 差 `0.00068 px`；旋转最大 `0.0145°`；平移 `2.08-3.77 mm` | IMU 使用 Kalibr-compatible 裁边口径，不是 raw 全量 IMU |
+| Kalibr 热启动 | 两套优化问题不是逐位相同 | 从 Kalibr 解出发仍漂 `0.19-2.63 mm` | 这是诊断口径，不代表默认部署路径 |
+| 速度 | Ceres native 平均优化段快于 Kalibr Docker，但不是每组都快 | Ceres `89.3 s` vs Kalibr `128.2 s`，平均 `1.57x` | 墙钟包含 Docker 与非优化开销 |
+| 扩展 IMU | 模型不再只是 smoke，已到全量数据证据 | `M_a/M_g` 相对差约 `1e-3` | accel residual 仍略高，平移弱可观 |
+| TUM 双目 | 修正 camchain 初始化后通过 | Ceres 与 Kalibr 在 `0.06° / 1 mm` 内 | 早期失败来自 cam1 初值缺失 |
+| 多 IMU joint | Kalibr 热启动 staged 口径已通过，冷启动仍有限制 | reproj `0.229823 px`，camera 差 `0.004655° / 0.0755 mm` | 不能外推为全自由冷启动已完成 |
+
+## 结果地图
+
+| 小节 | 回答的问题 | 应引用的结论 |
+|---|---|---|
+| 实验一：匿名基准独立标定 | 不读 Kalibr 时 Ceres 是否稳定 | 12 组全部收敛，外参和 reprojection 与 Kalibr 接近 |
+| 实验二：热启动一致性 | 从同一 Kalibr 解出发是否保持不变 | 不保持，说明两套优化问题存在固有距离 |
+| 实验三：速度结构 | Ceres 快在哪里，哪些速度口径不能混用 | native vs Docker 是当前正式口径；优化耗时和墙钟要分开 |
+| 实验四：模型覆盖与扩展 IMU | 相机模型和扩展 IMU 是否有全量证据 | 扩展 IMU intrinsic 与 Kalibr 达到 `1e-3` 量级 |
+| 实验五：多 camera 与 TUM single-stage | TUM 双目和 4IMU joint 的当前状态 | TUM 已通过；4IMU 旧失败已定位并有热启动通过口径 |
+| 结论 / 复现命令 | 可复用的最终摘要和命令入口 | 优先引用这里，不直接引用历史失败段落 |
+
 ## 背景
 
 `ceres-cam-imu` 的目标不是做一个依附 Kalibr 输出的后处理器，而是形成一条**可独立运行、可部署、可解释速度和精度边界**的 Ceres cam-IMU 标定链路。Kalibr 在这份文档里只承担两个角色：第一，作为已知强基线，帮助量化 Ceres 的精度差；第二，在部分输入格式还没有原生检测器时，提供角点导出/ROS bag 转换环境。
