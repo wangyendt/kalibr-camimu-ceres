@@ -50,8 +50,20 @@ def rotation_matrix_to_vector(R):
     return axis * angle
 
 
+def ceres_rotation_vector(R):
+    return (-rotation_matrix_to_vector(R)).tolist()
+
+
 def array3(value):
     return np.asarray(value, dtype=float).reshape(-1)[:3]
+
+
+def inverse_transform(T):
+    T = np.asarray(T, dtype=float).reshape(4, 4)
+    out = np.eye(4)
+    out[:3, :3] = T[:3, :3].T
+    out[:3, 3] = -out[:3, :3].dot(T[:3, 3])
+    return out
 
 
 def transform_to_dict(T):
@@ -61,6 +73,53 @@ def transform_to_dict(T):
         "translation": matrix[:3, 3].tolist(),
         "rotation_vector": rotation_matrix_to_vector(matrix[:3, :3]).tolist(),
     }
+
+
+def matrix_rows(matrix):
+    matrix = np.asarray(matrix, dtype=float)
+    return [[float(matrix[r, c]) for c in range(matrix.shape[1])]
+            for r in range(matrix.shape[0])]
+
+
+def vector_text(values):
+    return "[" + ", ".join("{:.17g}".format(float(v)) for v in values) + "]"
+
+
+def matrix_text(matrix):
+    return "[" + ", ".join(vector_text(row) for row in matrix_rows(matrix)) + "]"
+
+
+def rotation_from_kalibr_quaternion(sm, q):
+    return np.asarray(sm.Transformation(q, np.zeros(3)).C(),
+                      dtype=float).reshape(3, 3)
+
+
+def write_ceres_initial_result(path, T_c_b, camera_time_shift_s, gravity,
+                               imu_initials):
+    T_b_c = inverse_transform(T_c_b)
+    imu_time_offsets = [item["time_offset_s"] for item in imu_initials]
+    with open(path, "w") as f:
+        f.write("format_version: 1\n")
+        f.write("camera_to_body:\n")
+        f.write("  T_c_b: {0}\n".format(matrix_text(T_c_b)))
+        f.write("  T_b_c: {0}\n".format(matrix_text(T_b_c)))
+        f.write("time_shift_s: {:.17g}\n".format(float(camera_time_shift_s)))
+        f.write("imu_time_offsets_s: {0}\n".format(vector_text(imu_time_offsets)))
+        f.write("gravity: {0}\n".format(vector_text(gravity)))
+        f.write("imu_extrinsic:\n")
+        f.write("  r_b: [0, 0, 0]\n")
+        f.write("  r_i_b: [0, 0, 0]\n")
+        f.write("camera_chain:\n")
+        f.write("  - camera_index: 0\n")
+        f.write("    T_c_b: {0}\n".format(matrix_text(T_c_b)))
+        f.write("    time_shift_s: {:.17g}\n".format(float(camera_time_shift_s)))
+        f.write("imu_chain:\n")
+        for item in imu_initials:
+            f.write("  - imu_index: {0}\n".format(item["imu_index"]))
+            f.write("    r_b: {0}\n".format(vector_text(item["r_b"])))
+            f.write("    r_i_b: {0}\n".format(vector_text(item["r_i_b"])))
+            f.write("    time_offset_s: {:.17g}\n".format(
+                float(item["time_offset_s"])))
 
 
 def make_parsed(args):
@@ -162,6 +221,8 @@ def write_bias_samples(path, imu, times):
 
 
 def export(args):
+    import sm
+
     if len(args.imu) != len(args.imu_data_file):
         raise ValueError("--imu and --imu-data-file counts must match")
     if args.imu_models and len(args.imu_models) != len(args.imu):
@@ -220,14 +281,26 @@ def export(args):
         "cameras": [],
         "imus": [],
     }
+    T_c_b_initial = None
+    camera_time_shift_s = 0.0
     for camera_index, cam in enumerate(camera_chain.camList):
+        T_cam = np.asarray(cam.T_extrinsic.T(), dtype=float).reshape(4, 4)
+        if camera_index == 0:
+            T_c_b_initial = T_cam
+            camera_time_shift_s = float(cam.timeshiftCamToImuPrior)
         meta["cameras"].append({
             "camera_index": camera_index,
             "timeshift_cam_to_imu_prior_s":
                 float(cam.timeshiftCamToImuPrior),
             "T_extrinsic": transform_to_dict(cam.T_extrinsic),
         })
+    imu_initials = []
     for imu_index, imu in enumerate(imus):
+        R_i_b = rotation_from_kalibr_quaternion(sm, imu.q_i_b_prior)
+        T_i_b = np.eye(4)
+        T_i_b[:3, :3] = R_i_b
+        r_b = np.zeros(3)
+        r_i_b = ceres_rotation_vector(R_i_b)
         meta["imus"].append({
             "imu_index": imu_index,
             "time_offset_s": float(imu.timeOffset),
@@ -235,10 +308,24 @@ def export(args):
                                           dtype=float).reshape(3).tolist(),
             "q_i_b_prior": np.asarray(imu.q_i_b_prior,
                                       dtype=float).reshape(4).tolist(),
+            "T_i_b": T_i_b.tolist(),
+            "r_b": r_b.tolist(),
+            "r_i_b": r_i_b,
+        })
+        imu_initials.append({
+            "imu_index": imu_index,
+            "time_offset_s": float(imu.timeOffset),
+            "r_b": r_b.tolist(),
+            "r_i_b": r_i_b,
         })
 
     with open(os.path.join(args.output_dir, "kalibr_initial_meta.json"), "w") as f:
         json.dump(meta, f, indent=2, sort_keys=True)
+    if args.ceres_result_output:
+        if T_c_b_initial is None:
+            raise ValueError("no camera initialization available")
+        write_ceres_initial_result(args.ceres_result_output, T_c_b_initial,
+                                   camera_time_shift_s, gravity, imu_initials)
 
 
 def main():
@@ -265,6 +352,7 @@ def main():
     parser.add_argument("--imu-delay-by-correlation", action="store_true")
     parser.add_argument("--no-time-calibration", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--ceres-result-output")
     export(parser.parse_args())
 
 
