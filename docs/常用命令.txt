@@ -148,3 +148,35 @@ python3 tools/compare_corner_csv.py --reference /private/tmp/ceres_tum_imu2_euro
 
 说明：对比 TUM cam1 的 Kalibr 与 native cpp_tools 角点像素误差，按 Kalibr grid corner id 匹配并允许 1 微秒时间戳量化差。
 python3 tools/compare_corner_csv.py --reference /private/tmp/ceres_tum_imu2_euroc_kalibr_baseline/cam1_corners.csv --candidate /private/tmp/ceres_tum_imu2_euroc_native/cam1_corners.csv --label tum_imu2_cam1_cpp_tools_vs_kalibr --timestamp-tolerance-ns 1000 --match-key corner-id
+
+======================================================================
+Kalibr Docker vs Ceres native 三组标定对比实验
+======================================================================
+
+说明：benchmark-single 场景，Ceres native + Kalibr amd64 与 arm64 两平台都跑（不加 --kalibr-platform 默认两平台）。
+python3 tools/run_docker_benchmark.py --suite benchmark-single --out-root out/docker_benchmarks/single_amd64_arm64
+
+说明：benchmark-multi-imu 场景，Ceres native + 仅 Kalibr arm64（--kalibr-platform linux/arm64 跳过 amd64，Kalibr 次数减半）。
+python3 tools/run_docker_benchmark.py --suite benchmark-multi-imu --kalibr-platform linux/arm64 --out-root out/docker_benchmarks/multi_imu_arm64
+
+说明：tum 场景，Ceres native + 仅 Kalibr arm64。
+python3 tools/run_docker_benchmark.py --suite tum --kalibr-platform linux/arm64 --out-root out/docker_benchmarks/tum_arm64
+
+======================================================================
+仿真角点 / 轨迹可视化（输出到 <dataset>/viz/：3D 轨迹图、每帧角点数曲线、角点回放 mp4、拼图）
+======================================================================
+
+说明：单相机单 IMU 场景，检查每帧角点观测并生成可视化。
+python3 simulation/scripts/visualize_observations.py --dataset simulation/generated/one_cam_one_imu --cam cam0
+
+说明：单相机四 IMU 场景。
+python3 simulation/scripts/visualize_observations.py --dataset simulation/generated/one_cam_four_imus --cam cam0
+
+说明：双相机双 IMU 场景 cam0。
+python3 simulation/scripts/visualize_observations.py --dataset simulation/generated/two_cams_two_imus --cam cam0
+
+说明：双相机双 IMU 场景 cam1（cam1 帧率 18Hz，加 --fps 18 做覆盖统计；--show 可实时回放，ESC 退出）。
+python3 simulation/scripts/visualize_observations.py --dataset simulation/generated/two_cams_two_imus --cam cam1 --fps 18
+
+说明：强激励 rich 场景（数据时长 12s，加 --duration 12 做覆盖统计）。
+python3 simulation/scripts/visualize_observations.py --dataset simulation/generated/one_cam_four_imus_rich --cam cam0 --duration 12
