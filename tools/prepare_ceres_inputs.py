@@ -32,8 +32,6 @@ DEFAULT_CALIBRATION_VALUES = [
     ("--time-shift-prior-sigma", "0.0001"),
     ("--pose-motion-translation-variance", "10"),
     ("--pose-motion-rotation-variance", "1"),
-    ("--max-iterations", "150"),
-    ("--solver-max-trust-region-radius", "10000000"),
 ]
 
 
@@ -53,12 +51,19 @@ def run(command, print_only=False):
 
 
 def docker_image_exists(image):
+    # Use `docker images` rather than `docker image inspect <tag>`: a corrupted
+    # reference store can break the tag->id lookup that `inspect` relies on, so
+    # a locally-present image would be misreported as missing (and then a doomed
+    # pull of a local-only image would be attempted).
     result = subprocess.run(
-        ["docker", "image", "inspect", image],
-        stdout=subprocess.DEVNULL,
+        ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        text=True,
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    return image in {line.strip() for line in result.stdout.splitlines()}
 
 
 def resolve_kalibr_image(args):

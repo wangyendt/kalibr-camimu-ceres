@@ -219,7 +219,6 @@ estimateOrientationGravityAndGyroBiasPrior(
   CameraExtrinsicBlock identity_T_c_b;
   identity_T_c_b.values = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   PoseSplineFitOptions fit_options;
-  fit_options.regularization = 1e-12;
   fit_options.motion_regularization = options.pose_fit_regularization;
   fit_options.motion_regularization_order = 2;
   fit_options.add_boundary_anchors = options.pose_fit_boundary_anchors;

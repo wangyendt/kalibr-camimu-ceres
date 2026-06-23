@@ -23,6 +23,11 @@ enum class RobustLossType {
   kHuber,
 };
 
+double kalibrMEstimatorWeight(RobustLossType type, double width,
+                              double squared_residual_norm);
+std::array<double, 3> kalibrMEstimatorRho(RobustLossType type, double width,
+                                          double squared_residual_norm);
+
 struct CalibrationOptions {
   int spline_order = 6;
   double pose_knots_per_second = 20.0;
@@ -33,6 +38,9 @@ struct CalibrationOptions {
   // Matches Kalibr's --timeoffset-padding. The spline range pads both sides
   // by 2 * time_padding_s to keep camera time-shift changes inside the spline.
   double time_padding_s = 0.04;
+  // Negative reuses time_padding_s. Zero keeps camera residuals on their
+  // initial spline segment, matching the legacy fast path.
+  double camera_time_offset_buffer_s = -1.0;
   double initial_camera_time_shift_s = 0.0;
   Vec3 initial_gyro_bias_rad_s = Vec3::Zero();
   Vec3 initial_accel_bias_m_s2 = Vec3::Zero();
@@ -93,8 +101,9 @@ struct CalibrationOptions {
   double solver_absolute_step_tolerance = -1.0;
   double solver_absolute_parameter_tolerance = -1.0;
   int solver_num_threads = 4;
-  int solver_max_consecutive_nonmonotonic_steps = 5;
-  bool solver_use_nonmonotonic_steps = false;
+  int solver_max_consecutive_nonmonotonic_steps = 20;
+  bool solver_use_nonmonotonic_steps = true;
+  bool solver_restore_best_state = false;
   ceres::LinearSolverType solver_linear_solver_type =
       ceres::SPARSE_NORMAL_CHOLESKY;
   bool trace_iteration_state = false;
@@ -207,7 +216,7 @@ solveCalibrationProblem(const CalibrationOptions &options,
 
 ceres::Solver::Summary
 solveCalibrationProblem(const CalibrationOptions &options,
-                        const CalibrationState *state, ceres::Problem *problem);
+                        CalibrationState *state, ceres::Problem *problem);
 
 PoseInitializationSummary initializePoseControlsFromCameraPoses(
     const std::vector<PoseObservation> &pose_observations,

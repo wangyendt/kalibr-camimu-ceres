@@ -92,10 +92,8 @@ TimeShiftPriorEstimate estimateCameraImuTimeShiftPrior(
 
   std::vector<PoseControlBlock> pose_controls;
   PoseSplineFitOptions fit_options;
-  fit_options.regularization = 1e-12;
   // Kalibr's sparse pose-spline initialization adds a second-derivative
-  // smoothness term for order > 2 splines. Keep the diagonal damping tiny and
-  // expose the Kalibr lambda through TimeShiftPriorOptions.
+  // smoothness term for order > 2 splines, without diagonal damping.
   fit_options.motion_regularization = options.pose_fit_regularization;
   fit_options.motion_regularization_order = 2;
   fit_options.unwrap_rotation_vectors = true;

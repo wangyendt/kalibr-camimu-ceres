@@ -55,6 +55,36 @@ int main() {
   assert(std::abs(px.x() - 320.0) < 1e-12);
   assert(std::abs(px.y() - 200.0) < 1e-12);
 
+  {
+    const double cauchy_w = ceres_cam_imu::kalibrMEstimatorWeight(
+        ceres_cam_imu::RobustLossType::kCauchy, 10.0, 30.0);
+    assert(std::abs(cauchy_w - 0.25) < 1e-15);
+    const std::array<double, 3> cauchy_rho =
+        ceres_cam_imu::kalibrMEstimatorRho(
+            ceres_cam_imu::RobustLossType::kCauchy, 10.0, 30.0);
+    assert(std::abs(cauchy_rho[0] - 7.5) < 1e-15);
+    assert(std::abs(cauchy_rho[1] - cauchy_w) < 1e-15);
+    assert(cauchy_rho[2] == 0.0);
+
+    const double huber_inside = ceres_cam_imu::kalibrMEstimatorWeight(
+        ceres_cam_imu::RobustLossType::kHuber, 2.0, 3.0);
+    const double huber_outside = ceres_cam_imu::kalibrMEstimatorWeight(
+        ceres_cam_imu::RobustLossType::kHuber, 2.0, 9.0);
+    assert(huber_inside == 1.0);
+    assert(std::abs(huber_outside - (2.0 / 3.0)) < 1e-15);
+    const std::array<double, 3> huber_rho =
+        ceres_cam_imu::kalibrMEstimatorRho(
+            ceres_cam_imu::RobustLossType::kHuber, 2.0, 9.0);
+    assert(std::abs(huber_rho[0] - 6.0) < 1e-15);
+    assert(std::abs(huber_rho[1] - huber_outside) < 1e-15);
+    assert(huber_rho[2] == 0.0);
+
+    assert(ceres_cam_imu::kalibrMEstimatorWeight(
+               ceres_cam_imu::RobustLossType::kNone, 10.0, 30.0) == 1.0);
+    assert(ceres_cam_imu::kalibrMEstimatorWeight(
+               ceres_cam_imu::RobustLossType::kCauchy, 0.0, 30.0) == 1.0);
+  }
+
   auto make_camera_intrinsics = [](const std::string &camera_model,
                                    const std::string &distortion_model,
                                    std::vector<double> intrinsics,
@@ -910,6 +940,7 @@ int main() {
   stage_base.max_iterations = 3;
   stage_base.max_frames = 17;
   stage_base.add_pose_motion_prior = true;
+  stage_base.optimize_imu_time_offsets = true;
   const std::vector<ceres_cam_imu::CalibrationStage> stages =
       ceres_cam_imu::makeConservativeCalibrationStages(stage_base);
   assert(stages.size() == 4);
@@ -918,10 +949,14 @@ int main() {
   assert(stages.front().options.fix_bias_controls);
   assert(!stages.front().options.fix_camera_extrinsic);
   assert(stages.front().options.fix_time_shift);
+  assert(!stages.front().options.optimize_imu_time_offsets);
   assert(stages.front().options.fix_gravity);
+  assert(stages.at(1).options.optimize_imu_time_offsets);
+  assert(stages.at(2).options.optimize_imu_time_offsets);
   assert(stages.back().options.fix_pose_controls);
   assert(!stages.back().options.fix_camera_extrinsic);
   assert(!stages.back().options.fix_time_shift);
+  assert(stages.back().options.optimize_imu_time_offsets);
   assert(stages.back().options.max_frames == 17);
   assert(stages.back().options.max_iterations == 3);
   assert(stages.back().options.add_pose_motion_prior);
@@ -943,14 +978,62 @@ int main() {
   assert(custom_stages.at(0).options.fix_pose_controls);
   assert(custom_stages.at(0).options.fix_bias_controls);
   assert(!custom_stages.at(0).options.fix_camera_extrinsic);
+  assert(!custom_stages.at(0).options.fix_imu_extrinsics);
   assert(custom_stages.at(0).options.fix_time_shift);
+  assert(!custom_stages.at(0).options.optimize_imu_time_offsets);
   assert(custom_stages.at(0).options.fix_gravity);
   assert(custom_stages.at(1).options.max_iterations == 2);
   assert(custom_stages.at(1).options.fix_pose_controls);
   assert(!custom_stages.at(1).options.fix_bias_controls);
   assert(!custom_stages.at(1).options.fix_camera_extrinsic);
+  assert(!custom_stages.at(1).options.fix_imu_extrinsics);
   assert(custom_stages.at(1).options.fix_time_shift);
+  assert(!custom_stages.at(1).options.optimize_imu_time_offsets);
   assert(custom_stages.at(1).options.fix_gravity);
+
+  const std::vector<ceres_cam_imu::CalibrationStage> time_custom_stages =
+      ceres_cam_imu::makeCalibrationStagesFromFreeMasks(stage_base, {}, {"t"});
+  assert(!time_custom_stages.at(0).options.fix_time_shift);
+  assert(time_custom_stages.at(0).options.optimize_imu_time_offsets);
+  assert(!time_custom_stages.at(0).options.fix_imu_extrinsics);
+
+  ceres_cam_imu::CalibrationOptions fixed_offset_stage_base = stage_base;
+  fixed_offset_stage_base.optimize_imu_time_offsets = false;
+  const std::vector<ceres_cam_imu::CalibrationStage> fixed_offset_time_stage =
+      ceres_cam_imu::makeCalibrationStagesFromFreeMasks(
+          fixed_offset_stage_base, {}, {"t"});
+  assert(!fixed_offset_time_stage.at(0).options.fix_time_shift);
+  assert(!fixed_offset_time_stage.at(0).options.optimize_imu_time_offsets);
+
+  const std::vector<ceres_cam_imu::CalibrationStage> eval_custom_stages =
+      ceres_cam_imu::makeCalibrationStagesFromFreeMasks(stage_base, {},
+                                                        {"none", "-"});
+  assert(eval_custom_stages.at(0).options.fix_pose_controls);
+  assert(eval_custom_stages.at(0).options.fix_bias_controls);
+  assert(eval_custom_stages.at(0).options.fix_camera_extrinsic);
+  assert(eval_custom_stages.at(0).options.fix_imu_extrinsics);
+  assert(eval_custom_stages.at(0).options.fix_time_shift);
+  assert(!eval_custom_stages.at(0).options.optimize_imu_time_offsets);
+  assert(eval_custom_stages.at(0).options.fix_gravity);
+  assert(eval_custom_stages.at(1).options.fix_pose_controls);
+  assert(eval_custom_stages.at(1).options.fix_bias_controls);
+  assert(eval_custom_stages.at(1).options.fix_camera_extrinsic);
+  assert(eval_custom_stages.at(1).options.fix_imu_extrinsics);
+  assert(eval_custom_stages.at(1).options.fix_time_shift);
+  assert(!eval_custom_stages.at(1).options.optimize_imu_time_offsets);
+  assert(eval_custom_stages.at(1).options.fix_gravity);
+
+  const std::vector<ceres_cam_imu::CalibrationStage> imu_custom_stages =
+      ceres_cam_imu::makeCalibrationStagesFromFreeMasks(stage_base, {},
+                                                        {"none", "i"});
+  assert(imu_custom_stages.at(0).options.fix_imu_extrinsics);
+  assert(imu_custom_stages.at(1).options.fix_pose_controls);
+  assert(imu_custom_stages.at(1).options.fix_bias_controls);
+  assert(imu_custom_stages.at(1).options.fix_camera_extrinsic);
+  assert(!imu_custom_stages.at(1).options.fix_imu_extrinsics);
+  assert(imu_custom_stages.at(1).options.fix_time_shift);
+  assert(!imu_custom_stages.at(1).options.optimize_imu_time_offsets);
+  assert(imu_custom_stages.at(1).options.fix_gravity);
 
   std::vector<ceres_cam_imu::CalibrationStage> weighted_stages = custom_stages;
   ceres_cam_imu::applyStagePoseMotionVariances({100.0, 10.0}, {20.0, 2.0},
@@ -1019,12 +1102,14 @@ int main() {
   for (const ceres_cam_imu::CalibrationStage &stage : fixed_stages) {
     assert(stage.options.fix_time_shift);
     assert(stage.options.fix_camera_extrinsic);
+    assert(!stage.options.optimize_imu_time_offsets);
   }
 
   const std::vector<ceres_cam_imu::CalibrationStage> globally_fixed_custom =
       ceres_cam_imu::makeCalibrationStagesFromFreeMasks(stage_base, {}, {"te"});
   assert(globally_fixed_custom.at(0).options.fix_time_shift);
   assert(globally_fixed_custom.at(0).options.fix_camera_extrinsic);
+  assert(!globally_fixed_custom.at(0).options.optimize_imu_time_offsets);
 
   bool invalid_stage_mask_threw = false;
   try {

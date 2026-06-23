@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -19,6 +20,7 @@
 #include "ceres_cam_imu/core/so3_jacobians.h"
 #include "ceres_cam_imu/initialization/pose_spline_fit.h"
 #include "ceres_cam_imu/optimizer/parameter_delta_tracker.h"
+#include "ceres_cam_imu/optimizer/state_snapshot.h"
 #include "ceres_cam_imu/residuals/accelerometer_residual.h"
 #include "ceres_cam_imu/residuals/bias_motion_prior.h"
 #include "ceres_cam_imu/residuals/camera_reprojection_residual.h"
@@ -168,22 +170,16 @@ public:
       : type_(type), width_(width) {}
 
   void Evaluate(const double s, double rho[3]) const override {
-    double weight = 1.0;
-    if (type_ == RobustLossType::kCauchy) {
-      weight = 1.0 / (1.0 + s / width_);
-    } else if (type_ == RobustLossType::kHuber) {
-      const double threshold_s = width_ * width_;
-      weight = s < threshold_s ? 1.0 : width_ / std::sqrt(std::max(s, 1e-300));
-    }
-
     // Kalibr's aslam_backend treats M-estimators as an iteratively reweighted
     // least-squares factor: both residuals and Jacobians are scaled by
     // sqrt(weight). It does not use the derivative of the weight function in
     // the Hessian. Setting rho' to weight and rho'' to zero matches that
     // linearization in Ceres while keeping the reported cost weighted.
-    rho[0] = weight * s;
-    rho[1] = weight;
-    rho[2] = 0.0;
+    const std::array<double, 3> value =
+        kalibrMEstimatorRho(type_, width_, s);
+    rho[0] = value[0];
+    rho[1] = value[1];
+    rho[2] = value[2];
   }
 
 private:
@@ -330,11 +326,15 @@ void addCameraReprojectionResidualBlock(
   std::unique_ptr<ceres::LossFunction> loss =
       makeLoss(options.camera_loss_type, options.camera_loss_width);
 
-  if (!options.fix_time_shift && options.time_padding_s > 0.0) {
+  const double camera_time_offset_buffer_s =
+      options.camera_time_offset_buffer_s >= 0.0
+          ? options.camera_time_offset_buffer_s
+          : options.time_padding_s;
+  if (!options.fix_time_shift && camera_time_offset_buffer_s > 0.0) {
     const double query_time_s = observation_time_s + time_shift->value;
     const PoseSegmentBuffer buffer =
         makePoseSegmentBuffer(state->pose_spline, query_time_s,
-                              options.time_padding_s);
+                              camera_time_offset_buffer_s);
     for (const SplineSegmentMeta6 &meta : buffer.metas) {
       markActiveSegment(meta, active_pose_segments);
     }
@@ -1013,6 +1013,75 @@ private:
   ParameterDeltaTracker parameter_delta_tracker_;
 };
 
+class BestStateCallback final : public ceres::IterationCallback {
+public:
+  BestStateCallback(const CalibrationOptions &options,
+                    const CalibrationState *state)
+      : enabled_(options.solver_restore_best_state && state != nullptr),
+        state_(state), label_(options.trace_label) {
+    if (enabled_) {
+      best_snapshot_ = snapshotCalibrationState(*state_);
+    }
+  }
+
+  bool enabled() const { return enabled_; }
+
+  ceres::CallbackReturnType
+  operator()(const ceres::IterationSummary &summary) override {
+    if (!enabled_ || !state_) {
+      return ceres::SOLVER_CONTINUE;
+    }
+    if (summary.iteration != 0 && !summary.step_is_successful) {
+      return ceres::SOLVER_CONTINUE;
+    }
+    if (!std::isfinite(summary.cost)) {
+      return ceres::SOLVER_CONTINUE;
+    }
+    if (!has_best_ || summary.cost < best_cost_) {
+      best_cost_ = summary.cost;
+      best_iteration_ = summary.iteration;
+      best_snapshot_ = snapshotCalibrationState(*state_);
+      has_best_ = true;
+    }
+    return ceres::SOLVER_CONTINUE;
+  }
+
+  bool restoreIfBetter(CalibrationState *state,
+                       ceres::Solver::Summary *summary) const {
+    if (!enabled_ || !state || !summary || !has_best_) {
+      return false;
+    }
+    if (!std::isfinite(summary->final_cost)) {
+      return false;
+    }
+    const double tolerance =
+        1e-12 * std::max(1.0, std::abs(summary->final_cost));
+    if (best_cost_ >= summary->final_cost - tolerance) {
+      return false;
+    }
+    restoreCalibrationState(best_snapshot_, state);
+    const std::streamsize old_precision = std::cout.precision();
+    std::cout << std::setprecision(17) << "best_state_restore";
+    if (!label_.empty()) {
+      std::cout << " label=" << label_;
+    }
+    std::cout << " iter=" << best_iteration_ << " best_cost=" << best_cost_
+              << " final_cost_before_restore=" << summary->final_cost << "\n";
+    std::cout.precision(old_precision);
+    summary->final_cost = best_cost_;
+    return true;
+  }
+
+private:
+  bool enabled_ = false;
+  const CalibrationState *state_ = nullptr;
+  std::string label_;
+  bool has_best_ = false;
+  int best_iteration_ = -1;
+  double best_cost_ = std::numeric_limits<double>::infinity();
+  CalibrationStateSnapshot best_snapshot_;
+};
+
 void fillProblemSizeSummary(const ceres::Problem &problem,
                             CalibrationBuildSummary *summary) {
   if (!summary) {
@@ -1040,6 +1109,31 @@ void fillProblemSizeSummary(const ceres::Problem &problem,
 }
 
 } // namespace
+
+double kalibrMEstimatorWeight(const RobustLossType type, const double width,
+                              const double squared_residual_norm) {
+  if (width <= 0.0 || type == RobustLossType::kNone) {
+    return 1.0;
+  }
+  if (type == RobustLossType::kCauchy) {
+    return 1.0 / (1.0 + squared_residual_norm / width);
+  }
+  if (type == RobustLossType::kHuber) {
+    const double threshold_s = width * width;
+    return squared_residual_norm < threshold_s
+               ? 1.0
+               : width / std::sqrt(std::max(squared_residual_norm, 1e-300));
+  }
+  return 1.0;
+}
+
+std::array<double, 3> kalibrMEstimatorRho(
+    const RobustLossType type, const double width,
+    const double squared_residual_norm) {
+  const double weight =
+      kalibrMEstimatorWeight(type, width, squared_residual_norm);
+  return {weight * squared_residual_norm, weight, 0.0};
+}
 
 CalibrationState
 initializeCalibrationState(const std::vector<ImageObservation> &images,
@@ -1603,13 +1697,13 @@ buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
 ceres::Solver::Summary
 solveCalibrationProblem(const CalibrationOptions &options,
                         ceres::Problem *problem) {
-  return solveCalibrationProblem(options, nullptr, problem);
+  return solveCalibrationProblem(options, static_cast<CalibrationState *>(nullptr),
+                                 problem);
 }
 
 ceres::Solver::Summary
 solveCalibrationProblem(const CalibrationOptions &options,
-                        const CalibrationState *state,
-                        ceres::Problem *problem) {
+                        CalibrationState *state, ceres::Problem *problem) {
   ceres::Solver::Options solver_options;
   solver_options.max_num_iterations = options.max_iterations;
   solver_options.function_tolerance = options.solver_function_tolerance;
@@ -1630,13 +1724,27 @@ solveCalibrationProblem(const CalibrationOptions &options,
   solver_options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
   solver_options.minimizer_progress_to_stdout = true;
 
+  // Diagnostic: set CERES_CHECK_GRADIENTS=1 to compare every analytic Jacobian
+  // against a finite-difference reference and report mismatching residual blocks.
+  if (const char *check_env = std::getenv("CERES_CHECK_GRADIENTS")) {
+    if (check_env[0] != '\0' && check_env[0] != '0') {
+      solver_options.check_gradients = true;
+      solver_options.gradient_check_relative_precision = 1e-3;
+    }
+  }
+
   StateTraceCallback trace_callback(options, state, problem);
   if (options.trace_iteration_state ||
-      options.solver_absolute_parameter_tolerance >= 0.0) {
+      options.solver_absolute_parameter_tolerance >= 0.0 ||
+      options.solver_restore_best_state) {
     solver_options.update_state_every_iteration = true;
   }
   if (options.trace_iteration_state) {
     solver_options.callbacks.push_back(&trace_callback);
+  }
+  BestStateCallback best_state_callback(options, state);
+  if (best_state_callback.enabled()) {
+    solver_options.callbacks.push_back(&best_state_callback);
   }
   AbsoluteStopCallback absolute_stop_callback(options, problem);
   if (absolute_stop_callback.enabled()) {
@@ -1645,6 +1753,7 @@ solveCalibrationProblem(const CalibrationOptions &options,
 
   ceres::Solver::Summary summary;
   ceres::Solve(solver_options, problem, &summary);
+  best_state_callback.restoreIfBetter(state, &summary);
   return summary;
 }
 

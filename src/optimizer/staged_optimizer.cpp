@@ -41,6 +41,9 @@ stageOptions(const CalibrationOptions &base_options, const int max_iterations,
   options.fix_camera_extrinsic =
       fix_camera_extrinsic || base_options.fix_camera_extrinsic;
   options.fix_time_shift = fix_time_shift || base_options.fix_time_shift;
+  if (options.fix_time_shift) {
+    options.optimize_imu_time_offsets = false;
+  }
   options.fix_gravity = fix_gravity || base_options.fix_gravity;
   options.fix_imu_extrinsics =
       fix_imu_extrinsics || base_options.fix_imu_extrinsics;
@@ -63,7 +66,14 @@ int stageIteration(const CalibrationOptions &base_options,
 }
 
 bool stageMaskContains(const std::string &mask, const char variable) {
+  if (mask == "none" || mask == "-") {
+    return false;
+  }
   return mask.find(variable) != std::string::npos;
+}
+
+bool isEmptyStageMask(const std::string &mask) {
+  return mask == "none" || mask == "-";
 }
 
 void validateStageFreeMask(const std::string &mask) {
@@ -268,7 +278,8 @@ std::vector<CalibrationStage> makeCalibrationStagesFromFreeMasks(
     const bool free_time = stageMaskContains(mask, 't');
     const bool free_gravity = stageMaskContains(mask, 'g');
     const bool free_imu_extrinsics =
-        !use_explicit_imu_extrinsic_masks || stageMaskContains(mask, 'i');
+        !isEmptyStageMask(mask) &&
+        (!use_explicit_imu_extrinsic_masks || stageMaskContains(mask, 'i'));
     CalibrationStage stage;
     stage.name = "custom_" + std::to_string(i) + "_free_" + mask;
     stage.options = stageOptions(base_options,

@@ -10,6 +10,7 @@ namespace ceres_cam_imu {
 
 struct ImuChainInitializerOptions {
   double max_time_offset_search_s = 0.2;
+  bool use_full_overlap_time_offset_search = false;
   int sample_stride = 1;
   int min_samples = 200;
   double min_rotation_excitation = 1e-8;
@@ -25,6 +26,8 @@ struct ImuChainInitializerPairResult {
   double time_offset_s = 0.0;
   int discrete_shift_samples = 0;
   double sample_dt_s = 0.0;
+  double time_offset_search_radius_s = 0.0;
+  int max_search_lag_samples = 0;
   int matched_samples = 0;
   double peak_correlation = 0.0;
   Mat3 R_i_b = Mat3::Identity();

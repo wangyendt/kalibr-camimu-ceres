@@ -116,6 +116,95 @@ ceres_cam_imu::RobustLossType parseLossType(const std::string &value) {
   throw std::invalid_argument("unknown robust loss type: " + value);
 }
 
+std::string robustLossTypeName(const ceres_cam_imu::RobustLossType type) {
+  switch (type) {
+  case ceres_cam_imu::RobustLossType::kNone:
+    return "none";
+  case ceres_cam_imu::RobustLossType::kCauchy:
+    return "cauchy";
+  case ceres_cam_imu::RobustLossType::kHuber:
+    return "huber";
+  }
+  return "unknown";
+}
+
+enum class CornerDefaultTopology {
+  kOneCameraOneImu,
+  kOneCameraMultiImu,
+  kMultiCameraOneImu,
+  kMultiCameraMultiImu,
+};
+
+CornerDefaultTopology inferCornerDefaultTopology(std::size_t camera_count,
+                                                 std::size_t imu_count) {
+  const bool multi_camera = camera_count > 1;
+  const bool multi_imu = imu_count > 1;
+  if (!multi_camera && !multi_imu) {
+    return CornerDefaultTopology::kOneCameraOneImu;
+  }
+  if (!multi_camera && multi_imu) {
+    return CornerDefaultTopology::kOneCameraMultiImu;
+  }
+  if (multi_camera && !multi_imu) {
+    return CornerDefaultTopology::kMultiCameraOneImu;
+  }
+  return CornerDefaultTopology::kMultiCameraMultiImu;
+}
+
+std::string cornerDefaultTopologyName(const CornerDefaultTopology topology) {
+  switch (topology) {
+  case CornerDefaultTopology::kOneCameraOneImu:
+    return "1cam+1imu";
+  case CornerDefaultTopology::kOneCameraMultiImu:
+    return "1cam+Nimu";
+  case CornerDefaultTopology::kMultiCameraOneImu:
+    return "Mcam+1imu";
+  case CornerDefaultTopology::kMultiCameraMultiImu:
+    return "Mcam+Nimu";
+  }
+  return "unknown";
+}
+
+void applyCornerCommonDefaults(ceres_cam_imu::CalibrationOptions *options) {
+  options->pose_knots_per_second = 100.0;
+  options->bias_knots_per_second = 50.0;
+  options->time_padding_s = 0.04;
+  options->camera_time_offset_buffer_s = 0.0;
+  options->camera_loss_type = ceres_cam_imu::RobustLossType::kCauchy;
+  options->gyro_loss_type = ceres_cam_imu::RobustLossType::kCauchy;
+  options->accel_loss_type = ceres_cam_imu::RobustLossType::kCauchy;
+  options->camera_loss_width = 10.0;
+  options->gyro_loss_width = 10.0;
+  options->accel_loss_width = 10.0;
+}
+
+void applyProductionSolverDefaults(ceres_cam_imu::CalibrationOptions *options) {
+  options->max_iterations = 150;
+  options->solver_function_tolerance = 0.0;
+  options->solver_gradient_tolerance = 0.0;
+  options->solver_parameter_tolerance = 0.0;
+  options->solver_max_trust_region_radius = 1e7;
+  options->solver_absolute_cost_change_tolerance = -1.0;
+  options->solver_absolute_step_tolerance = 0.02;
+  options->solver_absolute_parameter_tolerance = -1.0;
+  options->solver_use_nonmonotonic_steps = true;
+  options->solver_max_consecutive_nonmonotonic_steps = 20;
+}
+
+CornerDefaultTopology
+applyCornerDefaults(const std::size_t camera_count, const std::size_t imu_count,
+                    ceres_cam_imu::CalibrationOptions *options) {
+  const CornerDefaultTopology topology =
+      inferCornerDefaultTopology(camera_count, imu_count);
+  applyCornerCommonDefaults(options);
+  // Keep the first production preset conservative across topologies. More
+  // specialized multi-camera/multi-IMU presets can narrow this later after
+  // dedicated benchmarks, but bare --corner-defaults should not expose the old
+  // 30-iteration early-stop behavior.
+  applyProductionSolverDefaults(options);
+  return topology;
+}
+
 ceres::LinearSolverType
 parseLinearSolverType(const std::string &value,
                       ceres::LinearSolverType fallback) {
@@ -440,13 +529,17 @@ void usage() {
          "[--solver-absolute-parameter-tolerance V] "
          "[--solver-linear-solver TYPE] [--solver-num-threads N] "
          "[--solver-use-nonmonotonic-steps] "
+         "[--no-solver-use-nonmonotonic-steps] "
          "[--solver-max-consecutive-nonmonotonic-steps N] "
+         "[--solver-restore-best-state] "
+         "[--no-solver-restore-best-state] "
          "[--trace-iteration-state] "
          "[--pose-fit-diagonal-lambda L] [--pose-fit-motion-lambda L] "
          "[--pose-fit-boundary-anchors] "
          "[--stage-iterations N0,N1,N2,N3] [--stage-free MASK[,MASK...]] "
          "[--stop-on-stage-failure] "
          "[--time-padding S|--timeoffset-padding S] "
+         "[--camera-time-offset-buffer S] "
          "[--fix-poses] [--fix-biases] [--fix-camera-extrinsic] "
          "[--fix-camera-chain-extrinsics] "
          "[--fix-time-shift] [--fix-gravity] [--fix-imu-extrinsics] "
@@ -503,11 +596,18 @@ void usage() {
   std::cout << "  --time-padding / --timeoffset-padding pads splines by 2*S "
                "on each side.\n";
   std::cout
+      << "  --camera-time-offset-buffer controls the camera residual control "
+         "point buffer when camera time shift is active. Negative reuses time "
+         "padding; zero uses the legacy fixed-segment fast path.\n";
+  std::cout
       << "  --corner-defaults sets the standard corner-file defaults before "
-         "parsing explicit overrides: pose/bias kps 100/50, max-iter 30, "
-         "time padding 0.04, IMU edge trim 1000, Cauchy width 10, and "
-         "production stopping: max-iter, absolute cost change 5e-2, "
-         "max parameter delta 1e-2. "
+         "parsing explicit overrides. It applies common corner defaults "
+         "(pose/bias kps 100/50, time padding 0.04, camera time-offset "
+         "buffer 0, IMU edge trim 1000, Cauchy width 10), infers the "
+         "camera/IMU topology, and applies the current production solver "
+         "defaults: max-iter 150, Ceres function/gradient/parameter "
+         "tolerances 0, absolute step 0.02, absolute cost/parameter disabled, "
+         "and nonmonotonic steps enabled with max consecutive steps 20. "
          "--kalibr-corner-defaults is accepted as a deprecated alias.\n";
   std::cout
       << "  --pose-fit-motion-lambda adds Kalibr-style derivative-integral "
@@ -540,16 +640,19 @@ void usage() {
   std::cout
       << "  Multi-IMU cold starts estimate non-reference IMU rotations from "
          "gyro correlation by default and apply the same gyro-correlation "
-         "time offsets as IMU delay correction. Experimental non-reference "
+         "time offsets as fixed IMU delay correction. Experimental non-reference "
          "lever-arm "
          "initialization from accelerometer differences is available through "
          "--estimate-imu-chain-lever-prior. Use "
          "--no-estimate-imu-chain-prior to disable the whole chain prior, "
          "--no-imu-delay-correction to keep all IMU residual timestamps "
          "uncorrected, "
-         "--fix-imu-time-offsets to keep delay correction fixed, "
+         "--optimize-imu-time-offsets to refine non-reference IMU delays as "
+         "Ceres variables, --fix-imu-time-offsets to request the default "
+         "fixed-correction mode explicitly, "
          "--imu-time-offset-bound-s S to bound the Ceres refinement window, "
-         "--imu-chain-prior-max-offset-s S to bound time search, and "
+         "--imu-chain-prior-max-offset-s S to override multi-IMU "
+         "corner-defaults full-overlap time search with a bounded search, and "
          "--imu-chain-prior-stride N to downsample initialization samples.\n";
   std::cout
       << "  --estimate-orientation-gravity-prior estimates camera-IMU "
@@ -573,10 +676,12 @@ void usage() {
   std::cout
       << "  --stage-free overrides the conservative staged preset. Each mask "
          "lists "
-         "free variables: p=pose, b=bias, e=camera extrinsic, t=time, "
-         "g=gravity, i=non-reference IMU extrinsics; use '-' or 'none' for "
-         "an evaluation-only stage. When no stage mask contains i, IMU "
-         "extrinsics keep the legacy always-free behavior.\n";
+         "free variables: p=pose, b=bias, e=camera extrinsic, t=camera time "
+         "shift and explicit non-reference IMU time-offset variables, "
+         "g=gravity, i=non-reference IMU "
+         "extrinsics; use '-' or 'none' for an evaluation-only stage. When no "
+         "non-empty stage mask contains i, IMU extrinsics keep the legacy "
+         "always-free behavior for non-empty stages.\n";
   std::cout
       << "  --extrinsic-manifold enables an experimental SO(3) update for "
          "camera/IMU extrinsics. The default keeps the legacy additive "
@@ -618,6 +723,14 @@ void usage() {
                "stopping callbacks; the parameter tolerance scans active "
                "parameter blocks and is the closest Ceres-side analogue of "
                "Kalibr deltaX. Negative values disable them.\n";
+  std::cout
+      << "  Nonmonotonic Ceres trust-region steps are enabled by default "
+         "with max_consecutive_nonmonotonic_steps=20; use "
+         "--no-solver-use-nonmonotonic-steps to reproduce monotonic runs.\n";
+  std::cout
+      << "  --solver-restore-best-state records the lowest accepted cost state "
+         "inside each solve and restores it if a later nonmonotonic accepted "
+         "state finishes with higher cost.\n";
   std::cout
       << "  --trace-iteration-state prints accepted Ceres iteration states; "
          "when --kalibr-result is present it also prints per-iteration deltas "
@@ -800,6 +913,32 @@ void initializeImuExtrinsicsFromKalibr(
     state->imu_extrinsics[imu_index] = block;
   }
   std::cout << "initialized IMU chain extrinsics from Kalibr: count="
+            << imu_count << "\n";
+}
+
+void initializeImuExtrinsicsFromResult(
+    const ceres_cam_imu::CalibrationResultFile &result,
+    const std::size_t imu_count, ceres_cam_imu::CalibrationState *state) {
+  if (!state || result.imu_extrinsics.size() < imu_count) {
+    return;
+  }
+  if (state->imu_extrinsics.size() < imu_count) {
+    state->imu_extrinsics.resize(imu_count);
+  }
+  for (std::size_t imu_index = 0; imu_index < imu_count; ++imu_index) {
+    ceres_cam_imu::ImuExtrinsicBlock block;
+    const ceres_cam_imu::CalibrationResultImuExtrinsic &source =
+        result.imu_extrinsics[imu_index];
+    for (int i = 0; i < 3; ++i) {
+      block.values[static_cast<std::size_t>(i)] = source.r_b(i);
+      block.values[static_cast<std::size_t>(i + 3)] = source.r_i_b(i);
+    }
+    if (imu_index == 0) {
+      state->imu_extrinsic = block;
+    }
+    state->imu_extrinsics[imu_index] = block;
+  }
+  std::cout << "initialized IMU chain extrinsics from Ceres result: count="
             << imu_count << "\n";
 }
 
@@ -1165,20 +1304,25 @@ int main(int argc, char **argv) {
 
   const bool corner_defaults = hasFlag(argc, argv, "--corner-defaults") ||
                                hasFlag(argc, argv, "--kalibr-corner-defaults");
+  std::vector<std::string> topology_corner_csvs =
+      argValues(argc, argv, "--corners");
+  if (topology_corner_csvs.empty()) {
+    topology_corner_csvs.push_back(corners_csv);
+  }
+  std::vector<std::string> topology_imu_data_csvs =
+      argValues(argc, argv, "--imu-data");
+  if (topology_imu_data_csvs.empty()) {
+    topology_imu_data_csvs.push_back(imu_data);
+  }
+  const std::size_t topology_camera_count = topology_corner_csvs.size();
+  const std::size_t topology_imu_count = topology_imu_data_csvs.size();
   ceres_cam_imu::CalibrationOptions options;
+  CornerDefaultTopology corner_default_topology =
+      CornerDefaultTopology::kOneCameraOneImu;
   if (corner_defaults) {
-    options.pose_knots_per_second = 100.0;
-    options.bias_knots_per_second = 50.0;
-    options.time_padding_s = 0.04;
-    options.max_iterations = 30;
-    options.solver_absolute_cost_change_tolerance = 5e-2;
-    options.solver_absolute_parameter_tolerance = 1e-2;
-    options.camera_loss_type = ceres_cam_imu::RobustLossType::kCauchy;
-    options.gyro_loss_type = ceres_cam_imu::RobustLossType::kCauchy;
-    options.accel_loss_type = ceres_cam_imu::RobustLossType::kCauchy;
-    options.camera_loss_width = 10.0;
-    options.gyro_loss_width = 10.0;
-    options.accel_loss_width = 10.0;
+    corner_default_topology =
+        applyCornerDefaults(topology_camera_count, topology_imu_count,
+                            &options);
   }
   options.max_frames = intArg(argc, argv, "--max-frames", 0);
   options.imu_stride = intArg(argc, argv, "--imu-stride", 1);
@@ -1224,8 +1368,18 @@ int main(int argc, char **argv) {
   options.solver_max_consecutive_nonmonotonic_steps =
       intArg(argc, argv, "--solver-max-consecutive-nonmonotonic-steps",
              options.solver_max_consecutive_nonmonotonic_steps);
-  options.solver_use_nonmonotonic_steps =
-      hasFlag(argc, argv, "--solver-use-nonmonotonic-steps");
+  if (hasFlag(argc, argv, "--solver-use-nonmonotonic-steps")) {
+    options.solver_use_nonmonotonic_steps = true;
+  }
+  if (hasFlag(argc, argv, "--no-solver-use-nonmonotonic-steps")) {
+    options.solver_use_nonmonotonic_steps = false;
+  }
+  if (hasFlag(argc, argv, "--solver-restore-best-state")) {
+    options.solver_restore_best_state = true;
+  }
+  if (hasFlag(argc, argv, "--no-solver-restore-best-state")) {
+    options.solver_restore_best_state = false;
+  }
   options.solver_linear_solver_type =
       parseLinearSolverType(argValue(argc, argv, "--solver-linear-solver"),
                             options.solver_linear_solver_type);
@@ -1255,6 +1409,9 @@ int main(int argc, char **argv) {
       << "solver options: linear_solver="
       << ceres::LinearSolverTypeToString(options.solver_linear_solver_type)
       << " num_threads=" << options.solver_num_threads
+      << " function_tolerance=" << options.solver_function_tolerance
+      << " gradient_tolerance=" << options.solver_gradient_tolerance
+      << " parameter_tolerance=" << options.solver_parameter_tolerance
       << " initial_trust_region_radius="
       << options.solver_initial_trust_region_radius
       << " max_trust_region_radius=" << options.solver_max_trust_region_radius
@@ -1267,7 +1424,8 @@ int main(int argc, char **argv) {
       << options.solver_absolute_parameter_tolerance
       << " use_nonmonotonic_steps=" << options.solver_use_nonmonotonic_steps
       << " max_consecutive_nonmonotonic_steps="
-      << options.solver_max_consecutive_nonmonotonic_steps << "\n";
+      << options.solver_max_consecutive_nonmonotonic_steps
+      << " restore_best_state=" << options.solver_restore_best_state << "\n";
   options.pose_knots_per_second =
       doubleArg(argc, argv, "--pose-kps", options.pose_knots_per_second);
   options.bias_knots_per_second =
@@ -1285,6 +1443,15 @@ int main(int argc, char **argv) {
   if (!selected_time_padding.empty()) {
     options.time_padding_s = std::stod(selected_time_padding);
   }
+  options.camera_time_offset_buffer_s =
+      doubleArg(argc, argv, "--camera-time-offset-buffer",
+                options.camera_time_offset_buffer_s);
+  if (options.time_padding_s < 0.0 ||
+      options.camera_time_offset_buffer_s < -1.0) {
+    std::cerr << "--time-padding must be non-negative and "
+                 "--camera-time-offset-buffer must be -1 or non-negative\n";
+    return 2;
+  }
   options.pose_fit_diagonal_regularization =
       doubleArg(argc, argv, "--pose-fit-diagonal-lambda",
                 options.pose_fit_diagonal_regularization);
@@ -1301,9 +1468,21 @@ int main(int argc, char **argv) {
   const bool estimate_imu_chain_prior =
       !hasFlag(argc, argv, "--no-estimate-imu-chain-prior");
   ceres_cam_imu::ImuChainInitializerOptions imu_chain_prior_options;
-  imu_chain_prior_options.max_time_offset_search_s =
-      doubleArg(argc, argv, "--imu-chain-prior-max-offset-s",
-                imu_chain_prior_options.max_time_offset_search_s);
+  const std::string imu_chain_prior_max_offset_arg =
+      argValue(argc, argv, "--imu-chain-prior-max-offset-s");
+  const bool corner_default_multi_imu =
+      corner_default_topology == CornerDefaultTopology::kOneCameraMultiImu ||
+      corner_default_topology == CornerDefaultTopology::kMultiCameraMultiImu;
+  if (corner_defaults &&
+      corner_default_multi_imu &&
+      imu_chain_prior_max_offset_arg.empty()) {
+    imu_chain_prior_options.use_full_overlap_time_offset_search = true;
+  }
+  if (!imu_chain_prior_max_offset_arg.empty()) {
+    imu_chain_prior_options.max_time_offset_search_s =
+        std::stod(imu_chain_prior_max_offset_arg);
+    imu_chain_prior_options.use_full_overlap_time_offset_search = false;
+  }
   imu_chain_prior_options.sample_stride =
       intArg(argc, argv, "--imu-chain-prior-stride",
              imu_chain_prior_options.sample_stride);
@@ -1327,14 +1506,15 @@ int main(int argc, char **argv) {
   imu_chain_prior_options.refine_max_iterations =
       intArg(argc, argv, "--imu-chain-prior-refine-iterations",
              imu_chain_prior_options.refine_max_iterations);
-  if (imu_chain_prior_options.max_time_offset_search_s < 0.0 ||
+  if ((!imu_chain_prior_options.use_full_overlap_time_offset_search &&
+       imu_chain_prior_options.max_time_offset_search_s < 0.0) ||
       imu_chain_prior_options.sample_stride <= 0 ||
       imu_chain_prior_options.min_samples <= 0 ||
       imu_chain_prior_options.min_rotation_excitation < 0.0 ||
       imu_chain_prior_options.min_lever_excitation < 0.0 ||
       imu_chain_prior_options.max_lever_arm_norm_m <= 0.0 ||
       imu_chain_prior_options.refine_max_iterations < 0) {
-    std::cerr << "IMU chain prior options must use non-negative offset/"
+    std::cerr << "IMU chain prior options must use non-negative bounded offset/"
                  "excitation, positive stride/min-samples/max-lever, and "
                  "non-negative refine iterations\n";
     return 2;
@@ -1374,11 +1554,14 @@ int main(int argc, char **argv) {
   options.estimate_gravity_length =
       hasFlag(argc, argv, "--estimate-gravity-length");
   options.camera_loss_type =
-      parseLossType(argValue(argc, argv, "--camera-loss", "cauchy"));
-  options.gyro_loss_type =
-      parseLossType(argValue(argc, argv, "--gyro-loss", "cauchy"));
-  options.accel_loss_type =
-      parseLossType(argValue(argc, argv, "--accel-loss", "cauchy"));
+      parseLossType(argValue(argc, argv, "--camera-loss",
+                             robustLossTypeName(options.camera_loss_type)));
+  options.gyro_loss_type = parseLossType(
+      argValue(argc, argv, "--gyro-loss",
+               robustLossTypeName(options.gyro_loss_type)));
+  options.accel_loss_type = parseLossType(
+      argValue(argc, argv, "--accel-loss",
+               robustLossTypeName(options.accel_loss_type)));
   options.camera_loss_width =
       doubleArg(argc, argv, "--camera-loss-width", options.camera_loss_width);
   options.gyro_loss_width =
@@ -1783,9 +1966,8 @@ int main(int argc, char **argv) {
     return 2;
   }
   const bool requested_imu_time_offset_optimization =
-      multi_imu && !hasFlag(argc, argv, "--fix-imu-time-offsets") &&
-      (enable_imu_delay_correction ||
-       hasFlag(argc, argv, "--optimize-imu-time-offsets"));
+      multi_imu && hasFlag(argc, argv, "--optimize-imu-time-offsets") &&
+      !hasFlag(argc, argv, "--fix-imu-time-offsets");
   if (requested_imu_time_offset_optimization &&
       options.imu_model != ceres_cam_imu::ImuCalibrationModel::kCalibrated) {
     if (hasFlag(argc, argv, "--optimize-imu-time-offsets")) {
@@ -2368,14 +2550,39 @@ int main(int argc, char **argv) {
               << options.time_shift_prior_s << "\n";
   }
   if (corner_defaults) {
-    std::cout << "corner defaults active: pose_kps="
+    std::ostringstream imu_chain_prior_offset_search;
+    if (imu_chain_prior_options.use_full_overlap_time_offset_search) {
+      imu_chain_prior_offset_search << "full-overlap";
+    } else {
+      imu_chain_prior_offset_search
+          << "bounded:" << imu_chain_prior_options.max_time_offset_search_s;
+    }
+    std::cout << "corner defaults active: topology="
+              << cornerDefaultTopologyName(corner_default_topology)
+              << " cameras=" << cameras.size() << " imus=" << imus.size()
+              << " pose_kps="
               << options.pose_knots_per_second
               << " bias_kps=" << options.bias_knots_per_second
               << " max_iterations=" << options.max_iterations
               << " timeoffset_padding_s=" << options.time_padding_s
+              << " camera_time_offset_buffer_s="
+              << options.camera_time_offset_buffer_s
+              << " absolute_step_tolerance="
+              << options.solver_absolute_step_tolerance
+              << " use_nonmonotonic_steps="
+              << options.solver_use_nonmonotonic_steps
+              << " max_consecutive_nonmonotonic_steps="
+              << options.solver_max_consecutive_nonmonotonic_steps
+              << " imu_chain_prior_offset_search="
+              << imu_chain_prior_offset_search.str()
               << " imu_trim_edge_count=" << imu_trim_edge_count
-              << " cauchy_widths=" << options.camera_loss_width << ","
-              << options.gyro_loss_width << "," << options.accel_loss_width
+              << " losses="
+              << robustLossTypeName(options.camera_loss_type) << ":"
+              << options.camera_loss_width << ","
+              << robustLossTypeName(options.gyro_loss_type) << ":"
+              << options.gyro_loss_width << ","
+              << robustLossTypeName(options.accel_loss_type) << ":"
+              << options.accel_loss_width
               << "\n";
   }
 
@@ -2422,6 +2629,9 @@ int main(int argc, char **argv) {
   }
   if (init_from_result) {
     initializeImuIntrinsicsFromResult(init_result, &state);
+    if (multi_imu) {
+      initializeImuExtrinsicsFromResult(init_result, imus.size(), &state);
+    }
     if (enable_imu_delay_correction) {
       initializeImuTimeOffsets(init_result.imu_time_offsets_s, imus.size(),
                                "Ceres result", &state);
@@ -2477,6 +2687,10 @@ int main(int argc, char **argv) {
                   << " time_offset_s=" << imu_result.time_offset_s
                   << " delay_correction_applied="
                   << (enable_imu_delay_correction ? 1 : 0)
+                  << " time_offset_search_radius_s="
+                  << imu_result.time_offset_search_radius_s
+                  << " max_search_lag_samples="
+                  << imu_result.max_search_lag_samples
                   << " discrete_shift_samples="
                   << imu_result.discrete_shift_samples
                   << " sample_dt_s=" << imu_result.sample_dt_s
@@ -2604,7 +2818,9 @@ int main(int argc, char **argv) {
                 << " solver_abs_step_tol="
                 << stage.options.solver_absolute_step_tolerance
                 << " solver_abs_param_tol="
-                << stage.options.solver_absolute_parameter_tolerance << "\n";
+                << stage.options.solver_absolute_parameter_tolerance
+                << " solver_restore_best_state="
+                << stage.options.solver_restore_best_state << "\n";
       const ceres_cam_imu::CalibrationStageResult stage_result =
           multi_imu
               ? ceres_cam_imu::solveCalibrationStage(cameras, imus, stage,

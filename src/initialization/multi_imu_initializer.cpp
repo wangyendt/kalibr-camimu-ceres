@@ -176,21 +176,55 @@ struct CorrelationResult {
   double time_offset_s = 0.0;
   int discrete_shift_samples = 0;
   double sample_dt_s = 0.0;
+  double search_radius_s = 0.0;
+  int max_lag_samples = 0;
   int matched_samples = 0;
   double peak_correlation = 0.0;
 };
+
+double rawOverlapDurationSeconds(const ImuObservationDataset& reference_imu,
+                                 const ImuObservationDataset& target_imu) {
+  const double overlap_start =
+      std::max(reference_imu.samples.front().timestamp_s,
+               target_imu.samples.front().timestamp_s);
+  const double overlap_end =
+      std::min(reference_imu.samples.back().timestamp_s,
+               target_imu.samples.back().timestamp_s);
+  if (!(overlap_end > overlap_start)) {
+    throw std::runtime_error(
+        "IMU time ranges do not overlap for full-offset correlation");
+  }
+  return overlap_end - overlap_start;
+}
+
+double correlationSearchRadiusSeconds(
+    const ImuObservationDataset& reference_imu,
+    const ImuObservationDataset& target_imu,
+    const ImuChainInitializerOptions& options) {
+  return options.use_full_overlap_time_offset_search
+             ? rawOverlapDurationSeconds(reference_imu, target_imu)
+             : options.max_time_offset_search_s;
+}
+
+int maxCorrelationLagSamples(const double search_radius_s, const double dt) {
+  return std::max(0, static_cast<int>(std::round(search_radius_s / dt)));
+}
 
 CorrelationResult estimateTimeOffsetByGyroNorm(
     const ImuObservationDataset& reference_imu,
     const ImuObservationDataset& target_imu,
     const ImuChainInitializerOptions& options) {
   const double dt = meanPositiveDt(target_imu.samples);
-  const int max_lag_samples = std::max(
-      0, static_cast<int>(std::round(options.max_time_offset_search_s / dt)));
+  const double search_radius_s =
+      correlationSearchRadiusSeconds(reference_imu, target_imu, options);
+  const int max_lag_samples =
+      maxCorrelationLagSamples(search_radius_s, dt);
   const int stride = std::max(1, options.sample_stride);
 
   CorrelationResult best;
   best.sample_dt_s = dt;
+  best.search_radius_s = search_radius_s;
+  best.max_lag_samples = max_lag_samples;
   best.peak_correlation = -std::numeric_limits<double>::infinity();
   for (int lag = -max_lag_samples; lag <= max_lag_samples; ++lag) {
     const double offset_s = static_cast<double>(lag) * dt;
@@ -450,7 +484,8 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
     throw std::runtime_error(
         "reference and target IMUs need at least two samples");
   }
-  if (options.max_time_offset_search_s < 0.0) {
+  if (!options.use_full_overlap_time_offset_search &&
+      options.max_time_offset_search_s < 0.0) {
     throw std::runtime_error("IMU chain max offset search must be non-negative");
   }
 
@@ -494,6 +529,8 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
   result.time_offset_s = correlation.time_offset_s;
   result.discrete_shift_samples = correlation.discrete_shift_samples;
   result.sample_dt_s = correlation.sample_dt_s;
+  result.time_offset_search_radius_s = correlation.search_radius_s;
+  result.max_search_lag_samples = correlation.max_lag_samples;
   result.matched_samples = static_cast<int>(reference_gyro.size());
   result.peak_correlation = correlation.peak_correlation;
   result.R_i_b = R_i_b;
