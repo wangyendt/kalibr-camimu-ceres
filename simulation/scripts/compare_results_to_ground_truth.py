@@ -84,6 +84,8 @@ def compare(ground_truth_path, result_path, label):
         r_b_est = np.asarray(result_imus[idx].get("r_b", [0, 0, 0]), dtype=float)
         r_i_b_est = np.asarray(result_imus[idx].get("r_i_b", [0, 0, 0]), dtype=float)
         R_est = _ceres_rotvec_to_matrix(r_i_b_est)
+        gt_ts = float(gt_imu.get("time_offset_s", 0.0))
+        est_ts = float(result_imus[idx].get("time_offset_s", 0.0))
         rows.append(
             {
                 "label": label,
@@ -91,9 +93,9 @@ def compare(ground_truth_path, result_path, label):
                 "index": idx,
                 "rotation_deg": float((Rotation.from_matrix(R_est @ R_gt.T).magnitude() * 180.0 / math.pi)),
                 "lever_m": float(np.linalg.norm(r_b_est - r_b_gt)),
-                "time_offset_error_s": float(result_imus[idx].get("time_offset_s", 0.0)),
-                "estimated_time_offset_s": float(result_imus[idx].get("time_offset_s", 0.0)),
-                "truth_time_offset_s": 0.0,
+                "time_offset_error_s": est_ts - gt_ts,
+                "estimated_time_offset_s": est_ts,
+                "truth_time_offset_s": gt_ts,
             }
         )
 

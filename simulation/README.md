@@ -104,6 +104,23 @@ targets:
 | 时间 | sensor clock offset、drift ppm、timestamp jitter |
 | 输出 | Ceres-compatible corner/IMU CSV、camchain/imu/target YAML、ground truth、sensor pose samples、trajectory keyframes |
 
+## 时钟偏移和标定 time offset
+
+每个 sensor 的 `clock.offset_s` 是仿真采样时钟相对真时间的偏移。生成观测时，CSV 时间戳按传感器本机时钟写出：
+
+```text
+timestamp_sensor = timestamp_true + clock.offset_s + drift + jitter
+```
+
+标定配置里的 time offset 使用 Kalibr/Ceres 查询语义：把观测时间加上 offset 后，得到参考 IMU/body 时间。若没有显式配置 `time_offset_s`，仿真器会按参考 IMU0 的时钟自动推导：
+
+```text
+camera time_shift_s = imu0.clock.offset_s - camera.clock.offset_s
+imu time_offset_s   = imu0.clock.offset_s - imu.clock.offset_s
+```
+
+因此，某个非参考 IMU 的 `clock.offset_s = +0.018` 且 IMU0 为 `0` 时，ground truth 中该 IMU 的 `time_offset_s` 是 `-0.018`。如果在 sensor 配置里显式写了 `time_offset_s`，则该显式值优先用于输出 `camchain.yaml` 或 `ground_truth.yaml`。`ground_truth.yaml` 同时记录 `clock_offset_s` 和标定用的 `time_shift_s/time_offset_s`，用于区分“传感器时钟怎么造数据”和“优化器应该估计什么 offset”。
+
 ## 运行
 
 生成三组示例：

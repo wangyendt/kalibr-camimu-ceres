@@ -54,6 +54,16 @@ def _sensor_timestamp(true_t: float, start_s: float, clock: Mapping[str, Any], r
     return true_t + offset + drift * (true_t - start_s) + rng.normal(0.0, jitter)
 
 
+def _clock_offset_s(sensor: Mapping[str, Any]) -> float:
+    return float(sensor.get("clock", {}).get("offset_s", 0.0))
+
+
+def _calibration_time_offset_s(sensor: Mapping[str, Any], reference_clock_offset_s: float) -> float:
+    if "time_offset_s" in sensor:
+        return float(sensor["time_offset_s"])
+    return reference_clock_offset_s - _clock_offset_s(sensor)
+
+
 def _timestamp_ns(timestamp_s: float) -> int:
     return int(round(timestamp_s * 1e9))
 
@@ -346,7 +356,7 @@ def _write_target_points(path: Path, targets: list[dict[str, Any]]) -> None:
                 writer.writerow([target["index"], target["name"], int(corner_id), local_id, *p, *n])
 
 
-def _write_camchain(path: Path, cameras: list[Mapping[str, Any]]) -> None:
+def _write_camchain(path: Path, cameras: list[Mapping[str, Any]], reference_clock_offset_s: float = 0.0) -> None:
     lines = []
     for idx, camera in enumerate(cameras):
         model, distortion_model, intrinsics, distortion, width, height = _camera_model_values(camera)
@@ -360,7 +370,7 @@ def _write_camchain(path: Path, cameras: list[Mapping[str, Any]]) -> None:
         lines.append("  T_cam_imu:")
         for row in matrix_rows(camera["_T_cam_body"]):
             lines.append("    - [" + ", ".join(f"{v:.12g}" for v in row) + "]")
-        lines.append(f"  timeshift_cam_imu: {float(camera.get('time_offset_s', 0.0)):.12g}")
+        lines.append(f"  timeshift_cam_imu: {_calibration_time_offset_s(camera, reference_clock_offset_s):.12g}")
         if idx > 0:
             T_ci_cprev = camera["_T_cam_body"] @ invert_transform(cameras[idx - 1]["_T_cam_body"])
             lines.append("  T_cn_cnm1:")
@@ -677,7 +687,8 @@ def run_simulation(
     ground_truth_path = _abs_path(paths.get("ground_truth_yaml", output_dir / "ground_truth.yaml"), base_dir)
 
     _write_target_points(target_points_path, targets)
-    _write_camchain(camchain_path, cameras)
+    reference_clock_offset_s = _clock_offset_s(imus[0])
+    _write_camchain(camchain_path, cameras, reference_clock_offset_s)
     _write_target_yaml(target_yaml_path, targets[0])
     trajectory.write_keyframes(trajectory_csv_path)
     _write_sensor_poses(sensor_poses_path, trajectory, cameras, imus, start_s, end_s, float(config.get("outputs", {}).get("sensor_pose_hz", 20.0)))
@@ -724,7 +735,8 @@ def run_simulation(
                 "name": camera.get("name", f"cam{i}"),
                 "T_cam_body": matrix_rows(camera["_T_cam_body"]),
                 "fps": float(camera.get("fps", 20.0)),
-                "time_offset_s": float(camera.get("time_offset_s", 0.0)),
+                "clock_offset_s": _clock_offset_s(camera),
+                "time_shift_s": _calibration_time_offset_s(camera, reference_clock_offset_s),
             }
             for i, camera in enumerate(cameras)
         ],
@@ -734,6 +746,8 @@ def run_simulation(
                 "T_imu_body": matrix_rows(imu["_T_imu_body"]),
                 "r_b": (-imu["_T_imu_body"][:3, :3].T @ imu["_T_imu_body"][:3, 3]).tolist(),
                 "fps": float(imu.get("fps", imu.get("update_rate_hz", 200.0))),
+                "clock_offset_s": _clock_offset_s(imu),
+                "time_offset_s": _calibration_time_offset_s(imu, reference_clock_offset_s),
             }
             for i, imu in enumerate(imus)
         ],
