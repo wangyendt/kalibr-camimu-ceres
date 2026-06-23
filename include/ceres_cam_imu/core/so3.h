@@ -72,4 +72,24 @@ inline Eigen::Matrix<typename RotationDerived::Scalar, 3, 1> inverseRotate(
 
 Eigen::Vector3d rotationMatrixToVector(const Eigen::Matrix3d& R);
 
+template <typename Derived>
+inline Eigen::Matrix<typename Derived::Scalar, 3, 1> rotationMatrixToVector(
+    const Eigen::MatrixBase<Derived>& R_expr) {
+  using T = typename Derived::Scalar;
+  const Eigen::Matrix<T, 3, 3> R = R_expr;
+  Eigen::Matrix<T, 3, 1> v;
+  v << R(2, 1) - R(1, 2),
+       R(0, 2) - R(2, 0),
+       R(1, 0) - R(0, 1);
+  const T n2 = v.squaredNorm();
+  if (n2 < T(1e-24)) {
+    return T(-0.5) * v;
+  }
+
+  const T n = sqrt(n2);
+  const T c = (R.trace() - T(1)) * T(0.5);
+  const T angle = acos(c);
+  return -angle / n * v;
+}
+
 }  // namespace ceres_cam_imu

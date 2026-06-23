@@ -281,6 +281,70 @@ int main() {
   assert(std::abs(kalibr_padded_spline.tMin() + 0.08) < 1e-12);
   assert(std::abs(kalibr_padded_spline.tMax() - 48.61452786) < 1e-12);
 
+  {
+    ceres_cam_imu::UniformBSpline pose_spline(6, 6, 0.0, 2.0, 8);
+    const double t = 0.83;
+    const ceres_cam_imu::SplineSegmentMeta6 meta =
+        pose_spline.segmentMeta6(t);
+    std::array<std::array<double, 6>, 6> controls{};
+    std::array<const double *, 6> active{};
+    for (int i = 0; i < 6; ++i) {
+      controls[static_cast<std::size_t>(i)] = {
+          0.03 * i,
+          -0.02 + 0.01 * i,
+          0.005 * std::sin(0.3 * i),
+          0.0,
+          0.0,
+          0.12 * i};
+      active[static_cast<std::size_t>(i)] =
+          controls[static_cast<std::size_t>(i)].data();
+    }
+    const ceres_cam_imu::Vec6 linear_pose =
+        ceres_cam_imu::evalPoseCurve6(meta, t, active, 0);
+    const ceres_cam_imu::Vec6 so3_pose =
+        ceres_cam_imu::evalPoseSO3(meta, t, active);
+    assert((linear_pose.head<3>() - so3_pose.head<3>()).norm() < 1e-12);
+    assert((ceres_cam_imu::rotationVectorToMatrix(linear_pose.tail<3>()) -
+            ceres_cam_imu::rotationVectorToMatrix(so3_pose.tail<3>()))
+               .norm() < 1e-10);
+  }
+
+  {
+    ceres_cam_imu::UniformBSpline pose_spline(6, 6, 0.0, 2.0, 8);
+    const double t = 0.91;
+    const ceres_cam_imu::SplineSegmentMeta6 meta =
+        pose_spline.segmentMeta6(t);
+    std::array<std::array<double, 6>, 6> controls{};
+    std::array<const double *, 6> active{};
+    for (int i = 0; i < 6; ++i) {
+      controls[static_cast<std::size_t>(i)] = {
+          0.04 * std::sin(0.2 * i),
+          -0.03 * std::cos(0.4 * i),
+          0.02 * i,
+          0.16 * std::sin(0.5 * i),
+          -0.12 * std::cos(0.35 * i),
+          0.09 * std::sin(0.7 * i)};
+      active[static_cast<std::size_t>(i)] =
+          controls[static_cast<std::size_t>(i)].data();
+    }
+    const auto k0 =
+        ceres_cam_imu::evalPoseSplineKinematicsSO3(meta, t, active);
+    constexpr double eps = 1e-5;
+    const auto kp =
+        ceres_cam_imu::evalPoseSplineKinematicsSO3(meta, t + eps, active);
+    const auto km =
+        ceres_cam_imu::evalPoseSplineKinematicsSO3(meta, t - eps, active);
+    const ceres_cam_imu::Mat3 R_dot_numeric =
+        (kp.R_w_b - km.R_w_b) / (2.0 * eps);
+    const ceres_cam_imu::Vec3 omega_numeric =
+        ceres_cam_imu::veeSkew(k0.R_w_b.transpose() * R_dot_numeric);
+    const ceres_cam_imu::Vec3 alpha_numeric =
+        (kp.omega_b - km.omega_b) / (2.0 * eps);
+    assert((k0.R_dot_w_b - R_dot_numeric).norm() < 1e-6);
+    assert((k0.omega_b - omega_numeric).norm() < 1e-7);
+    assert((k0.alpha_b - alpha_numeric).norm() < 1e-5);
+  }
+
   const char *trim_csv_path = "/tmp/ceres_cam_imu_trim_reader_test.csv";
   {
     std::ofstream trim_csv(trim_csv_path);
