@@ -20,7 +20,6 @@ KALIBR_BIN = "/catkin_ws/devel/lib/kalibr/kalibr_calibrate_imu_camera"
 KALIBR_DOCKER_REPO = pathlib.Path(
     "/Users/wayne/Documents/work/code/project/ffalcon/kalibr-docker"
 )
-
 BENCHMARK_ROOT = pathlib.Path(
     "/Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data"
 )
@@ -44,6 +43,22 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 NUMBER_RE = re.compile(
     r"[-+]?(?:(?:\d+\.\d*)|(?:\.\d+)|(?:\d+))(?:[eE][-+]?\d+)?"
 )
+CERES_ITERATION_FIELDS = [
+    "iteration",
+    "cost",
+    "cost_change",
+    "gradient_norm",
+    "step_norm",
+    "tr_ratio",
+    "tr_radius",
+    "linear_solver_iterations",
+    "iteration_time_s",
+    "total_time_s",
+]
+POLICY_STEP_THRESHOLDS = [0.1, 0.07, 0.05, 0.03, 0.02]
+POLICY_COST_PLATEAU_THRESHOLDS = [0.1, 0.05, 0.02, 0.01, 0.005, 0.001]
+POLICY_COST_PLATEAU_MIN_ITERATIONS = [40, 60]
+POLICY_COST_PLATEAU_CONSECUTIVE = 3
 
 
 def repo_dir() -> pathlib.Path:
@@ -65,6 +80,30 @@ def clean_log(text: str) -> str:
 def write_text(path: pathlib.Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def write_rows_csv(path: pathlib.Path, rows, preferred=None,
+                   write_json: bool = True) -> None:
+    if not rows:
+        return
+    keys = []
+    preferred = preferred or []
+    all_keys = set()
+    for row in rows:
+        all_keys.update(row.keys())
+    keys.extend([key for key in preferred if key in all_keys])
+    keys.extend(sorted(all_keys.difference(keys)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as output:
+        writer = csv.DictWriter(output, fieldnames=keys)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    if write_json:
+        write_text(
+            path.with_suffix(".json"),
+            json.dumps(rows, ensure_ascii=False, indent=2),
+        )
 
 
 def require_file(path: pathlib.Path, label: str) -> pathlib.Path:
@@ -155,6 +194,7 @@ def run_metadata(args):
     metadata = {
         "ceres_mode": args.ceres_mode,
         "ceres_platform": args.ceres_platform if args.ceres_mode == "docker" else "native",
+        "ceres_default_policy": "corner-defaults topology",
         "ceres_extra_args": " ".join(args.ceres_extra_arg),
         "ceres_repo_commit": short_git_revision(repo_dir()),
         "kalibr_docker_repo": str(args.kalibr_docker_repo),
@@ -280,6 +320,8 @@ def kalibr_corner_command(args, dataset: pathlib.Path, run_dir: pathlib.Path,
         "--trim-imu-edge-count",
         str(args.trim_imu_edge_count),
     ]
+    if len(imu_data_names) > 1:
+        kalibr_args.append("--imu-delay-by-correlation")
     if args.kalibr_extra_arg:
         kalibr_args.extend(args.kalibr_extra_arg)
     script = (
@@ -404,16 +446,9 @@ def ceres_corner_command(args, dataset: pathlib.Path, run_dir: pathlib.Path,
             "--pose-motion-rotation-variance",
             "1",
         ])
-    command.extend([
-        "--max-iterations",
-        str(args.ceres_max_iterations),
-        "--solver-max-trust-region-radius",
-        "10000000",
-        "--solver-absolute-parameter-tolerance",
-        "-1",
-        "--output-result",
-        result_path,
-    ])
+    if args.ceres_max_iterations is not None:
+        command.extend(["--max-iterations", str(args.ceres_max_iterations)])
+    command.extend(["--output-result", result_path])
     command.extend(args.ceres_extra_arg)
     return command
 
@@ -598,15 +633,14 @@ def ceres_tum_command(args, input_dir: pathlib.Path, run_dir: pathlib.Path,
         "1",
         "--imu-model",
         "scale-misalignment",
-        "--max-iterations",
-        str(args.ceres_tum_max_iterations),
-        "--solver-max-trust-region-radius",
-        "10000000",
-        "--solver-absolute-parameter-tolerance",
-        "-1",
         "--output-result",
         result_path,
     ])
+    if args.ceres_tum_max_iterations is not None:
+        command.extend([
+            "--max-iterations",
+            str(args.ceres_tum_max_iterations),
+        ])
     command.extend(args.ceres_extra_arg)
     return command
 
@@ -683,11 +717,438 @@ def parse_key_values_line(prefix: str, text: str):
     return row
 
 
+def parse_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def policy_threshold_label(value: float) -> str:
+    return f"{value:g}".replace("-", "m").replace(".", "p")
+
+
+def parse_ceres_iteration_trace(text: str):
+    rows = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != len(CERES_ITERATION_FIELDS):
+            continue
+        if not parts[0].isdigit():
+            continue
+        if not all(NUMBER_RE.fullmatch(part) for part in parts[1:]):
+            continue
+        rows.append(dict(zip(CERES_ITERATION_FIELDS, parts)))
+    return rows
+
+
+def first_step_trigger(trace, threshold: float):
+    for row in trace:
+        iteration = parse_int(row.get("iteration"))
+        if iteration is None or iteration <= 0:
+            continue
+        value = parse_float(row.get("step_norm"))
+        if value is not None and value >= 0.0 and value < threshold:
+            return row
+    return None
+
+
+def first_cost_plateau_trigger(trace, threshold: float, min_iteration: int,
+                               consecutive: int):
+    window = []
+    for row in trace:
+        iteration = parse_int(row.get("iteration"))
+        cost_change = parse_float(row.get("cost_change"))
+        if iteration is None or cost_change is None:
+            window = []
+            continue
+        if abs(cost_change) < threshold:
+            window.append(row)
+        else:
+            window = []
+        if len(window) > consecutive:
+            window = window[-consecutive:]
+        if len(window) == consecutive and iteration >= min_iteration:
+            return row
+    return None
+
+
+def earlier_iteration(left, right):
+    if left is None:
+        return right
+    if right is None:
+        return left
+    left_iter = parse_int(left.get("iteration"))
+    right_iter = parse_int(right.get("iteration"))
+    if left_iter is None:
+        return right
+    if right_iter is None:
+        return left
+    return left if left_iter <= right_iter else right
+
+
+def build_stop_policy_replay_rows(trace):
+    if not trace:
+        return []
+    final = trace[-1]
+    final_iteration = parse_int(final.get("iteration"))
+    final_total_time = parse_float(final.get("total_time_s"))
+    rows = []
+
+    def add_row(policy, metric, threshold=None, min_iteration="",
+                consecutive="", trigger=None):
+        trigger_iteration = (
+            parse_int(trigger.get("iteration")) if trigger is not None else None
+        )
+        trigger_total_time = (
+            parse_float(trigger.get("total_time_s")) if trigger is not None else None
+        )
+        row = {
+            "policy": policy,
+            "metric": metric,
+            "threshold": "" if threshold is None else f"{threshold:g}",
+            "min_iteration": str(min_iteration) if min_iteration != "" else "",
+            "consecutive": str(consecutive) if consecutive != "" else "",
+            "trigger_iteration": (
+                "" if trigger_iteration is None else str(trigger_iteration)
+            ),
+            "trigger_cost": "" if trigger is None else trigger.get("cost", ""),
+            "trigger_cost_change": (
+                "" if trigger is None else trigger.get("cost_change", "")
+            ),
+            "trigger_gradient_norm": (
+                "" if trigger is None else trigger.get("gradient_norm", "")
+            ),
+            "trigger_step_norm": (
+                "" if trigger is None else trigger.get("step_norm", "")
+            ),
+            "trigger_total_time_s": (
+                "" if trigger_total_time is None else f"{trigger_total_time:.9g}"
+            ),
+            "final_iteration": "" if final_iteration is None else str(final_iteration),
+            "final_total_time_s": (
+                "" if final_total_time is None else f"{final_total_time:.9g}"
+            ),
+            "saved_iterations": "",
+            "saved_time_s": "",
+        }
+        if trigger_iteration is not None and final_iteration is not None:
+            row["saved_iterations"] = str(final_iteration - trigger_iteration)
+        if trigger_total_time is not None and final_total_time is not None:
+            row["saved_time_s"] = f"{final_total_time - trigger_total_time:.9g}"
+        rows.append(row)
+
+    step_0p02 = None
+    for threshold in POLICY_STEP_THRESHOLDS:
+        trigger = first_step_trigger(trace, threshold)
+        label = policy_threshold_label(threshold)
+        if threshold == 0.02:
+            step_0p02 = trigger
+        add_row(
+            f"step_lt_{label}",
+            "step_norm",
+            threshold=threshold,
+            trigger=trigger,
+        )
+
+    for min_iteration in POLICY_COST_PLATEAU_MIN_ITERATIONS:
+        for threshold in POLICY_COST_PLATEAU_THRESHOLDS:
+            trigger = first_cost_plateau_trigger(
+                trace, threshold, min_iteration,
+                POLICY_COST_PLATEAU_CONSECUTIVE,
+            )
+            label = policy_threshold_label(threshold)
+            add_row(
+                (
+                    f"abs_cost_change_lt_{label}_x"
+                    f"{POLICY_COST_PLATEAU_CONSECUTIVE}_min{min_iteration}"
+                ),
+                "abs_cost_change",
+                threshold=threshold,
+                min_iteration=min_iteration,
+                consecutive=POLICY_COST_PLATEAU_CONSECUTIVE,
+                trigger=trigger,
+            )
+
+        for threshold in [0.01, 0.005]:
+            cost_trigger = first_cost_plateau_trigger(
+                trace, threshold, min_iteration,
+                POLICY_COST_PLATEAU_CONSECUTIVE,
+            )
+            trigger = earlier_iteration(step_0p02, cost_trigger)
+            label = policy_threshold_label(threshold)
+            add_row(
+                (
+                    "step_lt_0p02_or_abs_cost_change_lt_"
+                    f"{label}_x{POLICY_COST_PLATEAU_CONSECUTIVE}"
+                    f"_min{min_iteration}"
+                ),
+                "step_norm_or_abs_cost_change",
+                threshold=threshold,
+                min_iteration=min_iteration,
+                consecutive=POLICY_COST_PLATEAU_CONSECUTIVE,
+                trigger=trigger,
+            )
+    return rows
+
+
+def summarize_ceres_iteration_trace(trace):
+    row = {}
+    if not trace:
+        return row
+    last = trace[-1]
+    for source, target in [
+        ("iteration", "ceres_last_iteration"),
+        ("cost", "ceres_last_cost"),
+        ("cost_change", "ceres_last_cost_change"),
+        ("gradient_norm", "ceres_last_gradient_norm"),
+        ("step_norm", "ceres_last_step_norm"),
+        ("tr_ratio", "ceres_last_tr_ratio"),
+        ("tr_radius", "ceres_last_tr_radius"),
+        ("iteration_time_s", "ceres_last_iteration_time_s"),
+        ("total_time_s", "ceres_last_total_time_s"),
+    ]:
+        row[target] = last.get(source, "")
+    replay_rows = build_stop_policy_replay_rows(trace)
+    selected = {
+        "step_lt_0p02": "ceres_policy_step_lt_0p02_iter",
+        "abs_cost_change_lt_0p01_x3_min60":
+            "ceres_policy_cost_lt_0p01_x3_min60_iter",
+        "abs_cost_change_lt_0p005_x3_min60":
+            "ceres_policy_cost_lt_0p005_x3_min60_iter",
+        "step_lt_0p02_or_abs_cost_change_lt_0p01_x3_min60":
+            "ceres_policy_step0p02_or_cost0p01_x3_min60_iter",
+        "step_lt_0p02_or_abs_cost_change_lt_0p005_x3_min60":
+            "ceres_policy_step0p02_or_cost0p005_x3_min60_iter",
+    }
+    for replay in replay_rows:
+        key = selected.get(replay["policy"])
+        if key:
+            row[key] = replay.get("trigger_iteration", "")
+            row[key.replace("_iter", "_saved_iterations")] = replay.get(
+                "saved_iterations", ""
+            )
+    return row
+
+
+def write_ceres_run_policy_artifacts(run_dir: pathlib.Path, text: str):
+    trace = parse_ceres_iteration_trace(text)
+    if not trace:
+        return {}
+    replay_rows = build_stop_policy_replay_rows(trace)
+    trace_path = run_dir / "ceres_iteration_trace.csv"
+    replay_path = run_dir / "ceres_stop_policy_replay.csv"
+    write_rows_csv(
+        trace_path,
+        trace,
+        preferred=CERES_ITERATION_FIELDS,
+    )
+    write_rows_csv(
+        replay_path,
+        replay_rows,
+        preferred=[
+            "policy",
+            "metric",
+            "threshold",
+            "min_iteration",
+            "consecutive",
+            "trigger_iteration",
+            "saved_iterations",
+            "saved_time_s",
+            "trigger_cost_change",
+            "trigger_step_norm",
+            "trigger_total_time_s",
+            "final_iteration",
+            "final_total_time_s",
+        ],
+    )
+    row = {
+        "ceres_iteration_trace": str(trace_path),
+        "ceres_stop_policy_replay": str(replay_path),
+    }
+    row.update(summarize_ceres_iteration_trace(trace))
+    return row
+
+
+def write_ceres_policy_artifacts(out_dir: pathlib.Path, rows) -> bool:
+    metadata_keys = [
+        "case",
+        "label",
+        "dataset",
+        "imu_count",
+        "imu_data",
+        "ceres_mode",
+        "ceres_platform",
+        "ceres_extra_args",
+        "ceres_return_code",
+        "ceres_elapsed_s",
+        "ceres_optimize_s",
+        "ceres_iterations",
+        "ceres_termination",
+        "ceres_result",
+        "ceres_log",
+        "compare_rotation_deg",
+        "compare_translation_m",
+        "compare_time_shift_s",
+        "compare_gravity_norm",
+    ]
+    combined_trace = []
+    combined_replay = []
+    seen_logs = set()
+    for row in rows:
+        log_value = row.get("ceres_log", "")
+        if not log_value:
+            continue
+        log_path = pathlib.Path(log_value)
+        if log_path in seen_logs or not log_path.is_file():
+            continue
+        seen_logs.add(log_path)
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        trace = parse_ceres_iteration_trace(text)
+        if not trace:
+            continue
+        log_summary = parse_ceres_log(text)
+        run_metadata = {
+            key: row.get(key) or log_summary.get(key, "")
+            for key in metadata_keys
+            if key in row or key in log_summary
+        }
+        write_ceres_run_policy_artifacts(log_path.parent, text)
+        for item in trace:
+            combined = {}
+            combined.update(run_metadata)
+            combined.update(item)
+            combined_trace.append(combined)
+        for item in build_stop_policy_replay_rows(trace):
+            combined = {}
+            combined.update(run_metadata)
+            combined.update(item)
+            combined_replay.append(combined)
+
+    if not combined_trace and not combined_replay:
+        return False
+
+    trace_path = out_dir / "ceres_iteration_trace.csv"
+    replay_path = out_dir / "ceres_stop_policy_replay.csv"
+    write_rows_csv(
+        trace_path,
+        combined_trace,
+        preferred=[
+            "case",
+            "label",
+            "imu_count",
+            "imu_data",
+            "ceres_termination",
+            "ceres_iterations",
+            *CERES_ITERATION_FIELDS,
+            "ceres_elapsed_s",
+            "ceres_optimize_s",
+            "ceres_result",
+            "ceres_log",
+        ],
+    )
+    write_rows_csv(
+        replay_path,
+        combined_replay,
+        preferred=[
+            "case",
+            "label",
+            "imu_count",
+            "imu_data",
+            "ceres_termination",
+            "ceres_iterations",
+            "policy",
+            "metric",
+            "threshold",
+            "min_iteration",
+            "consecutive",
+            "trigger_iteration",
+            "saved_iterations",
+            "saved_time_s",
+            "trigger_cost_change",
+            "trigger_step_norm",
+            "trigger_total_time_s",
+            "final_iteration",
+            "final_total_time_s",
+            "compare_rotation_deg",
+            "compare_translation_m",
+            "compare_time_shift_s",
+            "compare_gravity_norm",
+            "ceres_result",
+            "ceres_log",
+        ],
+    )
+    write_text(
+        out_dir / "ceres_policy_artifacts.json",
+        json.dumps(
+            {
+                "version": 1,
+                "iteration_trace_csv": str(trace_path),
+                "stop_policy_replay_csv": str(replay_path),
+                "step_thresholds": POLICY_STEP_THRESHOLDS,
+                "cost_plateau_thresholds": POLICY_COST_PLATEAU_THRESHOLDS,
+                "cost_plateau_min_iterations":
+                    POLICY_COST_PLATEAU_MIN_ITERATIONS,
+                "cost_plateau_consecutive":
+                    POLICY_COST_PLATEAU_CONSECUTIVE,
+                "note": (
+                    "These artifacts replay candidate stop triggers from "
+                    "Ceres logs; they do not change solver execution."
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+    )
+    print(f"policy artifacts: {trace_path}", flush=True)
+    print(f"policy artifacts: {replay_path}", flush=True)
+    return True
+
+
 def parse_ceres_log(text: str):
     row = {}
     last_iteration_total_time = None
+    trace = parse_ceres_iteration_trace(text)
+    row.update(summarize_ceres_iteration_trace(trace))
     for line in text.splitlines():
-        if line.startswith("residual_stats "):
+        if line.startswith("solver options:"):
+            values = parse_key_values_line("", line)
+            for key in [
+                "function_tolerance",
+                "gradient_tolerance",
+                "parameter_tolerance",
+                "initial_trust_region_radius",
+                "max_trust_region_radius",
+                "min_trust_region_radius",
+                "min_relative_decrease",
+                "absolute_cost_change_tolerance",
+                "absolute_step_tolerance",
+                "absolute_parameter_tolerance",
+                "use_nonmonotonic_steps",
+                "max_consecutive_nonmonotonic_steps",
+            ]:
+                if key in values:
+                    row[f"ceres_solver_{key}"] = values[key]
+        elif line.startswith("corner defaults active:"):
+            values = parse_key_values_line("", line)
+            for key in [
+                "timeoffset_padding_s",
+                "camera_time_offset_buffer_s",
+            ]:
+                if key in values:
+                    row[f"ceres_{key}"] = values[key]
+        elif line.startswith("absolute_stop"):
+            values = parse_key_values_line("", line)
+            for key, value in values.items():
+                row[f"ceres_absolute_stop_{key}"] = value
+        elif line.startswith("residual_stats "):
             match = re.match(r"residual_stats ([A-Za-z0-9_]+): (.*)", line)
             if match:
                 name = match.group(1)
@@ -706,8 +1167,10 @@ def parse_ceres_log(text: str):
             last_iteration_total_time = iter_match.group(2)
     for key, pattern in {
         "ceres_time_shift_s": r"time_shift_s:\s*(" + NUMBER_RE.pattern + r")",
+        "ceres_initial_cost": r"Initial\s+cost:\s*(" + NUMBER_RE.pattern + r")",
         "ceres_final_cost": r"Final\s+cost:\s*(" + NUMBER_RE.pattern + r")",
         "ceres_iterations": r"Iterations:\s*(\d+)",
+        "ceres_termination": r"Termination:\s*([A-Z_]+)",
     }.items():
         match = re.search(pattern, text)
         if match:
@@ -866,6 +1329,7 @@ def run_benchmark_case(args, name, dataset: pathlib.Path, out_root: pathlib.Path
         "ceres_init_kalibr_result": str(init_result or ""),
     }
     ceres_row.update(parse_ceres_log(c_log))
+    ceres_row.update(write_ceres_run_policy_artifacts(ceres_dir, c_log))
     ceres_row.update(summarize_yaml(ceres_result))
 
     rows = []
@@ -934,6 +1398,11 @@ def run_tum_case(args, name, source_type: str, out_root: pathlib.Path):
     print(f"[{name}] prepare Ceres inputs", flush=True)
     prep_code, prep_elapsed, _ = run_logged(prep_cmd, case_dir / "prepare",
                                             "prepare", args.print_only)
+    if not args.print_only and prep_code != 0:
+        raise RuntimeError(
+            f"[{name}] prepare Ceres inputs failed (exit {prep_code}); "
+            f"see {case_dir / 'prepare'}"
+        )
     row = {
         "case": name,
         "label": source_type,
@@ -996,6 +1465,7 @@ def run_tum_case(args, name, source_type: str, out_root: pathlib.Path):
         "ceres_log": str(ceres_dir / "ceres.clean.log"),
     }
     ceres_row.update(parse_ceres_log(c_log))
+    ceres_row.update(write_ceres_run_policy_artifacts(ceres_dir, c_log))
     ceres_row.update(summarize_yaml(ceres_result))
 
     rows = []
@@ -1051,6 +1521,17 @@ def write_summary(path: pathlib.Path, rows):
         "kalibr_optimize_s",
         "ceres_optimize_s",
         "compare_elapsed_s",
+        "ceres_termination",
+        "ceres_iterations",
+        "ceres_initial_cost",
+        "ceres_final_cost",
+        "ceres_last_iteration",
+        "ceres_last_cost_change",
+        "ceres_last_gradient_norm",
+        "ceres_last_step_norm",
+        "ceres_policy_step_lt_0p02_iter",
+        "ceres_policy_step0p02_or_cost0p01_x3_min60_iter",
+        "ceres_policy_step0p02_or_cost0p005_x3_min60_iter",
         "kalibr_reproj_px",
         "ceres_reprojection_px_mean",
         "compare_rotation_deg",
@@ -1065,6 +1546,8 @@ def write_summary(path: pathlib.Path, rows):
         "result_camera_chain_count",
         "kalibr_result",
         "ceres_result",
+        "ceres_iteration_trace",
+        "ceres_stop_policy_replay",
         "ceres_init_kalibr_variant",
         "dataset",
     ]
@@ -1081,6 +1564,26 @@ def write_summary(path: pathlib.Path, rows):
             writer.writerow(row)
     write_text(path.with_suffix(".json"), json.dumps(rows, ensure_ascii=False, indent=2))
     print(f"summary: {path}", flush=True)
+    write_ceres_policy_artifacts(path.parent, rows)
+
+
+def read_summary_csv(path: pathlib.Path):
+    with path.open("r", encoding="utf-8", newline="") as input_file:
+        return list(csv.DictReader(input_file))
+
+
+def refresh_existing_policy_artifacts(out_root: pathlib.Path) -> int:
+    patterns = ["summary.csv", "*_summary.csv"]
+    summary_paths = []
+    for pattern in patterns:
+        summary_paths.extend(out_root.rglob(pattern))
+    refreshed = 0
+    for path in sorted(set(summary_paths)):
+        rows = read_summary_csv(path)
+        if write_ceres_policy_artifacts(path.parent, rows):
+            refreshed += 1
+    print(f"policy_artifacts_refreshed: {refreshed}", flush=True)
+    return 0 if refreshed > 0 else 1
 
 
 def parse_args():
@@ -1092,6 +1595,8 @@ def parse_args():
                         default=[])
     parser.add_argument("--out-root", type=pathlib.Path,
                         default=repo_dir() / "out" / "docker_benchmarks" / timestamp())
+    parser.add_argument("--policy-artifacts-only", action="store_true",
+                        help="Only regenerate Ceres iteration/stop-policy CSV artifacts from existing summary files under --out-root.")
     parser.add_argument("--benchmark-root", type=pathlib.Path,
                         default=BENCHMARK_ROOT)
     parser.add_argument("--tum-root", type=pathlib.Path, default=TUM_ROOT)
@@ -1127,10 +1632,12 @@ def parse_args():
     parser.add_argument("--print-only", action="store_true")
     parser.add_argument("--kalibr-max-iter", type=int, default=30)
     parser.add_argument("--kalibr-tum-max-iter", type=int, default=30)
-    parser.add_argument("--ceres-max-iterations", type=int, default=150)
+    parser.add_argument("--ceres-max-iterations", type=int,
+                        help="Override Ceres max_iterations for benchmark corner runs; default uses --corner-defaults topology preset.")
     parser.add_argument("--ceres-multi-imu-stage-iterations", type=int,
                         default=30)
-    parser.add_argument("--ceres-tum-max-iterations", type=int, default=100)
+    parser.add_argument("--ceres-tum-max-iterations", type=int,
+                        help="Override Ceres max_iterations for TUM runs; default uses --corner-defaults topology preset.")
     parser.add_argument("--timeoffset-padding", type=float, default=0.04)
     parser.add_argument("--tum-timeoffset-padding", type=float, default=0.03)
     parser.add_argument("--pose-knots-per-second", type=int, default=100)
@@ -1149,6 +1656,15 @@ def main():
     args.ceres_bin = args.ceres_bin.expanduser().resolve()
     args.compare_bin = args.compare_bin.expanduser().resolve()
     args.kalibr_docker_repo = args.kalibr_docker_repo.expanduser().resolve()
+    if args.policy_artifacts_only:
+        return refresh_existing_policy_artifacts(args.out_root)
+    if args.ceres_max_iterations is not None and args.ceres_max_iterations < 0:
+        raise ValueError("--ceres-max-iterations must be non-negative")
+    if (args.ceres_tum_max_iterations is not None and
+            args.ceres_tum_max_iterations < 0):
+        raise ValueError("--ceres-tum-max-iterations must be non-negative")
+    if args.ceres_multi_imu_stage_iterations < 0:
+        raise ValueError("--ceres-multi-imu-stage-iterations must be non-negative")
     if args.kalibr_prepare_image is None:
         args.kalibr_prepare_image = args.kalibr_arm64_image
     if args.kalibr_prepare_platform is None:

@@ -1,413 +1,637 @@
-# Ceres 与 Kalibr Docker 多数据集速度精度对比
-
-## 阅读定位
-
-这篇是 Ceres/Kalibr 长周期 benchmark 的主索引，不是单一实验记录。它同时覆盖匿名基准、Kalibr 热启动、速度口径、扩展 IMU、多 camera/TUM 和多 IMU joint 定位。阅读时先看本节和“结论”，再按结果地图进入具体实验。
-
-核心口径：
-
-- 匿名基准独立标定：Ceres 不读取 Kalibr 结果，直接从本项目初始化链路求解。
-- 热启动诊断：Ceres 读取 Kalibr 标定结果，只用于判断两套优化问题的固有距离。
-- 速度对比：正式主线是 macOS native Ceres vs Kalibr Docker；Docker parity 只用于解释环境差异。
-- TUM 和多 IMU：后续修正较多，历史失败保留为定位证据，不能脱离对应小节直接引用旧结论。
+# Ceres Native 与 Kalibr Docker 多数据集速度精度对比
 
 ## 结论先行
 
-| 对比项 | 当前结论 | 关键数字 | 结论边界 |
-|---|---|---|---|
-| 匿名基准独立标定 | Ceres 全部收敛，reprojection 与 Kalibr 基本一致 | 平均 reproj 差 `0.00068 px`；旋转最大 `0.0145°`；平移 `2.08-3.77 mm` | IMU 使用 Kalibr-compatible 裁边口径，不是 raw 全量 IMU |
-| Kalibr 热启动 | 两套优化问题不是逐位相同 | 从 Kalibr 解出发仍漂 `0.19-2.63 mm` | 这是诊断口径，不代表默认部署路径 |
-| 速度 | Ceres native 平均优化段快于 Kalibr Docker，但不是每组都快 | Ceres `89.3 s` vs Kalibr `128.2 s`，平均 `1.57x` | 墙钟包含 Docker 与非优化开销 |
-| 扩展 IMU | 模型不再只是 smoke，已到全量数据证据 | `M_a/M_g` 相对差约 `1e-3` | accel residual 仍略高，平移弱可观 |
-| TUM 双目 | 修正 camchain 初始化后通过 | Ceres 与 Kalibr 在 `0.06° / 1 mm` 内 | 早期失败来自 cam1 初值缺失 |
-| 多 IMU joint | Kalibr 热启动 staged 口径已通过，冷启动仍有限制 | reproj `0.229823 px`，camera 差 `0.004655° / 0.0755 mm` | 不能外推为全自由冷启动已完成 |
+当前文档只保留最新可复用结果，不混入旧实验表。三组 suite 均已按当前 runner 完成；`benchmark-multi-imu` 已使用修正后的 Kalibr 多 IMU delay 口径重跑。
 
-## 结果地图
+```bash
+python3 tools/run_docker_benchmark.py --suite benchmark-single --out-root out/docker_benchmarks/single_amd64_arm64
+python3 tools/run_docker_benchmark.py --suite benchmark-multi-imu --kalibr-platform linux/arm64 --out-root out/docker_benchmarks/multi_imu_arm64
+python3 tools/run_docker_benchmark.py --suite tum --kalibr-platform linux/arm64 --out-root out/docker_benchmarks/tum_arm64
+```
 
-| 小节 | 回答的问题 | 应引用的结论 |
-|---|---|---|
-| 实验一：匿名基准独立标定 | 不读 Kalibr 时 Ceres 是否稳定 | 12 组全部收敛，外参和 reprojection 与 Kalibr 接近 |
-| 实验二：热启动一致性 | 从同一 Kalibr 解出发是否保持不变 | 不保持，说明两套优化问题存在固有距离 |
-| 实验三：速度结构 | Ceres 快在哪里，哪些速度口径不能混用 | native vs Docker 是当前正式口径；优化耗时和墙钟要分开 |
-| 实验四：模型覆盖与扩展 IMU | 相机模型和扩展 IMU 是否有全量证据 | 扩展 IMU intrinsic 与 Kalibr 达到 `1e-3` 量级 |
-| 实验五：多 camera 与 TUM single-stage | TUM 双目和 4IMU joint 的当前状态 | TUM 已通过；4IMU 旧失败已定位并有热启动通过口径 |
-| 结论 / 复现命令 | 可复用的最终摘要和命令入口 | 优先引用这里，不直接引用历史失败段落 |
-
-## 背景
-
-`ceres-cam-imu` 的目标不是做一个依附 Kalibr 输出的后处理器，而是形成一条**可独立运行、可部署、可解释速度和精度边界**的 Ceres cam-IMU 标定链路。Kalibr 在这份文档里只承担两个角色：第一，作为已知强基线，帮助量化 Ceres 的精度差；第二，在部分输入格式还没有原生检测器时，提供角点导出/ROS bag 转换环境。
-
-因此本文把三种口径明确拆开：
-
-| 口径 | 用途 | 是否读取 Kalibr 结果参与求解 |
-|---|---|---|
-| **Ceres 独立标定** | 默认独立路径，从 Ceres 自己的 time/gravity/pose 初始化开始求解 | **否** |
-| **Ceres 热启动标定** | 实验诊断，检查两套优化问题从同一点出发会漂多远 | 是，且显式使用 `--init-from-kalibr` |
-| **Kalibr Docker 标定** | 精度/速度基线与扩展 IMU oracle | Kalibr 自身求解 |
-
-## 目标
-
-这份实验文档要回答四个问题。
-
-1. **独立精度**：不读 Kalibr 结果时，匿名基准数据集能否全部收敛，外参、time-shift、reprojection 与 Kalibr 相差多少。
-2. **优化问题一致性**：从 Kalibr 解热启动后，Ceres 会不会停在原地；若不会，固有差异有多大。
-3. **模型覆盖**：新增相机模型、扩展 IMU 的 `M_a/M_g/A_g/C_g`、多 camera 链路是否有全量数据证据，而不只是单测。
-4. **TUM multi-camera 真值对比**：TUM 双目数据上，Ceres 能否把 gyro/accel residual 提升到 Kalibr 同量级，并且外参、time-shift、gravity、IMU intrinsic 等全局设计变量离 TUM calibrated 真值有多远。
-
-## 数据与口径
-
-| 项 | 内容 |
-|---|---|
-| 匿名基准数据 | `<DATASET_DIR>/cam_imu`，统一使用同一类 YAML/CSV 输入模板 |
-| TUM 数据 | `/ABS/TUM` 下两组 `dataset-calib-imu*_512_16` 双目 cam-IMU |
-| Ceres | 当前正式评测使用 macOS 原生 `build/calibrate_cam_imu` Release；Ceres Docker 只保留为历史 parity probe，不作为后续主线速度/精度证据 |
-| Kalibr | 当前正式评测使用 DockerHub `wang121ye/kalibr-camera-calibration:20.04` |
-| 默认 Ceres 口径 | `--corner-defaults`，显式覆盖参数优先级更高 |
-| 评测指标 | 外参平移差、外参旋转差、time-shift 差、reprojection/gyro/accel residual mean、墙钟 |
-
-差异均为 Ceres 减 Kalibr。`T_c_b` 表示把点从 IMU/body frame 变到 camera frame 的外参；平移差为 `||t_C - t_K||`，旋转差为 `R_C R_K^T` 的测地角，time-shift 定义为 `t_imu = t_cam + tau`。
-
-### IMU 裁边口径
-
-匿名基准数据和扩展 IMU 表格使用的是 **Kalibr-compatible 有效 IMU 区间**，不是 raw `data1.csv` 的全量行数。原因是 Kalibr 的 `--imu_data_file` 路径默认 `trim_imu_edge_count=1000`，本仓库的 Kalibr Docker wrapper 也显式传入 `--trim-imu-edge-count 1000`；Ceres 的 `--corner-defaults` 对齐该口径，默认设置 `--imu-trim-edge-count 1000`。
-
-具体规则是裁掉首尾边缘 IMU 样本，保留索引 `[1000, num_messages - 1000]`。例如某个匿名样例的 raw IMU 是 `24859` 行，参与 Kalibr/Ceres 优化与 residual 统计的是 `22860` 行。这样做是为了避免 spline 边界处缺少稳定支撑的 IMU 点进入优化；若要评估 raw IMU 全量口径，需要 Kalibr 和 Ceres 都显式设置 `--trim-imu-edge-count 0` 并作为新的实验表格单独报告。
-
-## 实验一：匿名基准独立标定
-
-这一组是默认独立路径：Ceres 不读取 Kalibr 的外参、time-shift、gravity 或 IMU intrinsic 作为初值。初始化来自 Ceres 自己的 gyro-norm time-shift prior、orientation/gravity prior、pose spline fit、bias zero init 和 joint 优化。表格中的 delta 在评测阶段与 Kalibr 结果文件离线比较得到。
-
-本表的 IMU 约束与 residual 统计均采用上一节的裁边口径。相机角点不做对应裁边，仍按 corner CSV 中的全部有效观测统计 reprojection。
-
-| 数据集 | 外参平移差 | 外参旋转差 | time-shift 差 | reproj px (Ceres/Kalibr) | Ceres 优化/墙钟 | Kalibr 优化/墙钟 |
-|---|---:|---:|---:|---|---:|---:|
-| benchmark_01 | 3.37 mm | 0.0065° | -0.989 ms | 0.180273 / 0.179774 | 95.2s / 97.9s | 87.0s / 163.4s |
-| benchmark_02 | 3.07 mm | 0.0046° | -0.803 ms | 0.180264 / 0.179743 | 97.1s / 99.9s | 131.6s / 212.0s |
-| benchmark_03 | 2.96 mm | 0.0056° | -0.783 ms | 0.180307 / 0.180087 | 101.0s / 103.4s | 66.1s / 143.8s |
-| benchmark_04 | 3.35 mm | 0.0074° | -1.391 ms | 0.179707 / 0.179124 | 98.6s / 101.4s | 131.5s / 206.1s |
-| benchmark_05 | 3.38 mm | 0.0018° | -0.575 ms | 0.179185 / 0.178664 | 107.0s / 109.9s | 176.5s / 253.5s |
-| benchmark_06 | 3.39 mm | 0.0039° | -1.122 ms | 0.177193 / 0.176607 | 155.0s / 159.5s | 87.4s / 184.1s |
-| benchmark_07 | 2.23 mm | 0.0061° | -3.199 ms | 0.170813 / 0.171469 | 69.3s / 73.4s | 165.1s / 268.2s |
-| benchmark_08 | 3.77 mm | 0.0145° | -6.267 ms | 0.172362 / 0.171172 | 67.6s / 71.6s | 163.9s / 244.1s |
-| benchmark_09 | 2.30 mm | 0.0018° | -0.700 ms | 0.170432 / 0.170591 | 65.2s / 69.0s | 141.3s / 225.0s |
-| benchmark_10 | 2.08 mm | 0.0000° | +1.339 ms | 0.171887 / 0.170795 | 63.9s / 67.8s | 100.7s / 176.7s |
-| benchmark_11 | 2.45 mm | 0.0082° | +1.420 ms | 0.172836 / 0.171706 | 75.0s / 78.8s | 102.1s / 178.9s |
-| benchmark_12 | 3.17 mm | 0.0121° | -6.189 ms | 0.172195 / 0.171249 | 76.4s / 80.3s | 185.5s / 261.7s |
-
-结果来源：`out/docker_benchmarks/20260618_step4_native_ceres_no_param_stop/benchmark_single/summary.csv`。本次复跑显式追加 `--solver-absolute-parameter-tolerance -1`，避免 Ceres 被参数变化阈值提前停止。
-
-**结论**：匿名基准集独立标定全部收敛；reprojection 与 Kalibr 基本一致，平均差 `0.00068 px`，最大差 `0.00119 px`。旋转差平均 `0.0060°`、最大 `0.0145°`；外参平移差平均 `2.96 mm`、最大 `3.77 mm`；time-shift 绝对差平均 `2.06 ms`，`benchmark_08/12` 约 `6.2 ms`，需要后续单独确认时钟先验或停止条件。
-
-## 实验二：热启动一致性
-
-热启动不是默认独立路径。它只回答一个诊断问题：如果把 Kalibr 的外参、time-shift、gravity 当初值，再用与实验一相同的 Ceres joint 优化器放开求解，最终会离 Kalibr 多远。
-
-| 数据集 | 外参平移差 | 外参旋转差 | time-shift 差 | reproj px (Ceres/Kalibr) | Ceres 墙钟 |
-|---|---:|---:|---:|---|---:|
-| benchmark_01 | 1.82 mm | 0.0275° | +0.071 ms | 0.1802 / 0.1798 | 36 s (32 it) |
-| benchmark_02 | 2.63 mm | 0.0555° | +0.042 ms | 0.1802 / 0.1797 | 57 s (53 it) |
-| benchmark_03 | 1.43 mm | 0.0045° | -0.009 ms | 0.1802 / 0.1801 | 59 s (55 it) |
-| benchmark_04 | 1.14 mm | 0.0044° | +0.029 ms | 0.1795 / 0.1791 | 36 s (32 it) |
-| benchmark_05 | 1.06 mm | 0.0019° | +0.001 ms | 0.1791 / 0.1787 | 39 s (35 it) |
-| benchmark_06 | 0.30 mm | 0.0018° | +0.062 ms | 0.1770 / 0.1766 | 49 s (45 it) |
-| benchmark_07 | 0.19 mm | 0.0014° | +0.030 ms | 0.1717 / 0.1715 | 53 s (51 it) |
-| benchmark_08 | 0.46 mm | 0.0000° | +0.082 ms | 0.1715 / 0.1712 | 43 s (40 it) |
-| benchmark_09 | 0.49 mm | 0.0000° | +0.071 ms | 0.1708 / 0.1706 | 47 s (44 it) |
-| benchmark_10 | 0.70 mm | 0.0000° | +0.037 ms | 0.1711 / 0.1708 | 48 s (45 it) |
-| benchmark_11 | 0.55 mm | 0.0043° | +0.036 ms | 0.1719 / 0.1717 | 91 s (89 it) |
-| benchmark_12 | 0.43 mm | 0.0041° | +0.055 ms | 0.1715 / 0.1712 | 69 s (66 it) |
-
-**结论**：Ceres 与 Kalibr 不是逐位相同的优化问题。从同一个 Kalibr 解出发，Ceres 仍会漂到 `0.19-2.63 mm` 后收敛；这就是两套实现的固有距离。实验一当前复跑的 `2.08-3.77 mm` 可以理解为“固有距离 + 独立初始化/收敛路径的额外代价”。
-
-## 实验三：速度结构
-
-这一节必须分清速度口径，否则会得出错误结论。后续 benchmark 至少记录两个时间：
-
-| 时间 | 定义 | 记录方式 | 是否包含数据转换/读取 |
-|---|---|---|---|
-| 墙钟 | 外层命令从启动到退出的总耗时 | `run_docker_benchmark.py` 里的 `kalibr_elapsed_s` / `ceres_elapsed_s` | 包含 Docker 启动、文件复制/挂载、读取、建 problem、优化、写结果和报告 |
-| 优化耗时 | 后端优化循环耗时 | Kalibr 日志 `Optimizing elapsed`；Ceres iteration table 最后一行 `total_time` | 不包含外层准备、比较脚本和输入格式转换；Ceres 也不包含 problem 构造前的读取 |
-
-benchmark CSV 口径中，Ceres 原生二进制直接读取已经准备好的 YAML/CSV 输入，不会在求解命令内部调用 Kalibr Docker。`.bag`、`.pkl`、EuRoC 到 CSV/角点 CSV 的转换属于准备阶段，后续单独记录为 `prepare_elapsed_s`，不计入优化耗时。
-
-| 口径 | Ceres 环境 | Kalibr 环境 | 这份文档原表是否属于该口径 | 结论边界 |
+| Suite | 状态 | Ceres topology | Kalibr 平台 | 关键结论 |
 |---|---|---|---|---|
-| 原生求解口径 | macOS arm64 Release 二进制 | linux/amd64 Docker | 是 | 只能说明当前本机部署时 Ceres 原生二进制快于 Kalibr Docker 模拟 |
-| Docker parity 口径 | `kalibr-camimu-ceres-solver:20.04`，基于 Kalibr 镜像 | `wang121ye/kalibr-camera-calibration:20.04` | 否，2026-06-18 开始新增 | 用来比较同 Docker/OpenCV 环境下的速度与精度，不能复用原生表格的速度结论 |
+| `benchmark-single` | 已完成 | `1cam+1imu` | amd64 + arm64 | `12/12` 通过；平均平移差 `1.92 mm`，最大 `4.03 mm`；Ceres wall 均值 `114.0 s` |
+| `benchmark-multi-imu` | 已完成 | joint 为 `1cam+Nimu`，single 子项为 `1cam+1imu` | arm64 | `60/60` 通过；Kalibr joint `12/12` 成功；Ceres joint-vs-single 平移均值 `39.5 mm`、最大 `161.8 mm`；C/K 有效链差 single 均值 `5.2 mm`、joint 均值 `19.1 mm` |
+| `tum` | 已完成 | `Mcam+1imu` | arm64 | `2/2` 通过；平均平移差 `0.69 mm`，最大 `1.04 mm`；Ceres loop error 最大 `0.0347 deg / 0.249 mm` |
 
-原生求解口径下，Ceres 墙钟为 `81-131 s / 75-121 it`，Kalibr Docker 为 `145-261 s / 3-12 it`。这个速度对比不能解释为算法原生倍率，因为 Kalibr 是 amd64 Docker 模拟，而 Ceres 是 arm64 原生。
+核心判断：
 
-2026-06-18 曾新增 Docker parity probe，用来解释“为什么 Ceres Docker 没有复现旧表提速”。该 probe 现在降级为历史诊断，不作为后续实验主口径。用户已明确后续实验统一使用 **macOS 原生 Ceres vs Kalibr Docker**。
+- `benchmark-single` 已经恢复到毫米级外参差异，没有本轮厘米级异常。
+- `benchmark-multi-imu` 的 Kalibr 失败主因已确认是旧 runner 漏传 `--imu-delay-by-correlation`；修正后 Kalibr joint 恢复 `12/12`。Suite B rotation 已改用 SO(3) 相对旋转重算，旧的 `16.98 deg` 级 Ceres single-joint rotation 结论作废；当前主要异常收敛到 Ceres joint effective chain 的平移 tail。
+- `benchmark-multi-imu` 的 C/K 对比要分两层看：single Ceres vs single Kalibr 平移差均值 `5.2 mm`，joint Ceres vs joint Kalibr 有效链平移差均值 `19.1 mm`；joint 的 camera0 接近不代表全部 IMU chain 都接近。single 最大值 `41.56 mm / 0.831 deg` 来自 b09/single_imu3，定点 ablation 见 `docs/experiment/20260623_b09_single_joint_outlier_ablation.md`。
+- TUM 双目单 IMU 精度已对齐 Kalibr：外参差小于 `1.1 mm`，time-shift 差小于 `0.05 ms`。
+- TUM 的 camera-chain loop error 显示 Ceres 两路 camera-to-IMU 外参和固定双目链之间仍有 `0.03 deg / 0.2 mm` 级闭环误差；这不是失败，但应该作为 `Mcam+1imu` 的稳定性指标保留。
+- 速度不能写成 Ceres 全面更快：Ceres native 相对 Kalibr amd64 Docker 明显更快；相对 Kalibr arm64 Docker，优化段仍慢。
 
-| 口径 | Kalibr 墙钟 | Kalibr 优化耗时 | Ceres 墙钟 | Ceres 优化耗时 | 迭代/停止 | 外参差 | time-shift 差 | reproj px (Ceres/Kalibr) |
-|---|---:|---:|---:|---:|---|---:|---:|---|
-| Docker parity probe | `178.21 s` | `92.010 s` | `162.31 s` | `154 s` | Ceres `94 it`，Kalibr `5 it` | `0.0065°`, `3.38 mm` | `-0.991 ms` | `0.18029 / 0.17977` |
-| host-native Ceres probe | `178.21 s` | `92.010 s` | `100.34 s` | `97.4 s` | Ceres `94 it` | 见原生 sweep | 见原生 sweep | `0.18027 / 0.17977` |
+## 配置口径
 
-这组数据把旧结论拆开了：
+`--suite` 是 `tools/run_docker_benchmark.py` 的实验选择参数，不是 Ceres native 标定器参数。Ceres running 口径由 `build/calibrate_cam_imu --corner-defaults` 按输入数量分发：
 
-- Docker parity 口径下，Ceres Docker 的墙钟只比 Kalibr Docker 快约 `9%`，但优化耗时是 `154 s`，慢于 Kalibr 的 `92.010 s`。如果默认不统计读取/准备，Ceres Docker 当前不能复现实验文档里“明显更快”的结论。
-- host-native Ceres 口径下，单组墙钟 `100.34 s`，相对同组 Kalibr Docker `178.21 s` 能复现旧表里 Ceres 明显更快的现象；但优化耗时 `97.4 s` 与 Kalibr `92.010 s` 同量级且略慢。因此这条提速主要来自原生执行和更低的非优化开销，不应表述为 Ceres 优化循环本身更快。
-- Ceres Docker 为了和 Kalibr 对齐 OpenCV/系统环境，当前继承 Kalibr 的 linux/amd64 基镜像，在 Apple Silicon 上同样走 amd64 模拟；同时 Ceres 独立求解需要约 `94` 次迭代，Kalibr 同组约 `5` 次迭代。Ceres 单步便宜的优势被迭代次数和模拟环境抵消。
+| 输入规模 | Topology | 当前 running |
+|---|---|---|
+| 1 个 `--corners` + 1 个 `--imu-data` | `1cam+1imu` | production solver defaults |
+| 1 个 `--corners` + 多个 `--imu-data` | `1cam+Nimu` | production solver defaults；runner 对 joint 多 IMU 额外加 staged |
+| 多个 `--corners` + 1 个 `--imu-data` | `Mcam+1imu` | production solver defaults |
+| 多个 `--corners` + 多个 `--imu-data` | `Mcam+Nimu` | production solver defaults；当前未覆盖 |
 
-因此后续速度表的正式主线固定为：**Ceres 原生 macOS Release 二进制**记录 Ceres 墙钟/优化耗时，**Kalibr DockerHub 镜像**记录 Kalibr 墙钟/优化耗时。Docker parity 只在需要解释环境差异时作为附录数据。
+production solver defaults：
 
-本次 12 组匿名基准复跑中，Kalibr 平均优化耗时 `128.2 s`，Ceres 平均优化耗时 `89.3 s`，平均速度比 `Kalibr/Ceres = 1.57x`。这个速度优势不均匀：`benchmark_01/03/06` 的 Ceres 优化段慢于 Kalibr，`benchmark_07/08/09/12` 的 Ceres 优化段约 `2.2-2.4x` 快于 Kalibr。墙钟口径下，Ceres 原生二进制仍明显短于 Kalibr Docker，但这包含 Docker 启动、读取、报告生成和 Rosetta/amd64 模拟等非优化因素。
+| 参数 | 值 |
+|---|---:|
+| `pose_kps / bias_kps` | `100 / 50` |
+| `time_padding_s` | `0.04` |
+| `camera_time_offset_buffer_s` | `0` |
+| robust loss | camera / gyro / accel 均为 `cauchy:10` |
+| `max_iterations` | `150` |
+| Ceres `function/gradient/parameter tolerance` | `0 / 0 / 0` |
+| `solver_max_trust_region_radius` | `1e7` |
+| absolute stop | cost `-1`，step `0.02`，parameter `-1` |
+| nonmonotonic | enabled，max steps `20` |
 
-更有价值的是结构差异：Ceres 单步便宜但迭代多，墙钟主要跟 problem size 和停止条件走；Kalibr 单步贵但迭代少，墙钟主要受绝对停止条件和模拟环境波动影响。较大问题规模样例的 camera residual 约 `662k`，原生 Ceres 用时 `111-131 s`；较小问题规模样例约 `582k`，原生 Ceres 用时 `81-89 s`，组内稳定、组间清晰。
+实验元信息：
 
-### 停止条件口径
-
-Kalibr 的 cam-IMU 优化使用三类停止条件：最大迭代数、`deltaX <= 1e-2`、`|deltaJ| <= 1`。后端循环的逻辑等价于三者满足其一即可退出；例如 `benchmark_01` 的扩展 IMU run 在第 8 次迭代 `dJ=0.303 < 1` 时停止，当时 `deltaX=0.027` 仍大于 `1e-2`。
-
-Ceres 也补了三类停止入口，但只对齐**停止结构**，不逐值复用 Kalibr 的 `J/dJ/deltaX`。原因有三点：
-
-- `J/dJ` 是优化器内部目标值。Kalibr 使用 aslam backend 的目标统计，Ceres 报告的是自身 loss convention 下的 cost；两边的 robust loss、先验项和归一化不逐项相同。
-- `deltaX` 也不是同一个量。Kalibr 统计最小维度设计变量更新向量的 max coefficient；Ceres 当前 callback 统计 active parameter block 的实际最大系数变化，只是更接近 `deltaX` 的工程代理量。
-- residual parity 不要求内部 `J` parity。实验四说明扩展 IMU 的 reprojection/gyro/accel residual 和 `M_a/M_g` 已到同量级，但这不能推出两边 `dJ=1` 代表相同收敛程度。
-
-`benchmark_01` 扩展 IMU 的 smoke 结果说明，Ceres 若直接照搬 Kalibr 的 `dJ=1` 会提前退出：
-
-| 口径 | 停止点 | 墙钟 | 结果判断 |
-|---|---|---:|---|
-| Kalibr 扩展 IMU | 8 it，`dJ=0.303 < 1`，`deltaX=0.027` | optimize `160 s` | 作为 residual 与扩展 IMU intrinsic 基线 |
-| Ceres 直接用 `dJ=1` | 49 it，`cost_change=0.951` | `60 s` | 过早；外参旋转差 `0.31°`，平移差 `12.8 mm`，gravity 差 `0.092` |
-| Ceres 用参数变化 `1e-2` | 107 it，`parameter_delta=0.00987` | `122 s` | residual 同量级，`M_a/M_g` 相对差 `1e-3` 量级 |
-| Ceres 跑满 150 it | max-iteration reference | `168 s` | delta 最稳，但时间增加 |
-
-因此当前 `--corner-defaults` 采用默认 preset：保留最大迭代数、绝对 cost change 和参数变化三类停止条件，但把 cost change 收紧到 `5e-2`，并保留已验证的参数变化阈值 `1e-2`。这解释了为什么 Ceres 和 Kalibr 的 residual 可以对齐，而日志里的 `J/dJ/deltaX` 不应该逐数值比较。
-
-## 实验四：模型覆盖与扩展 IMU
-
-相机侧已补齐 `pinhole+radtan/equidistant/fov/none`、`omni+radtan/none`、`eucm`、`ds` 的读取和投影 Jacobian；`tests/test_math.cpp` 对 `projectWithJacobian()` 做中心差分验证，`check_dataset` 会打印实际读取到的 camera/distortion model，避免 YAML 被静默当成默认模型。
-
-IMU 侧新增两类模型：
-
-| Ceres 参数 | 对应含义 |
+| 项目 | 内容 |
 |---|---|
-| `--imu-model scale-misalignment` | `M_a/M_g/A_g`，对应 scale/misalignment 与 gyro sensing rotation |
-| `--imu-model scale-misalignment-size-effect` | 在上面基础上增加 size-effect 的 accelerometer sensing-axis offset `C_g` |
+| Ceres | native `build/calibrate_cam_imu` |
+| Ceres commit | `71a23e65b752` |
+| Kalibr Docker repo commit | `e83ecfc4d6c0` |
+| benchmark 数据根 | `/Users/wayne/Documents/work/code/project/ffalcon/production_calibration/data` |
+| TUM 数据根 | `/Users/wayne/Documents/work/data/TUM` |
 
-扩展 gyro、scale/misaligned accel 和 size-effect accel 均已从数值差分切到手写 `SizedCostFunction`。`ctest --test-dir build --output-on-failure` 覆盖普通 IMU residual、扩展 IMU Kalibr 源码公式等价、扩展 IMU 解析 Jacobian 与中心差分复核。
+## 指标口径
 
-三组匿名基准数据的全量 `scale-misalignment` 对比：
+| 指标 | 单位 | 含义 | 注意事项 |
+|---|---:|---|---|
+| success | count | Ceres、Kalibr、compare return code 是否为 0 | 只说明流程完成 |
+| rotation diff | deg | Ceres 与 Kalibr `T_c_b` 旋转差 | 与 Kalibr 比，不是真值误差 |
+| translation diff | mm | Ceres 与 Kalibr `T_c_b` 平移欧氏差 | 与 Kalibr 比，不是真值误差 |
+| time-shift diff | ms | Ceres time shift 减 Kalibr time shift | 保留正负号，聚合看绝对值 |
+| residual mean | px / rad/s / m/s^2 | 重投影、gyro、accel residual mean | 不同 residual 类型不能跨单位比较 |
+| optimize time | s | 后端优化耗时 | Ceres 与 Kalibr 内部统计口径不同 |
+| wall time | s | runner 端到端耗时 | 包含 Docker、读写、报告生成 |
+| loop error | deg / mm | 双目链闭环误差 | 只适用于多 camera |
+| joint-vs-single `T_c_i` diff | mm / deg / ms | 同一 IMU 在独立标定和 joint 标定中的有效 camera-to-IMU 外参差 | 只适用于 multi-IMU；Ceres result 中 joint 有效链按 `T_c_b * T_b_i`，Kalibr result 中按 `T_ci0 * inv(T_ib)`；rotation 必须用 SO(3) 相对旋转，不能用两个绝对旋转角相减 |
 
-这里的“全量”指相机角点全量与 Kalibr-compatible 有效 IMU 区间全量；IMU 不是 raw `data1.csv` 全量行数。
+TUM loop error 的定义如下。Kalibr camchain 给出 `T_c1_c0 = cam1.T_cn_cnm1`，本文使用 `T_c0_c1 = inv(T_c1_c0)` 作为固定双目链；优化外参给出 `T_c0_i` 和 `T_c1_i`，于是经 IMU 闭合得到：
 
-| 数据集 | residual mean Ceres/Kalibr | 外参差 | time-shift 差 | `M_a` rel | `M_g` rel | `A_g` fro | `C_g` fro |
-|---|---|---:|---:|---:|---:|---:|---:|
-| `benchmark_01` | `0.18006/0.18081 px`, `0.01669/0.01746 rad/s`, `0.11228/0.10409 m/s^2` | `0.082°`, `2.05 mm` | `-1.26 ms` | `8.54e-4` | `4.94e-4` | `4.71e-4` | `2.03e-3` |
-| `benchmark_06` | `0.17663/0.17722 px`, `0.01596/0.01673 rad/s`, `0.11395/0.10608 m/s^2` | `0.069°`, `1.85 mm` | `-1.20 ms` | `7.19e-4` | `5.26e-4` | `4.62e-4` | `1.75e-3` |
-| `benchmark_10` | `0.17208/0.18885 px`, `0.01385/0.01412 rad/s`, `0.07172/0.06555 m/s^2` | `0.053°`, `6.13 mm` | `-1.31 ms` | `6.09e-4` | `1.45e-3` | `9.22e-4` | `2.05e-3` |
+```text
+T_c0_c1_via_imu = T_c0_i * T_i_c1
+loop_error = inv(T_c0_c1) * T_c0_c1_via_imu
+```
 
-**结论**：扩展 IMU 不再只是模型级 smoke。`M_a/M_g` 相对差在 `1e-3` 量级，`A_g/C_g` Frobenius 也在 `1e-3` 量级；reprojection 和 gyro 基本追平 Kalibr，accelerometer residual 仍略高，弱可观外参平移在毫米级漂移。
+这与 `T_c1c2` 对比 `T_c1i * T_ic2` 是同一个检查，只是这里显式写成 cam0/cam1，避免 0-index 和 1-index 混淆。
 
-## 实验五：多 camera 与 TUM single-stage
+## 结果总览
 
-> 2026-06-18 定位：TUM 双目失败根因是 native Ceres runner 没有给多 camera 传 `--init-from-camchain`，导致 cam1 从默认 identity 外参启动并收敛到 180 度翻转。已在应用层和 runner 中修复。后续 4-IMU joint 失败继续定位到 Kalibr IRLS M-estimator 与 Ceres 标准 robust loss 的线性化差异，2026-06-19 benchmark 热启动口径已通过，见下文。
-
-### 旧多 IMU 失败记录
-
-使用 `2025_03_14_00_10_18` 同一次机械臂数据，输入为 1 路 camera corners 和 4 路 IMU CSV。结果来源：`out/docker_benchmarks/20260618_step4_native_ceres_no_param_stop/benchmark_multi_imu/summary.csv`。
-
-| 模式 | 外参平移差 | 外参旋转差 | time-shift 差 | reproj px (Ceres/Kalibr) | Ceres 优化 | Kalibr 优化 | 判断 |
-|---|---:|---:|---:|---|---:|---:|---|
-| joint_4imu | 156.72 mm | 0.0785° | -11.726 ms | 54.758200 / 0.236473 | 835.0s | 155.1s | 失败 |
-| single_imu1 | 3.37 mm | 0.0065° | -0.989 ms | 0.180273 / 0.179774 | 94.7s | 86.0s | 通过 |
-| single_imu2 | 3.32 mm | 0.0048° | -0.873 ms | 0.180560 / 0.180073 | 88.0s | 150.9s | 通过 |
-| single_imu3 | 4.12 mm | 0.0184° | -0.665 ms | 0.179557 / 0.179053 | 104.0s | 65.4s | 通过 |
-| single_imu4 | 4.05 mm | 0.0062° | -1.707 ms | 0.179983 / 0.179159 | 103.0s | 173.0s | 通过 |
-
-这组记录保留为失败证据：4 路 IMU 独立 cam-IMU 标定均与 Kalibr 对齐，说明各路 IMU 数据本身可用；但当时 native Ceres 的 4-IMU joint 标定没有收敛到正确解，reprojection 均值达到 `54.76 px`，平移差 `15.7 cm`。后续定位表明，这不是多 IMU 数据不可用，而是 joint 释放 camera/time 时 robust loss 线性化与 Kalibr 不一致。
-
-### 当前 TUM 双目复跑结果
-
-TUM 使用两组数据：`dataset-calib-imu1_512_16.bag` 和 `dataset-calib-imu2_512_16` EuRoC。Kalibr 输入已修正为 `/out/input/*.bag` 可写路径，保证结果文件能写出。Ceres 结果为在同一批 Kalibr 结果上手工加 `--init-from-camchain` 后复跑：
-
-- `out/ceres_sweeps/20260618_tum_imu1_init_from_camchain/result.yaml`
-- `out/ceres_sweeps/20260618_tum_imu2_init_from_camchain/result.yaml`
-
-| 数据 | Kalibr optimize | Ceres optimize | cam0 差 | cam1 差 | time-shift 差 | reproj px (Ceres/Kalibr) | 判断 |
-|---|---:|---:|---:|---:|---:|---|---|
-| tum_imu1_bag | 38.9s | 14.1s | 0.0397° / 0.858 mm | 0.0540° / 0.857 mm | -0.046 ms / -0.054 ms | 0.09494 / 0.10028 | 通过 |
-| tum_imu2_euroc_kalibr_export | 39.7s | 13.2s | 0.0241° / 0.345 mm | 0.0318° / 0.149 mm | +0.003 ms / +0.008 ms | 0.09374 / 0.10024 | 通过 |
-
-结论：TUM 双目通过。旧失败结果中 cam1 接近 `180° / 1.2 m` 的翻转不是 corner 导出或投影 residual 坐标系问题，而是多 camera 初值缺失。修正后两个 TUM 数据集的双目外参都与 Kalibr 在 `0.06° / 1 mm` 内对齐，reprojection 与 Kalibr 同量级且略低。
-
-对应代码修正：
-
-- `calibrate_cam_imu`：多 camera 且未从完整 prior 初始化时，自动从 camchain 读取每个 camera 的 `T_cam_imu`。
-- `tools/run_docker_benchmark.py`：TUM Ceres 命令显式传 `--init-from-camchain`。
-- `tools/prepare_ceres_inputs.py`：多 camera `--run-calibration` / `--run-two-stage` 自动追加 `--init-from-camchain`。
-
-### 当前 4-IMU joint 定位
-
-4-IMU joint 原始失败不是数据不可用：四路单 IMU 独立标定均通过。2026-06-18 进一步把问题拆成三类变量：IMU chain 初值、camera extrinsic、camera-to-IMU time shift。源码复核后确认，当前 kalibr-docker 的 `corner_file` 路径会设置 `CauchyMEstimator(10)`；Kalibr/aslam_backend 的 M-estimator 是 IRLS 口径：用 `sqrt(weight)` 同时缩放 residual 和 Jacobian，不把权重导数写入 Hessian。Ceres 标准 `CauchyLoss`/`HuberLoss` 不是这个线性化语义。
-
-关键修正是：本项目把 Cauchy/Huber 换成 Kalibr-style M-estimator loss，`rho' = weight`、`rho'' = 0`。这样 Ceres 的正规方程线性化与 Kalibr IRLS 更一致；旧的 “Cauchy 宽度已经一致，所以 robust 不是主因” 结论被这次复核推翻。
-
-诊断结果：
-
-| Ceres 对照 | reproj px | 外参差 | time-shift 差 | 结论 |
-|---|---:|---:|---:|---|
-| 原始 runner：Cauchy + time prior + pose motion prior + identity IMU chain | 54.758 | 156.7 mm / 0.0785° | -11.73 ms | 失败 |
-| Kalibr 全量热启动 + Cauchy + 固定 camera/time + 30 iter | 0.230 | 0.0 mm / 0.0034° | 0 ms | 相机模型、投影 residual、Kalibr result 解析基本对齐 |
-| Kalibr 全量热启动 + Ceres 标准 Cauchy + staged `pbg,pbegt` | 2.304 | 1.36 mm / 0.0780° | +11.12 ms | 释放 camera/time 后 time shift 漂移 |
-| Kalibr 全量热启动 + Cauchy + staged `pbg,pbge` | 12.850 | 33.28 mm / 0.0936° | 0 ms | 只释放 camera extrinsic 也会牺牲相机 residual |
-| Kalibr 全量热启动 + all no-loss + staged `pbg,pbgt` | 2.499 | 0.0 mm / 0.0034° | +15.09 ms | 只释放 time shift 会漂移 |
-| Kalibr 全量热启动 + all no-loss + 非 staged 全自由 | 15.396 | 0.342 mm / 0.0299° | +17.32 ms | 即使无 robust，直接全自由仍不稳定 |
-| Kalibr 全量热启动 + Kalibr-style M-estimator + staged `pbg,pbegt` | 0.229823 | 0.0755 mm / 0.00465° | +0.4727 ms | 通过，camera/time 可释放 |
-
-当前 runner 已恢复为多 IMU joint benchmark 口径：Kalibr 先跑出 reference result，Ceres joint 使用 `--kalibr-result --init-from-kalibr --staged --stage-free pbg,pbegt --stage-iterations 30,30`，并移除原来的 time prior 和 pose motion prior。该口径的验证结果为：
-
-| 指标 | Kalibr | Ceres staged `pbg,pbegt` | 差异 |
-|---|---:|---:|---:|
-| reproj mean | 0.236473 px | 0.229823 px | -0.006651 px |
-| camera rotation | - | - | 0.004655° |
-| camera translation | - | - | 0.0755 mm |
-| camera time shift | -0.0842046 s | -0.0837319 s | +0.4727 ms |
-| gyro mean | 0.075923 rad/s | 0.106322 rad/s | +0.030398 rad/s |
-| accel mean | 0.339126 m/s² | 0.596738 m/s² | +0.257612 m/s² |
-
-这个结果说明多 IMU residual 连接、Kalibr `T_ib` 解析、相机 residual、staged 执行路径和 camera/time 释放已经能在 Kalibr 热启动 benchmark 口径下与 Kalibr 对齐。当前结论仍限定在 benchmark 等价验证：Ceres 使用 Kalibr joint 结果作为全量初值，不等同于证明冷启动全自由多 IMU joint 也已经稳定。
-
-### 历史 smoke 背景
-
-Kalibr cam-IMU 支持多 camera：`kalibr_calibrate_imu_camera --cams <camchain.yaml>` 会通过 `IccCameraChain` 构建 camera chain，并为每个 camera 加重投影误差、time shift 和 camera-chain baseline。Ceres 当前也支持**一个共享 camchain + 多个 `--corners` CSV** 的 joint 优化，结果 YAML 写出 `camera_chain`；staged 分支已接入多 camera/multi-IMU problem build，但正式 TUM 结果仍来自当前验证过的 `--init-from-camchain` single-stage 口径。
-
-TUM 双目使用同一个 `--cam <camchain.yaml>`，并传两个 `--corners`。如果误传两个相同的 `--cam`，两路会都按 `cam0` section 读取，cam1 投影会错误；这属于 CLI 约定问题，不是多相机优化缺失。
-
-早期二阶段诊断说明，20/10 kps 的低频 pose/bias 轨迹承载不了 TUM 高频 IMU；这不是数据读取、multi-camera、扩展 IMU 前向公式或 `M_a/M_g` 的问题。最终保留的实验口径是**不读 Kalibr result 的 100/50 kps single-stage joint 优化**。
-
-### TUM 真值与变量口径
-
-TUM 官方说明 512x512 calibrated/exported 数据已经做过一致时间戳、IMU scaling 和 axis alignment；本实验因此把 calibrated camchain 的 `T_cam_imu` 当作外参真值，把 camera-IMU time shift 真值按 `0 ms` 处理。本地真值文件统一按 `/ABS/TUM/<dataset>/dso/camchain.yaml` 或转换输出中的 staging copy 读取。官方下载入口见 `https://vision.in.tum.de/tumvi/exported/euroc/512_16/`。
-
-gravity 的方向在结果文件里表达于 AprilGrid target 坐标系。除非额外知道 AprilGrid target 相对 MoCap/world 的真值姿态，否则不能把 gravity 向量方向直接和 TUM world 真值比较；这里只把 gravity 模长和标准重力 `9.80665 m/s^2` 比较，并额外报告 Ceres 与 Kalibr 之间的向量差。
-
-本实验使用 `--imu-model scale-misalignment`，所以全局设计变量还包括 `M_a/M_g/A_g/C_g`。TUM calibrated 数据已做 IMU scaling/axis alignment，因此这组变量的真值按 corrected measurement space 的 `M_a=I`、`M_g=I`、`A_g=0`、`C_g=I` 做 sanity 对比；这不同于官方 Raw Data 段落里的 raw sensor correction matrix。
-
-### 变量解释与读数方式
-
-下面几张表混合了三类量：残差质量、全局标定变量对真值的误差、Ceres 与 Kalibr 两个 solver 的直接差异。除最后一张“Ceres 与 Kalibr 的直接差异”表外，所有 `rot/trans/time` 都是 **solver 结果减 TUM calibrated 真值**。
-
-| 字段 | 定义 | 背景与读数方式 |
-|---|---|---|
-| `Kalibr residual mean` / `Ceres single-stage residual mean` | 重投影、gyro、accel residual 的均值 | 重投影单位是 `px`；gyro 单位是 `rad/s`；accel 单位是 `m/s^2`。它们衡量优化问题最终解释观测的能力，不直接等价于外参真值误差。 |
-| `Ceres solver` | Ceres 迭代数、墙钟和终止状态 | 用来确认 single-stage run 是否正常收敛。这里报告的是 Ceres 原生二进制的墙钟，不应和 Kalibr Docker 的墙钟做严格原生算法倍率比较。 |
-| `cam0 rot` / `cam1 rot` | 每个 camera 的 `T_cam_imu` 旋转误差 | 使用 `R_est R_truth^T` 的 SO(3) 测地角，单位是度。数值越小，说明该 camera 相对 IMU 的方向越接近 TUM calibrated camchain。 |
-| `cam0 trans` / `cam1 trans` | 每个 camera 的 `T_cam_imu` 平移误差 | 使用 `||t_est - t_truth||`，单位是 `mm`。这是 camera 光心相对 IMU/body 的平移差。 |
-| `baseline rot` / `baseline trans` | 双目相机之间相对外参的误差 | baseline 定义为 `T_cam1_cam0 = T_cam1_imu * inv(T_cam0_imu)`，也就是 cam0 到 cam1 的 stereo baseline。它检查多 camera chain 内部几何是否保持正确；如果 cam0/cam1 一起相对 IMU 漂移，baseline 仍可能很小。 |
-| `cam0 time` / `cam1 time` | 每个 camera 的 camera-to-IMU time shift 误差 | time shift 定义为 `t_imu = t_cam + tau`。TUM calibrated 真值按硬同步 `tau=0` 处理，所以表里的值就是 solver 估计的 `tau`。负值表示对应 IMU 时间比 camera 时间更早。 |
-| `gravity` | 优化得到的重力向量 | 该向量在 AprilGrid target 坐标系里表达，用于解释 accel residual。没有 target-to-world 真值姿态时，方向不能直接和 TUM world gravity 对比。 |
-| `||g|| - 9.80665` | 重力模长误差 | 只比较模长和标准重力常数的差，单位是 `m/s^2`。本实验里两边都被 gravity-length manifold 约束到几乎相同的模长。 |
-| `||M_a-I||_F` | accelerometer scale/misalignment 矩阵离单位阵的 Frobenius 范数 | `M_a` 作用在 accel prediction 外侧。TUM calibrated 数据已经做过 IMU scaling/axis alignment，所以 sanity 真值按单位阵处理。 |
-| `||M_g-I||_F` | gyroscope scale/misalignment 矩阵离单位阵的 Frobenius 范数 | `M_g` 作用在 gyro prediction 外侧。数值反映 solver 在 calibrated measurement space 里又估出的剩余 scale/misalignment。 |
-| `||A_g||_F` | gyro g-sensitivity 矩阵的 Frobenius 范数 | `A_g` 表示加速度对 gyro 测量的耦合项，真值按零矩阵处理。 |
-| `angle(C_g,I)` | gyro sensing rotation 相对单位阵的角度 | `C_g` 是 gyro sensing axis rotation。表里用旋转角表示它偏离单位阵多少。 |
-| `gravity delta` | Ceres gravity 与 Kalibr gravity 的向量差 | 这是最后一张直接差异表里的字段，计算 `||g_ceres - g_kalibr||`，不是对 TUM world 真值的误差。 |
-
-历史结果来源：
-
-| 数据 | Kalibr result | Ceres result |
-|---|---|---|
-| `dataset-calib-imu1_512_16` | `out/kalibr_runs/tum_imu1_ext_sm_writable/input/dataset-calib-imu1_512_16-results-imucam.txt` | `out/ceres_sweeps/tum_single_stage_smoke_20260617/imu1_highkps_all_free_80iter/result.yaml` |
-| `dataset-calib-imu2_512_16` | `out/kalibr_runs/tum_imu2_ext_sm_writable/input/dataset-calib-imu2_512_16-results-imucam.txt` | `out/ceres_sweeps/tum_single_stage_smoke_20260617/imu2_highkps_all_free_80iter/result.yaml` |
-
-| TUM 数据 | Kalibr residual mean | Ceres single-stage residual mean | Ceres solver | 判断 |
-|---|---|---|---|---|
-| `dataset-calib-imu1_512_16` | `0.10646-0.10737 px`, `0.00119649 rad/s`, `0.02146520 m/s^2` | `0.10352 px`, `0.00118534 rad/s`, `0.02121921 m/s^2` | 27 iter, 15.9 s, `CONVERGENCE` | gyro/accel 同量级，reprojection 不差于 Kalibr |
-| `dataset-calib-imu2_512_16` | `0.10708-0.10702 px`, `0.00116924 rad/s`, `0.02134775 m/s^2` | `0.10321 px`, `0.00121503 rad/s`, `0.02117489 m/s^2` | 28 iter, 17.3 s, `CONVERGENCE` | gyro/accel 同量级，reprojection 不差于 Kalibr |
-
-外参、baseline 和 time shift 对真值的差异：
-
-| 数据集 | Solver | cam0 rot | cam0 trans | cam1 rot | cam1 trans | baseline rot | baseline trans | cam0 time | cam1 time |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `dataset-calib-imu1_512_16` | Kalibr | `0.10985°` | `1.667 mm` | `0.10976°` | `1.667 mm` | `0.00393°` | `0.000 mm` | `-0.1663 ms` | `-0.1685 ms` |
-| `dataset-calib-imu1_512_16` | Ceres | `0.12423°` | `1.814 mm` | `0.08938°` | `1.597 mm` | `0.03658°` | `0.286 mm` | `-0.1554 ms` | `-0.1555 ms` |
-| `dataset-calib-imu2_512_16` | Kalibr | `0.07133°` | `2.098 mm` | `0.07150°` | `2.098 mm` | `0.00000°` | `0.000 mm` | `-0.1919 ms` | `-0.1929 ms` |
-| `dataset-calib-imu2_512_16` | Ceres | `0.07093°` | `2.157 mm` | `0.05128°` | `1.961 mm` | `0.04377°` | `0.346 mm` | `-0.1735 ms` | `-0.1716 ms` |
-
-gravity 与扩展 IMU 设计变量对真值的差异：
-
-| 数据集 | Solver | gravity | `||g|| - 9.80665` | `||M_a-I||_F` | `||M_g-I||_F` | `||A_g||_F` | `angle(C_g,I)` |
-|---|---|---|---:|---:|---:|---:|---:|
-| `dataset-calib-imu1_512_16` | Kalibr | `[0.039184, -9.698127, -1.453690]` | `-0.000100` | `6.30e-3` | `2.83e-3` | `1.33e-3` | `0.1300°` |
-| `dataset-calib-imu1_512_16` | Ceres | `[0.038603, -9.698098, -1.453900]` | `-0.000100` | `6.12e-3` | `2.66e-3` | `1.40e-3` | `0.1342°` |
-| `dataset-calib-imu2_512_16` | Kalibr | `[0.034087, -9.697015, -1.461220]` | `-0.000100` | `5.95e-3` | `2.67e-3` | `7.91e-4` | `0.1296°` |
-| `dataset-calib-imu2_512_16` | Ceres | `[0.034050, -9.696857, -1.462267]` | `-0.000100` | `5.74e-3` | `2.55e-3` | `8.22e-4` | `0.1117°` |
-
-Ceres 与 Kalibr 的直接差异：
-
-| 数据集 | cam0 rot | cam0 trans | cam1 rot | cam1 trans | cam0 time | cam1 time | gravity delta |
+| Suite | Case 数 | success | 平均/最大平移差 | 平均/最大旋转差 | 平均/最大 abs time-shift | Ceres/Kalibr wall mean | Ceres/Kalibr optimize mean |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `dataset-calib-imu1_512_16` | `0.03332°` | `0.286 mm` | `0.03492°` | `0.172 mm` | `+0.0109 ms` | `+0.0130 ms` | `0.000618 m/s^2` |
-| `dataset-calib-imu2_512_16` | `0.02060°` | `0.203 mm` | `0.03081°` | `0.209 mm` | `+0.0185 ms` | `+0.0213 ms` | `0.001060 m/s^2` |
+| `benchmark-single` vs Kalibr amd64 | 12 | 12/12 | `1.92 / 4.03 mm` | `0.0056 / 0.0148 deg` | `2.06 / 6.27 ms` | `114.0 / 192.0 s` | `110.8 / 119.4 s` |
+| `benchmark-single` vs Kalibr arm64 | 12 | 12/12 | `1.92 / 4.03 mm` | `0.0056 / 0.0148 deg` | `2.06 / 6.27 ms` | `114.0 / 122.7 s` | `110.8 / 73.7 s` |
+| `benchmark-multi-imu` Ceres joint-vs-single | 48 对 | 60/60 run OK | `39.5 / 161.8 mm` | `0.284 / 1.648 deg` | `1.92 / 8.25 ms` | single `125.8 / 123.1 s`; joint `85.9 / 321.1 s` | single `122.1 / 73.2 s`; joint `81.8 / 225.7 s` |
+| `tum` vs Kalibr arm64 | 2 | 2/2 | `0.69 / 1.04 mm` | `0.0316 / 0.0398 deg` | `0.024 / 0.045 ms` | `61.7 / 58.1 s` | `60.2 / 21.8 s` |
 
-**历史结论状态**：2026-06-17 smoke 曾显示 TUM single-stage residual 与 Kalibr 同量级；2026-06-18 正式 runner 初次复跑失败后，已定位为多 camera 未从 camchain 初始化 cam1 外参。补 `--init-from-camchain` 后，两组 TUM 双目数据重新回到与 Kalibr 同量级，旧失败结果只作为定位线索保留。
+读数：`benchmark-single` 精度已经稳定，但 `benchmark_08/12` 的 time-shift 和 accel residual 仍是后续定位重点。TUM 精度更贴近 Kalibr，但 Ceres 优化段仍明显慢于 Kalibr arm64。
 
-## 输入格式与独立性
+`benchmark-multi-imu` 按 Ceres 内部一致性检查汇总：比较每个 `dataN.csv` 独立标定得到的 `T_c_i`，和同一 session 的 joint 4IMU 标定中第 N 个 IMU 的有效 `T_c_i`。staged joint 的 Ceres optimize time 采用两个 stage timing 求和。
 
-`calibrate_cam_imu` 标定二进制本身读取统一中间格式：camchain/IMU/target YAML、IMU CSV、一个或多个角点 CSV、可选 corner poses CSV。它不需要 Kalibr Docker，也不需要先读取 Kalibr 标定结果。
+Suite B 还单独统计 C/K 差异：single Ceres vs single Kalibr 的有效链平移差均/最大为 `5.23 / 41.56 mm`，joint Ceres vs joint Kalibr 的有效链平移差均/最大为 `19.07 / 163.03 mm`。这两个数回答的是“Ceres 与 Kalibr 是否一致”，与上表的 “single 与 joint 是否一致” 是两个不同问题。
 
-当前外层转换入口是 `tools/prepare_ceres_inputs.py`，支持：
+## Suite A: benchmark-single
 
-| 输入 | 当前方式 | 是否依赖 Kalibr Docker/ROS |
+### 范围
+
+`benchmark-single` 跑 12 个生产 benchmark session，每个 session 只使用 `data1.csv`。Ceres 是 `1cam+1imu` topology；Kalibr 默认同时跑 amd64 和 arm64。
+
+结果来源：
+
+```text
+out/docker_benchmarks/single_amd64_arm64/benchmark_single/summary.csv
+```
+
+### 聚合结果
+
+| Kalibr 平台 | 行数 | success | 平均平移差 | 最大平移差 | 平均旋转差 | 最大旋转差 | 平均 abs time-shift | 最大 abs time-shift |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `linux/amd64` | 12 | 12/12 | `1.92 mm` | `4.03 mm` | `0.0056 deg` | `0.0148 deg` | `2.06 ms` | `6.27 ms` |
+| `linux/arm64` | 12 | 12/12 | `1.92 mm` | `4.03 mm` | `0.0056 deg` | `0.0148 deg` | `2.06 ms` | `6.27 ms` |
+
+### 分数据集结果
+
+下表以 Kalibr `linux/amd64` 为精度和逐数据集耗时基线；`C/K` 表示 Ceres native / Kalibr amd64。
+
+| 数据集 | 平移差 mm | 旋转差 deg | time-shift 差 ms | reproj px C/K | accel m/s^2 C/K | 优化 s C/K | 墙钟 s C/K | Ceres it |
+|---|---:|---:|---:|---|---|---:|---:|---:|
+| b01 | 1.69 | 0.0060 | -0.99 | 0.180275 / 0.179774 | 0.114557 / 0.108088 | 127.0 / 85.2 | 129.9 / 161.5 | 130 |
+| b02 | 1.08 | 0.0039 | -0.80 | 0.180266 / 0.179743 | 0.112463 / 0.107294 | 148.0 / 125.1 | 150.5 / 196.1 | 151 |
+| b03 | 1.02 | 0.0050 | -0.78 | 0.180301 / 0.180087 | 0.119199 / 0.114536 | 146.0 / 62.1 | 148.4 / 133.6 | 151 |
+| b04 | 2.32 | 0.0070 | -1.39 | 0.179710 / 0.179124 | 0.116340 / 0.107415 | 114.0 / 125.6 | 116.6 / 197.6 | 116 |
+| b05 | 2.53 | 0.0016 | -0.57 | 0.179187 / 0.178664 | 0.114687 / 0.111014 | 115.0 / 171.7 | 118.3 / 245.8 | 116 |
+| b06 | 1.88 | 0.0034 | -1.12 | 0.177188 / 0.176607 | 0.123734 / 0.116744 | 118.0 / 83.7 | 121.0 / 155.4 | 120 |
+| b07 | 0.97 | 0.0046 | -3.20 | 0.170813 / 0.171469 | 0.095860 / 0.080972 | 88.5 / 137.1 | 92.2 / 209.3 | 91 |
+| b08 | 4.03 | 0.0148 | -6.27 | 0.172360 / 0.171172 | 0.114861 / 0.085099 | 66.0 / 156.4 | 69.7 / 228.2 | 67 |
+| b09 | 0.56 | 0.0000 | -0.70 | 0.170437 / 0.170591 | 0.096120 / 0.093327 | 124.0 / 116.4 | 127.5 / 189.0 | 128 |
+| b10 | 0.43 | 0.0000 | +1.34 | 0.171897 / 0.170795 | 0.084087 / 0.089701 | 145.0 / 98.5 | 148.4 / 172.2 | 151 |
+| b11 | 3.15 | 0.0090 | +1.42 | 0.172832 / 0.171706 | 0.086650 / 0.092505 | 65.2 / 97.5 | 69.0 / 170.0 | 67 |
+| b12 | 3.35 | 0.0123 | -6.19 | 0.172194 / 0.171249 | 0.141210 / 0.116552 | 72.5 / 173.9 | 76.3 / 245.7 | 75 |
+
+读数：`b08` 是最大平移差、最大旋转差和最大 time-shift 差，但平移差仍为 `4.03 mm`。`b12` 当前 Ceres 在第 75 次迭代停止，平移差 `3.35 mm`，主要剩余差异是 time shift `-6.19 ms` 和 accel residual 偏高。
+
+### 速度读数
+
+| 对比平台 | Ceres wall mean | Kalibr wall mean | Ceres optimize mean | Kalibr optimize mean | 结论 |
+|---|---:|---:|---:|---:|---|
+| Kalibr amd64 | `114.0 s` | `192.0 s` | `110.8 s` | `119.4 s` | Ceres native 更快 |
+| Kalibr arm64 | `114.0 s` | `122.7 s` | `110.8 s` | `73.7 s` | Ceres wall 略快，优化段更慢 |
+
+## Suite B: benchmark-multi-imu
+
+### 读法
+
+Suite B 跑 12 个 benchmark，每个 benchmark 有 1 个 `joint_4imu` 和 4 个独立单 IMU 标定：`single_imu1..4`。本节只保留四类核心对比：
+
+| 对比 | 含义 | 用途 |
 |---|---|---|
-| `pkl` | `export_kalibr_corners.py` 转角点 CSV | 转换依赖，求解不依赖 |
-| `bag` | `export_kalibr_bag_to_ceres.py` 转角点/时间戳/IMU CSV | 转换依赖，求解不依赖 |
-| `euroc` / TUM `mav0` | 默认用 cpp_tools AprilTag/camera model 原生导出角点与 IMU CSV；`--euroc-backend kalibr-docker` 保留为基线 | 默认转换不依赖，Kalibr backend 依赖 |
+| Ceres single-joint | 同一 IMU 的 Ceres 独立标定 vs Ceres 4IMU joint 有效链 | 看 Ceres joint 是否保持独立标定一致性 |
+| Kalibr single-joint | 同一 IMU 的 Kalibr 独立标定 vs Kalibr 4IMU joint 有效链 | 看数据/约束本身的 single-joint 差异 |
+| C/K single | Ceres single vs Kalibr single | 看单 IMU native Ceres 是否贴近 Kalibr |
+| C/K joint | Ceres joint effective chain vs Kalibr joint effective chain | 看 joint 整条 IMU chain 是否贴近 Kalibr |
 
-`--run-calibration` 可一键完成转换后单阶段标定，并默认补上 single-stage preset；`--run-two-stage` 保留为 TUM/轨迹频率诊断入口。EuRoC 已经可以走 native 导出；当前仍依赖 Kalibr Docker 的主要是 Kalibr pickle 和 ROS bag 转 CSV。
+表格里的 `T/R/t` 统一表示：translation `mm` / rotation `deg` / time-shift `ms`。`wall C/K` 表示 Ceres wall time / Kalibr wall time，单位为秒。joint 的有效外参使用 `T_c_i = T_c_b * T_b_i`；joint 的有效 time-shift 使用 `camera_time_shift_s - imu_time_offset_s`。
 
-## 结论
+### 聚合对比
 
-- **Ceres 独立标定已经覆盖匿名基准集**：全部 `CONVERGENCE`，reprojection 与 Kalibr 基本一致，外参旋转最大 `0.0145°`，外参平移 `2.08-3.77 mm`。
-- **匿名基准表格采用 Kalibr-compatible IMU 裁边口径**：Kalibr `--imu_data_file` 与 Ceres `--corner-defaults` 均裁掉首尾 `1000` 个 IMU 样本；这些结论不能直接解释为 raw IMU 全量行数实验。
-- **热启动证明两套优化问题不是逐位相同**：从 Kalibr 解出发仍会漂 `0.19-2.63 mm`，这解释了独立口径中剩余毫米级差异的下限。
-- **停止条件对齐结构，不对齐内部数值**：Ceres 已有 max-iteration、absolute cost change、parameter delta 三类停止条件；`J/dJ/deltaX` 的定义与 Kalibr 不同，所以不能直接照搬 Kalibr 的 `dJ=1`。
-- **扩展 IMU 有全量证据**：`M_a/M_g` 相对差约 `1e-3`，`A_g/C_g` Frobenius 约 `1e-3`，并且已切到手写解析 Jacobian。
-- **多 IMU joint 在 Kalibr 热启动 benchmark 口径通过**：4 路 IMU 分别与同一 camera 独立标定均能贴近 Kalibr；原始全自由 4-IMU joint reprojection 达 `54.76 px`。定位后确认主因是 Ceres 标准 robust loss 与 Kalibr IRLS M-estimator 线性化不等价；改为 Kalibr-style loss 后，`--init-from-kalibr --staged --stage-free pbg,pbegt` 可释放 camera/time，reprojection `0.229823 px`，camera 差 `0.004655° / 0.0755 mm`，time-shift 差 `0.4727 ms`。
-- **多 camera/TUM 已通过当前修正口径**：TUM 双目失败根因是缺少 camchain 外参初值；补 `--init-from-camchain` 后，native Ceres reprojection 为 `0.0937-0.0949 px`，cam0/cam1 均与 Kalibr 在 `0.06°/1 mm` 内对齐。
-- **速度结论需按当前正式口径解释**：后续主线固定为 macOS native Ceres vs Kalibr Docker；本轮 12 组平均优化耗时为 Ceres `89.3 s`、Kalibr `128.2 s`，但 Ceres 并非每组都更快，墙钟优势也包含 Kalibr Docker 的非优化开销。
+| 分组 | Ceres single-joint T/R/t 均/中/最大 | Kalibr single-joint T/R/t 均/中/最大 | C/K single T/R/t 均/中/最大 | C/K joint T/R/t 均/中/最大 |
+|---|---:|---:|---:|---:|
+| all 48 | `39.5/36.5/161.8 mm`, `0.284/0.139/1.648 deg`, `1.92/1.63/8.25 ms` | `25.5/18.4/96.0 mm`, `0.147/0.096/0.887 deg`, `1.27/1.10/2.87 ms` | `5.2/2.6/41.6 mm`, `0.035/0.007/0.831 deg`, `1.20/0.87/6.27 ms` | `19.1/12.3/163.0 mm`, `0.267/0.069/2.573 deg`, `0.24/0.02/2.65 ms` |
+| b01-b06 | `21.1/21.7/43.0 mm`, `0.125/0.096/0.339 deg`, `1.82/1.75/3.04 ms` | `7.1/7.0/12.8 mm`, `0.082/0.066/0.227 deg`, `0.80/0.71/1.57 ms` | `4.6/2.4/21.7 mm`, `0.008/0.005/0.030 deg`, `1.04/0.90/2.32 ms` | `12.9/16.7/23.6 mm`, `0.077/0.067/0.385 deg`, `0.02/0.02/0.03 ms` |
+| b07-b12 | `58.0/46.1/161.8 mm`, `0.443/0.285/1.648 deg`, `2.03/1.48/8.25 ms` | `44.0/40.0/96.0 mm`, `0.212/0.143/0.887 deg`, `1.73/1.74/2.87 ms` | `5.9/3.1/41.6 mm`, `0.063/0.023/0.831 deg`, `1.35/0.78/6.27 ms` | `25.2/4.8/163.0 mm`, `0.456/0.076/2.573 deg`, `0.46/0.03/2.65 ms` |
 
-## 复现命令
+速度：48 个 single case 的 wall time 为 Ceres/Kalibr `125.8 / 123.1 s` 均值，total `6036.6 / 5908.0 s`；12 个 joint case 的 wall time 为 Ceres/Kalibr `85.9 / 321.1 s` 均值，total `1030.7 / 3853.6 s`。joint 速度优势来自 Ceres staged 路径，但精度仍要看有效 IMU chain。
 
-Ceres 独立标定单数据集示例，`<DS>` 替换为具体 `cam_imu` 目录：
+读数：
 
-```bash
-build/calibrate_cam_imu --corner-defaults \
-  --cam <DS>/cam0-camchain-640x400.yaml --imu <DS>/imu.yaml --target <DS>/aprilgrid.yaml \
-  --imu-data <DS>/data1.csv --corners <DS>/cam0_640x400_corners.csv \
-  --corner-poses <DS>/cam0_640x400_corner_poses.csv \
-  --estimate-time-shift-prior --estimate-orientation-gravity-prior \
-  --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 \
-  --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 \
-  --max-iterations 150 --solver-max-trust-region-radius 10000000 \
-  --output-result /tmp/ceres_independent.yaml
+- single C/K 大多数很近，最大 `41.6 mm / 0.831 deg` 集中在 `b09/imu3`，这个 case 已单独做 ablation。
+- joint C/K 最大平移 `163.0 mm`、最大旋转 `2.573 deg` 都集中在 `b09` 的非参考 IMU chain。
+- Ceres single-joint rotation 经 SO(3) 相对旋转重算后不再有十几度尾部：最大为 `b09/imu4 1.648 deg`，`b08/imu2` 从旧口径的 `16.978 deg` 修正为 `0.381 deg`。当前主要问题是 joint effective chain 的平移 tail。
+- b01-b06 的 C/K single 基本是毫米级到 2cm；b07-b12 的 C/K tail 由 b09、b11、b12 拉大。
+
+### 48 路明细
+
+#### 列与单位
+
+| 列 | 含义 | 单位/符号 |
+|---|---|---|
+| `benchmark` | benchmark 编号，`b01..b12` | 无 |
+| `IMU` | 对应 `single_imu1..4`，joint 表示同一 IMU 的 effective chain | 无 |
+| `Δt` | 两个结果之间的外参平移距离 | `mm`，非负，越小越一致 |
+| `ΔR` | 两个结果之间的 SO(3) 相对旋转角 | `deg`，非负，越小越一致；按 `R_delta = R_a * R_b^T` 计算 |
+| `Δτ` | time-shift 差值 | `ms`，有符号；single-joint 为 `single - joint`，C/K 为 `Ceres - Kalibr` |
+| `wall` | runner 记录的端到端墙钟耗时 | `s`，越小越快 |
+| single-joint | 同一 solver 内独立单 IMU 标定与 4IMU joint effective chain 的差 | 检查 joint 是否保持 single 一致性 |
+| C/K single | Ceres single 与 Kalibr single 的差 | 检查 native 单 IMU 标定是否贴近 Kalibr |
+| C/K joint | Ceres joint effective chain 与 Kalibr joint effective chain 的差 | 检查整条 joint IMU chain 是否贴近 Kalibr |
+
+joint 的有效外参使用 `T_c_i = T_c_b * T_b_i`；joint 的有效 time-shift 使用 `camera_time_shift_s - imu_time_offset_s`。joint wall time 是一次 4IMU joint 标定的耗时，所以每个 benchmark 只有一条，不再在四个 IMU 行里重复。
+
+#### A. Ceres single-joint
+
+同一 IMU 的 Ceres 独立标定减 Ceres 4IMU joint effective chain。该表用于直接观察 Ceres joint 是否放大某个 IMU chain 的外参或 time-shift 差异。
+
+| benchmark | IMU | Δt mm | ΔR deg | Δτ ms |
+|---|---|---:|---:|---:|
+| b01 | imu1 | 8.8 | 0.231 | -1.64 |
+| b01 | imu2 | 21.5 | 0.128 | -1.28 |
+| b01 | imu3 | 23.7 | 0.243 | -2.22 |
+| b01 | imu4 | 22.8 | 0.215 | -2.59 |
+| b02 | imu1 | 7.8 | 0.072 | -1.46 |
+| b02 | imu2 | 21.1 | 0.084 | -1.25 |
+| b02 | imu3 | 23.6 | 0.120 | -1.53 |
+| b02 | imu4 | 21.9 | 0.079 | -1.49 |
+| b03 | imu1 | 10.4 | 0.172 | -1.27 |
+| b03 | imu2 | 28.3 | 0.136 | -1.61 |
+| b03 | imu3 | 43.0 | 0.191 | -2.02 |
+| b03 | imu4 | 26.3 | 0.076 | -3.04 |
+| b04 | imu1 | 9.0 | 0.061 | -2.02 |
+| b04 | imu2 | 18.7 | 0.076 | -1.16 |
+| b04 | imu3 | 36.9 | 0.153 | -2.17 |
+| b04 | imu4 | 16.6 | 0.071 | -2.84 |
+| b05 | imu1 | 9.4 | 0.107 | -1.19 |
+| b05 | imu2 | 24.1 | 0.047 | -1.13 |
+| b05 | imu3 | 23.0 | 0.339 | -2.03 |
+| b05 | imu4 | 22.3 | 0.086 | -2.40 |
+| b06 | imu1 | 14.6 | 0.067 | -1.76 |
+| b06 | imu2 | 19.4 | 0.154 | -1.74 |
+| b06 | imu3 | 36.9 | 0.059 | -2.12 |
+| b06 | imu4 | 16.2 | 0.030 | -1.78 |
+| b07 | imu1 | 41.7 | 0.051 | -4.72 |
+| b07 | imu2 | 36.1 | 0.170 | -0.75 |
+| b07 | imu3 | 46.7 | 0.143 | -2.07 |
+| b07 | imu4 | 49.1 | 0.523 | -1.39 |
+| b08 | imu1 | 40.8 | 0.135 | -8.25 |
+| b08 | imu2 | 41.6 | 0.381 | -2.27 |
+| b08 | imu3 | 39.4 | 0.558 | -1.74 |
+| b08 | imu4 | 38.9 | 1.050 | -0.60 |
+| b09 | imu1 | 95.1 | 0.339 | -0.61 |
+| b09 | imu2 | 93.7 | 0.806 | -0.44 |
+| b09 | imu3 | 132.7 | 1.431 | -1.61 |
+| b09 | imu4 | 161.8 | 1.648 | -1.14 |
+| b10 | imu1 | 34.6 | 0.055 | -0.73 |
+| b10 | imu2 | 38.5 | 0.111 | -2.01 |
+| b10 | imu3 | 36.8 | 0.049 | -2.08 |
+| b10 | imu4 | 46.2 | 0.244 | -1.13 |
+| b11 | imu1 | 63.7 | 0.197 | +0.35 |
+| b11 | imu2 | 42.5 | 0.447 | -1.64 |
+| b11 | imu3 | 56.1 | 0.391 | -1.27 |
+| b11 | imu4 | 73.0 | 1.302 | +2.82 |
+| b12 | imu1 | 61.0 | 0.081 | -7.82 |
+| b12 | imu2 | 26.9 | 0.121 | -1.58 |
+| b12 | imu3 | 49.0 | 0.066 | -1.38 |
+| b12 | imu4 | 45.9 | 0.326 | -0.22 |
+
+#### B. Kalibr single-joint
+
+同一 IMU 的 Kalibr 独立标定减 Kalibr 4IMU joint effective chain。该表是数据/约束本身 single-joint 差异的参考基线。
+
+| benchmark | IMU | Δt mm | ΔR deg | Δτ ms |
+|---|---|---:|---:|---:|
+| b01 | imu1 | 7.6 | 0.227 | -0.66 |
+| b01 | imu2 | 7.2 | 0.133 | -0.42 |
+| b01 | imu3 | 6.4 | 0.180 | -1.57 |
+| b01 | imu4 | 4.8 | 0.144 | -0.90 |
+| b02 | imu1 | 7.1 | 0.069 | -0.67 |
+| b02 | imu2 | 6.1 | 0.019 | -0.34 |
+| b02 | imu3 | 7.1 | 0.134 | -1.05 |
+| b02 | imu4 | 5.8 | 0.062 | -0.87 |
+| b03 | imu1 | 9.8 | 0.174 | -0.51 |
+| b03 | imu2 | 7.1 | 0.093 | -0.55 |
+| b03 | imu3 | 7.0 | 0.058 | -1.11 |
+| b03 | imu4 | 4.9 | 0.095 | -0.74 |
+| b04 | imu1 | 7.5 | 0.057 | -0.64 |
+| b04 | imu2 | 8.0 | 0.023 | -0.41 |
+| b04 | imu3 | 7.7 | 0.026 | -1.38 |
+| b04 | imu4 | 5.4 | 0.038 | -0.74 |
+| b05 | imu1 | 7.5 | 0.106 | -0.64 |
+| b05 | imu2 | 9.5 | 0.034 | -0.32 |
+| b05 | imu3 | 7.0 | 0.033 | -1.48 |
+| b05 | imu4 | 5.1 | 0.027 | -0.85 |
+| b06 | imu1 | 12.8 | 0.069 | -0.66 |
+| b06 | imu2 | 6.6 | 0.056 | -0.43 |
+| b06 | imu3 | 5.4 | 0.013 | -1.45 |
+| b06 | imu4 | 6.5 | 0.095 | -0.87 |
+| b07 | imu1 | 42.1 | 0.048 | -1.54 |
+| b07 | imu2 | 39.9 | 0.098 | -0.85 |
+| b07 | imu3 | 40.2 | 0.044 | -2.41 |
+| b07 | imu4 | 46.8 | 0.161 | -2.28 |
+| b08 | imu1 | 41.7 | 0.124 | -2.01 |
+| b08 | imu2 | 39.7 | 0.153 | -2.34 |
+| b08 | imu3 | 33.6 | 0.035 | -1.92 |
+| b08 | imu4 | 40.0 | 0.414 | -1.81 |
+| b09 | imu1 | 96.0 | 0.858 | -2.56 |
+| b09 | imu2 | 31.4 | 0.559 | -1.76 |
+| b09 | imu3 | 25.8 | 0.887 | -2.09 |
+| b09 | imu4 | 24.0 | 0.125 | -2.87 |
+| b10 | imu1 | 34.9 | 0.052 | -2.04 |
+| b10 | imu2 | 40.0 | 0.114 | -1.81 |
+| b10 | imu3 | 33.0 | 0.007 | -1.72 |
+| b10 | imu4 | 39.4 | 0.155 | -0.76 |
+| b11 | imu1 | 64.3 | 0.199 | -1.09 |
+| b11 | imu2 | 44.2 | 0.200 | -1.68 |
+| b11 | imu3 | 34.9 | 0.133 | -0.93 |
+| b11 | imu4 | 45.9 | 0.190 | -0.75 |
+| b12 | imu1 | 62.4 | 0.071 | -1.63 |
+| b12 | imu2 | 38.7 | 0.165 | -1.56 |
+| b12 | imu3 | 49.1 | 0.035 | -1.53 |
+| b12 | imu4 | 67.7 | 0.253 | -1.59 |
+
+#### C. C/K single
+
+Ceres single 减 Kalibr single。该表用于检查 48 个独立单 IMU 标定中 Ceres native 与 Kalibr 的外参和 time-shift 一致性。
+
+| benchmark | IMU | Δt mm | ΔR deg | Δτ ms |
+|---|---|---:|---:|---:|
+| b01 | imu1 | 1.7 | 0.006 | -0.99 |
+| b01 | imu2 | 1.2 | 0.004 | -0.87 |
+| b01 | imu3 | 2.8 | 0.019 | -0.66 |
+| b01 | imu4 | 3.3 | 0.007 | -1.71 |
+| b02 | imu1 | 1.1 | 0.004 | -0.80 |
+| b02 | imu2 | 1.3 | 0.002 | -0.92 |
+| b02 | imu3 | 1.4 | 0.014 | -0.49 |
+| b02 | imu4 | 1.5 | 0.011 | -0.63 |
+| b03 | imu1 | 1.0 | 0.005 | -0.78 |
+| b03 | imu2 | 2.2 | 0.006 | -1.08 |
+| b03 | imu3 | 19.9 | 0.004 | -0.93 |
+| b03 | imu4 | 3.7 | 0.005 | -2.32 |
+| b04 | imu1 | 2.3 | 0.007 | -1.39 |
+| b04 | imu2 | 1.1 | 0.003 | -0.76 |
+| b04 | imu3 | 21.7 | 0.001 | -0.79 |
+| b04 | imu4 | 3.5 | 0.004 | -2.11 |
+| b05 | imu1 | 2.5 | 0.002 | -0.57 |
+| b05 | imu2 | 2.6 | 0.006 | -0.83 |
+| b05 | imu3 | 4.1 | 0.023 | -0.57 |
+| b05 | imu4 | 3.3 | 0.008 | -1.57 |
+| b06 | imu1 | 1.9 | 0.003 | -1.12 |
+| b06 | imu2 | 2.6 | 0.005 | -1.34 |
+| b06 | imu3 | 21.4 | 0.030 | -0.70 |
+| b06 | imu4 | 1.9 | 0.009 | -0.94 |
+| b07 | imu1 | 1.0 | 0.005 | -3.20 |
+| b07 | imu2 | 0.4 | 0.000 | +0.08 |
+| b07 | imu3 | 0.8 | 0.028 | +0.32 |
+| b07 | imu4 | 0.7 | 0.029 | +0.87 |
+| b08 | imu1 | 4.0 | 0.015 | -6.27 |
+| b08 | imu2 | 0.5 | 0.006 | +0.04 |
+| b08 | imu3 | 4.9 | 0.033 | +0.15 |
+| b08 | imu4 | 0.7 | 0.027 | +1.18 |
+| b09 | imu1 | 0.6 | 0.000 | -0.70 |
+| b09 | imu2 | 7.3 | 0.091 | -1.33 |
+| b09 | imu3 | 41.6 | 0.831 | -2.17 |
+| b09 | imu4 | 25.5 | 0.069 | -0.93 |
+| b10 | imu1 | 0.4 | 0.000 | +1.34 |
+| b10 | imu2 | 0.4 | 0.000 | -0.17 |
+| b10 | imu3 | 7.4 | 0.058 | -0.32 |
+| b10 | imu4 | 10.6 | 0.100 | -0.33 |
+| b11 | imu1 | 3.1 | 0.009 | +1.42 |
+| b11 | imu2 | 3.1 | 0.000 | +0.02 |
+| b11 | imu3 | 7.9 | 0.081 | -0.36 |
+| b11 | imu4 | 8.3 | 0.018 | +3.54 |
+| b12 | imu1 | 3.3 | 0.012 | -6.19 |
+| b12 | imu2 | 0.4 | 0.002 | -0.02 |
+| b12 | imu3 | 7.8 | 0.062 | +0.15 |
+| b12 | imu4 | 0.5 | 0.031 | +1.37 |
+
+#### D. C/K joint
+
+Ceres joint effective chain 减 Kalibr joint effective chain。该表用于检查 12 个 joint 标定展开到 48 条 IMU chain 后的 Ceres/Kalibr 一致性。
+
+| benchmark | IMU | Δt mm | ΔR deg | Δτ ms |
+|---|---|---:|---:|---:|
+| b01 | imu1 | 0.0 | 0.000 | -0.01 |
+| b01 | imu2 | 16.6 | 0.041 | -0.01 |
+| b01 | imu3 | 17.4 | 0.083 | -0.01 |
+| b01 | imu4 | 18.5 | 0.072 | -0.01 |
+| b02 | imu1 | 0.0 | 0.000 | -0.01 |
+| b02 | imu2 | 17.9 | 0.068 | -0.01 |
+| b02 | imu3 | 17.8 | 0.020 | -0.01 |
+| b02 | imu4 | 18.3 | 0.009 | -0.01 |
+| b03 | imu1 | 0.0 | 0.001 | -0.02 |
+| b03 | imu2 | 23.6 | 0.139 | -0.02 |
+| b03 | imu3 | 21.6 | 0.247 | -0.02 |
+| b03 | imu4 | 22.8 | 0.097 | -0.02 |
+| b04 | imu1 | 0.0 | 0.003 | -0.01 |
+| b04 | imu2 | 10.9 | 0.065 | -0.01 |
+| b04 | imu3 | 13.8 | 0.148 | -0.01 |
+| b04 | imu4 | 9.9 | 0.037 | -0.01 |
+| b05 | imu1 | 0.0 | 0.000 | -0.02 |
+| b05 | imu2 | 16.0 | 0.076 | -0.02 |
+| b05 | imu3 | 17.6 | 0.385 | -0.02 |
+| b05 | imu4 | 16.3 | 0.057 | -0.02 |
+| b06 | imu1 | 0.3 | 0.008 | -0.03 |
+| b06 | imu2 | 17.0 | 0.122 | -0.03 |
+| b06 | imu3 | 16.8 | 0.071 | -0.03 |
+| b06 | imu4 | 17.4 | 0.103 | -0.03 |
+| b07 | imu1 | 0.0 | 0.004 | -0.02 |
+| b07 | imu2 | 4.2 | 0.080 | -0.02 |
+| b07 | imu3 | 6.7 | 0.073 | -0.02 |
+| b07 | imu4 | 9.1 | 0.355 | -0.02 |
+| b08 | imu1 | 0.0 | 0.000 | -0.03 |
+| b08 | imu2 | 4.8 | 0.520 | -0.03 |
+| b08 | imu3 | 4.6 | 0.558 | -0.03 |
+| b08 | imu4 | 4.8 | 0.620 | -0.03 |
+| b09 | imu1 | 0.8 | 1.143 | -2.65 |
+| b09 | imu2 | 77.9 | 1.353 | -2.65 |
+| b09 | imu3 | 149.7 | 2.573 | -2.65 |
+| b09 | imu4 | 163.0 | 1.696 | -2.65 |
+| b10 | imu1 | 0.8 | 0.006 | +0.04 |
+| b10 | imu2 | 1.8 | 0.005 | +0.04 |
+| b10 | imu3 | 1.4 | 0.005 | +0.04 |
+| b10 | imu4 | 2.8 | 0.000 | +0.04 |
+| b11 | imu1 | 0.0 | 0.003 | -0.02 |
+| b11 | imu2 | 36.2 | 0.299 | -0.02 |
+| b11 | imu3 | 29.7 | 0.360 | -0.02 |
+| b11 | imu4 | 56.3 | 1.167 | -0.02 |
+| b12 | imu1 | 0.0 | 0.001 | +0.00 |
+| b12 | imu2 | 16.7 | 0.046 | +0.00 |
+| b12 | imu3 | 10.5 | 0.033 | +0.00 |
+| b12 | imu4 | 23.0 | 0.043 | +0.00 |
+
+#### E. Single wall time
+
+每一行是一条独立单 IMU 标定，单位为秒。
+
+| benchmark | IMU | Ceres single wall s | Kalibr single wall s |
+|---|---|---:|---:|
+| b01 | imu1 | 131.0 | 101.6 |
+| b01 | imu2 | 150.3 | 141.1 |
+| b01 | imu3 | 128.3 | 88.7 |
+| b01 | imu4 | 115.5 | 156.2 |
+| b02 | imu1 | 150.1 | 125.4 |
+| b02 | imu2 | 150.0 | 138.7 |
+| b02 | imu3 | 151.0 | 113.5 |
+| b02 | imu4 | 153.9 | 167.6 |
+| b03 | imu1 | 152.0 | 90.0 |
+| b03 | imu2 | 121.8 | 103.8 |
+| b03 | imu3 | 151.9 | 107.0 |
+| b03 | imu4 | 118.7 | 171.1 |
+| b04 | imu1 | 116.4 | 128.8 |
+| b04 | imu2 | 152.5 | 141.5 |
+| b04 | imu3 | 152.9 | 93.5 |
+| b04 | imu4 | 116.4 | 156.0 |
+| b05 | imu1 | 120.2 | 157.8 |
+| b05 | imu2 | 104.3 | 91.6 |
+| b05 | imu3 | 141.3 | 90.4 |
+| b05 | imu4 | 117.9 | 170.9 |
+| b06 | imu1 | 122.8 | 104.1 |
+| b06 | imu2 | 113.6 | 128.5 |
+| b06 | imu3 | 149.3 | 90.8 |
+| b06 | imu4 | 150.3 | 116.9 |
+| b07 | imu1 | 92.3 | 138.7 |
+| b07 | imu2 | 149.3 | 133.7 |
+| b07 | imu3 | 101.6 | 101.3 |
+| b07 | imu4 | 152.9 | 111.8 |
+| b08 | imu1 | 69.4 | 152.2 |
+| b08 | imu2 | 148.7 | 132.8 |
+| b08 | imu3 | 100.5 | 86.3 |
+| b08 | imu4 | 155.7 | 122.5 |
+| b09 | imu1 | 132.8 | 121.5 |
+| b09 | imu2 | 150.6 | 108.1 |
+| b09 | imu3 | 73.6 | 289.6 |
+| b09 | imu4 | 77.0 | 97.3 |
+| b10 | imu1 | 153.5 | 115.7 |
+| b10 | imu2 | 152.4 | 136.2 |
+| b10 | imu3 | 118.7 | 77.7 |
+| b10 | imu4 | 150.9 | 77.2 |
+| b11 | imu1 | 70.5 | 111.9 |
+| b11 | imu2 | 78.8 | 111.4 |
+| b11 | imu3 | 84.6 | 73.6 |
+| b11 | imu4 | 96.0 | 137.9 |
+| b12 | imu1 | 79.8 | 171.2 |
+| b12 | imu2 | 150.9 | 122.3 |
+| b12 | imu3 | 111.1 | 75.8 |
+| b12 | imu4 | 152.6 | 126.1 |
+
+#### F. Joint wall time
+
+每一行是一条 4IMU joint 标定，单位为秒。旧宽表中该值会在同一 benchmark 的四个 IMU 行里重复，这里去重后展示。
+
+| benchmark | Ceres joint wall s | Kalibr joint wall s |
+|---|---:|---:|
+| b01 | 23.4 | 289.4 |
+| b02 | 22.3 | 192.2 |
+| b03 | 27.6 | 197.8 |
+| b04 | 23.5 | 156.5 |
+| b05 | 23.6 | 161.4 |
+| b06 | 24.0 | 212.9 |
+| b07 | 110.2 | 529.7 |
+| b08 | 105.5 | 586.8 |
+| b09 | 267.7 | 393.5 |
+| b10 | 193.0 | 555.9 |
+| b11 | 45.4 | 330.1 |
+| b12 | 164.5 | 247.4 |
+
+### 同工位一致性
+
+下表比较“同一个 IMU 编号跨 benchmark 的 `T_ci` 是否一致”。数值是组内两两最大差异，格式为 translation `mm` / rotation `deg`。`all12` 不稳定时，再看 `b01-b06` 和 `b07-b12`。
+
+| system/mode | IMU | all12 max T/R | b01-b06 max T/R | b07-b12 max T/R |
+|---|---|---:|---:|---:|
+| ceres single | imu1 | 51.1 / 9.424 | 9.6 / 1.748 | 51.1 / 9.424 |
+| ceres single | imu2 | 97.4 / 3.703 | 4.2 / 1.848 | 97.4 / 3.703 |
+| ceres single | imu3 | 120.7 / 7.683 | 20.6 / 1.598 | 120.7 / 6.662 |
+| ceres single | imu4 | 81.4 / 3.988 | 8.5 / 1.122 | 81.4 / 3.443 |
+| ceres joint | imu1 | 91.6 / 9.443 | 7.0 / 1.715 | 63.5 / 9.443 |
+| ceres joint | imu2 | 98.4 / 4.043 | 14.1 / 1.764 | 98.4 / 4.043 |
+| ceres joint | imu3 | 160.8 / 7.721 | 11.3 / 1.722 | 140.2 / 6.690 |
+| ceres joint | imu4 | 136.9 / 4.814 | 12.8 / 1.195 | 132.3 / 4.496 |
+| kalibr single | imu1 | 52.0 / 9.414 | 10.1 / 1.748 | 52.0 / 9.414 |
+| kalibr single | imu2 | 93.8 / 3.703 | 4.3 / 1.846 | 93.8 / 3.703 |
+| kalibr single | imu3 | 136.2 / 7.687 | 14.2 / 1.594 | 136.2 / 6.653 |
+| kalibr single | imu4 | 107.5 / 3.992 | 7.8 / 1.121 | 107.5 / 3.435 |
+| kalibr joint | imu1 | 92.3 / 9.440 | 7.0 / 1.715 | 64.1 / 9.440 |
+| kalibr joint | imu2 | 120.4 / 3.718 | 5.4 / 1.788 | 120.4 / 3.718 |
+| kalibr joint | imu3 | 125.0 / 7.658 | 10.0 / 1.627 | 125.0 / 6.671 |
+| kalibr joint | imu4 | 129.3 / 4.024 | 7.0 / 1.092 | 129.3 / 3.511 |
+
+读数：
+
+- b01-b06 是稳定批次：同一 IMU 的 `T_ci` 在 Ceres/Kalibr、single/joint 中基本保持在毫米到 `1-2 cm`，rotation 约 `1-2 deg` 以内。
+- b07-b12 不能整体视作一个稳定工位批次：b09、b11、b12 会把同 IMU 一致性拉到 `5-16 cm` 和数度级。
+- b09 的异常同时出现在 Ceres 和 Kalibr 的同工位一致性里，但 Ceres joint/C-K tail 更重；这说明 b09 本身数据/工况就不稳定，Ceres joint 又进一步放大了 effective chain 差异。
+- 后续不应只按“前 6 / 后 6”二分判断夹具；更合理的是先固定 b01-b06 作为稳定参考批次，再把 b09、b11、b12 作为异常 session 单独定位。
+
+### 定位补充：Ceres joint 平移异常
+
+本轮修正后，旧表里的 `b08/imu2 16.978 deg`、`b11/imu2 15.782 deg` 不再作为证据；它们来自派生统计把绝对旋转角差当成 relative SO(3) rotation。正确口径下 Ceres single-joint rotation tail 降到 `1.648 deg`。因此后续定位不再优先追 rotation，而是盯 Ceres joint effective chain 的平移 tail：`b09/imu4 161.8 mm`、`b09/imu3 132.7 mm`、`b09/imu2 93.7 mm`，以及 C/K joint 中 `b09/imu4 163.0 mm`、`b09/imu3 149.7 mm`。
+
+正式仿真实验记录在 `docs/experiment/20260621_仿真多场景Ceres与Kalibr精度对比.md`。该文档的 `1cam+4imu` 真值结果显示 Ceres camera translation 误差 `0.766 mm`，非 reference IMU lever error 为 `6.88 / 9.68 / 11.75 mm`，结论是精度可用但多 IMU running 耗时偏高。这说明当前仿真基线没有复现生产 b09 的 `10-16 cm` 级平移异常。
+
+| 仿真依据 | camera T/R/t 误差 | imu1/2/3 lever error | imu1/2/3 rotation error | 读数 |
+|---|---:|---:|---:|---|
+| `docs/experiment/20260621...` 的 `one_cam_four_imus/calibration_result.yaml` | `0.766 mm / 0.0834 deg / -0.152 ms` | `6.88 / 9.68 / 11.75 mm` | `0.0387 / 0.0853 / 0.1329 deg` | Ceres 仿真精度接近金标，没有复现 b09 tail |
+
+已追加 b09-like posecsv simulation：用生产 b09 `cam0_640x400_corner_poses.csv` 驱动仿真轨迹，并用 b09 Kalibr joint 输出的 `T_cam_imu` / `T_i_b` 作为真值。结果显示 single 对真值保持 `1.6-6.0 mm`，但 joint 的非参考 IMU effective chain 对真值达到 `94-169 mm`；按生产 b09 最近帧 `(timestamp, corner_id)` mask 过滤角点后仍复现，且 joint 最大平移为 `168.7 mm`。给 joint 加 `--fix-imu-extrinsics` 后，非参考 IMU 平移误差降到 `0.01 mm` 内，但 accel RMS 从 `3.75-3.92` 升到 `4.03-4.08 m/s^2`。因此当前更可信的定位是：b09-like 强二阶轨迹下，Ceres joint 会让非参考 IMU lever arm 漂移以吸收 pose acceleration / accel residual 不一致；问题不来自角点过多，也不是单纯缺少金标。
+
+| b09-like 仿真 | 角点 | single max T | joint non-ref mean/max T | fix IMU extrinsics 后 | 读数 |
+|---|---:|---:|---:|---:|---|
+| `focus_35_55_unmasked` | `359870` | `5.98 mm` | `99.27 / 103.87 mm` | `0.00 / 0.00 mm` | 轨迹足以复现 joint tail |
+| `focus_35_55_masked` | `134060` | `5.71 mm` | `162.31 / 168.70 mm` | `0.01 / 0.01 mm` | 生产角点 mask 后仍复现 |
+
+### 数据入口
+
+```text
+out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_48_focus_comparison.csv  # rotation 已按 SO(3) 相对旋转重算
+out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_48_focus_comparison.md
+out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_48_split_tables.md
+out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_fixture_consistency.csv
+out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_fixture_consistency_by_case.csv
+out/ablations/20260623_b09_posecsv_sim_overview/summary.csv
+out/ablations/20260623_b09_posecsv_sim_overview/summary.md
 ```
 
-`--corner-defaults` 会对齐当前 Kalibr-compatible 口径，其中包含 `--imu-trim-edge-count 1000`。若要跑 raw IMU 全量对照实验，需要显式追加 `--imu-trim-edge-count 0`，并确保 Kalibr 也使用相同设置。
+## Suite C: TUM
 
-评测 delta 另跑：
+### 范围
 
-```bash
-build/compare_kalibr_result \
-  --kalibr-result <DS>/cam0_640x400_corners-1-results-imucam.txt \
-  --ceres-result /tmp/ceres_independent.yaml
+TUM suite 跑两个双目单 IMU case，Ceres topology 为 `Mcam+1imu`，Kalibr 只跑 arm64。
+
+结果来源：
+
+```text
+out/docker_benchmarks/tum_arm64/tum/tum_summary.csv
 ```
 
-热启动诊断只用于实验：
+### 分 case 结果
+
+| Case | 输入来源 | 平移差 mm | 旋转差 deg | time-shift 差 ms | loop error Ceres deg/mm | loop error Kalibr deg/mm | reproj px C/K | gyro rad/s C/K | accel m/s^2 C/K | 优化 s C/K | 墙钟 s C/K | Ceres it |
+|---|---|---:|---:|---:|---:|---:|---|---|---|---:|---:|---:|
+| `tum_imu1_bag` | bag | 1.04 | 0.0398 | -0.045 | 0.0295 / 0.216 | 0.0036 / 0.000 | 0.094929 / 0.100287 | 0.001163 / 0.001199 | 0.021031 / 0.021706 | 88.4 / 21.8 | 89.7 / 60.2 | 151 |
+| `tum_imu2_euroc_kalibr_export` | euroc | 0.34 | 0.0233 | +0.004 | 0.0347 / 0.249 | 0.0000 / 0.000 | 0.093744 / 0.100253 | 0.001127 / 0.001171 | 0.020772 / 0.021605 | 32.0 / 21.8 | 33.8 / 56.1 | 55 |
+
+读数：两个 TUM case 的 Ceres 与 Kalibr 外参差都小于 `1.1 mm`，time-shift 差小于 `0.05 ms`。Ceres residual mean 全部略低于 Kalibr arm64。Ceres loop error 为 `0.03 deg / 0.2 mm` 量级，说明两路 camera-to-IMU 外参和固定双目链之间还有可量化闭环差异；Kalibr loop error 接近 0，主要因为 baseline 来自同一 camchain，表中非零旋转来自文本矩阵精度截断。
+
+### 速度读数
+
+| Case | Ceres wall | Kalibr arm64 wall | Ceres optimize | Kalibr arm64 optimize | 结论 |
+|---|---:|---:|---:|---:|---|
+| `tum_imu1_bag` | `89.7 s` | `60.2 s` | `88.4 s` | `21.8 s` | Ceres 更慢 |
+| `tum_imu2_euroc_kalibr_export` | `33.8 s` | `56.1 s` | `32.0 s` | `21.8 s` | wall 更快，优化段更慢 |
+
+读数：TUM 精度风险不高，速度问题更明确。`Mcam+1imu` 后续应拆 solver 迭代、scale-misalignment IMU intrinsic residual、多相机 residual 构建成本，以及 loop error 与 camera-chain prior/fix 策略的关系。
+
+## 跨 suite 分析
+
+- `1cam+1imu` 当前主风险不是外参漂移，而是 `b08/b12` 的 time-shift 和 accel residual 差异。
+- multi suite 的 Kalibr delay 问题已修复并重跑；`1cam+Nimu` 的时间对齐已恢复。SO(3) rotation 口径修正后，Ceres joint 的主要剩余风险是 b09/b11 的 IMU chain 平移 outlier。
+- `1cam+Nimu` joint staged 在速度上明显快于 Kalibr joint，但精度结论必须和 joint-vs-single、有效 `T_c_i` 一起看。
+- `Mcam+1imu` 的 TUM 外参与 residual 已对齐，但 camera-chain loop error 应进入后续常规指标。
+- 速度结论必须带 Kalibr 平台：相对 Kalibr amd64 Docker，Ceres native 快；相对 Kalibr arm64 Docker，Ceres 优化段仍慢。
+- staged joint 的速度不能和 Kalibr 直接相减得出“Ceres 完整 pipeline 更快”；当前可说的是修正后 joint Ceres staged wall/optimize 均值低于 Kalibr arm64 joint，但仍有精度 outlier。
+
+## 边界
+
+- 外参差异是 Ceres 与 Kalibr 的差，不是真值误差。
+- Ceres 与 Kalibr 的 optimize time 不是完全同一内部统计口径，wall time 也包含不同外围开销。
+- multi joint 的历史旧输出缺 Kalibr `--imu-delay-by-correlation`，不能再引用；本文 Suite B 数值来自修正后的重跑。
+- multi joint 的 Ceres optimize time 按 Ceres stage timing 求和；summary 原始字段可能只反映最后一个 stage，不应用于 staged 总耗时结论。
+- multi joint 的 C/K camera0 精度不能代表全部 IMU chain；必须使用 joint-vs-single 有效 `T_c_i` 检查。
+- TUM 只跑 Kalibr arm64，没有 amd64 平台对照。
+- loop error 当前只在 TUM 双目上记录；`Mcam+Nimu` 尚未覆盖。
+- 本文没有做全 suite 级 stopping policy、nonmonotonic、time-shift prior、IMU 裁边 ablation；b09/single_imu3 与 b09 joint 尾部的定点 ablation 已单独记录在 `docs/experiment/20260623_b09_single_joint_outlier_ablation.md`。
+
+## 复现入口
+
+已完成结果入口：
 
 ```bash
-build/calibrate_cam_imu --corner-defaults \
-  --cam <DS>/cam0-camchain-640x400.yaml --imu <DS>/imu.yaml --target <DS>/aprilgrid.yaml \
-  --imu-data <DS>/data1.csv --corners <DS>/cam0_640x400_corners.csv \
-  --corner-poses <DS>/cam0_640x400_corner_poses.csv \
-  --kalibr-result <DS>/cam0_640x400_corners-1-results-imucam.txt --init-from-kalibr \
-  --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 \
-  --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 \
-  --max-iterations 150 --solver-max-trust-region-radius 10000000
+python3 tools/run_docker_benchmark.py --suite benchmark-single --out-root out/docker_benchmarks/single_amd64_arm64
+python3 tools/run_docker_benchmark.py --suite benchmark-multi-imu --kalibr-platform linux/arm64 --out-root out/docker_benchmarks/multi_imu_arm64
+python3 tools/run_docker_benchmark.py --suite tum --kalibr-platform linux/arm64 --out-root out/docker_benchmarks/tum_arm64
 ```
 
-批量本地数据集的单行命令见 `docs/常用命令.txt` 的占位符模板。
+当前文件：
+
+| 文件 | 用途 |
+|---|---|
+| `out/docker_benchmarks/single_amd64_arm64/benchmark_single/summary.csv` | benchmark-single 主汇总 |
+| `out/docker_benchmarks/single_amd64_arm64/summary.csv` | benchmark-single suite 汇总 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/summary.csv` | benchmark-multi-imu 主汇总 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/joint_vs_single_imu_extrinsics.csv` | Suite B 96 行 Ceres/Kalibr single-vs-joint 明细；旧 `rotation_delta_deg` 不作为 SO(3) 相对旋转结论使用 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/joint_vs_single_case_summary.csv` | Suite B 24 行 case 摘要 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/joint_vs_single_time_summary.csv` | Suite B single/joint 速度摘要 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/ceres_vs_kalibr_effective_chain_delta.csv` | Suite B Ceres/Kalibr 有效 IMU chain 差异 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/ceres_vs_kalibr_effective_chain_summary.csv` | Suite B Ceres/Kalibr single 与 joint 有效链统计 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_48_focus_comparison.csv` | Suite B 48 路核心表；rotation 已按 SO(3) 相对旋转重算 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_48_focus_comparison.md` | Suite B 48 路核心表 Markdown；rotation 已按 SO(3) 相对旋转重算 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_48_split_tables.md` | Suite B 48 路拆分明细表 Markdown；rotation 已按 SO(3) 相对旋转重算 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_fixture_consistency.csv` | Suite B 同 IMU 跨 benchmark 一致性统计 |
+| `out/docker_benchmarks/multi_imu_arm64/benchmark_multi_imu/suite_b_fixture_consistency_by_case.csv` | Suite B 同工位一致性逐 case 偏差 |
+| `out/docker_benchmarks/tum_arm64/tum/tum_summary.csv` | TUM 主汇总 |
+| `out/docker_benchmarks/tum_arm64/tum/tum_imu2_euroc_kalibr_export/ceres/result.yaml` | 用户贴出的 TUM euroc Ceres result |
+| `out/docker_benchmarks/tum_arm64/tum/tum_imu2_euroc_kalibr_export/compare_arm64/compare.clean.log` | TUM euroc Ceres/Kalibr delta |
+
+## 下一步
+
+1. 定位 b09/imu2/imu3/imu4、b11/imu2/imu4 的 joint 平移 outlier：b09/single_imu3 已排除 stop policy 主因，下一步优先看 pose acceleration spike、`T_i_b` 初始化、`r_b/r_i_b` 释放策略、reference IMU 固定、timeoffset 共享/约束和 staged mask。
+2. 对 joint effective chain 做 Ceres/Kalibr per-IMU 对照，确认 outlier 来自 Ceres chain refinement、Kalibr init 导入、还是 staged 后变量释放。
+3. 对 TUM 做 `fix-camera-chain-extrinsics` / camera-chain prior 对照，确认 loop error 与速度、精度之间的关系。
+4. 做 Ceres 速度拆分和 stop policy ablation：固定迭代数、cost plateau、monotonic/nonmonotonic、IMU residual/Jacobian 成本。
