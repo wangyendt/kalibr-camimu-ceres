@@ -93,10 +93,23 @@ production solver defaults：
 | 命令 | Ceres 输入规模 | Topology | runner 额外做什么 | Kalibr 平台 |
 |---|---|---|---|---|
 | `--suite benchmark-single` | 1 个 corners + `data1.csv` | `1cam+1imu` | 加 time-shift/orientation 初始化、pose fit boundary anchors、time-shift prior、pose motion prior；solver 默认来自 `--corner-defaults` | 不传 `--kalibr-platform` 时跑 amd64 + arm64 |
-| `--suite benchmark-multi-imu` | joint: 1 个 corners + `data1..4.csv`；single 子项: 1 个 corners + 单路 IMU CSV | joint 为 `1cam+Nimu`；single 子项为 `1cam+1imu` | joint 多 IMU按 topology 触发 staged：`pbg,pbegti`，默认 `30,30`，非参考 IMU extrinsic 先固定后以 `translation<=0.005 m`、rotation-vector `<=0.01 rad` 小范围释放；single 子项同 `1cam+1imu` 初始化/先验 | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
+| `--suite benchmark-multi-imu` | joint: 1 个 corners + `data1..4.csv`；single 子项: 1 个 corners + 单路 IMU CSV | joint 为 `1cam+Nimu`；single 子项为 `1cam+1imu` | joint 多 IMU按 topology 触发 staged：`pbg,pbegti`，默认 `30,30`，非参考 IMU extrinsic 先固定后以 component-wise `translation<=0.003 m`、rotation-vector `<=0.005 rad` 小范围释放；single 子项同 `1cam+1imu` 初始化/先验 | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
 | `--suite tum` | 2 个 corners + 1 个 IMU CSV | `Mcam+1imu` | 加 `--init-from-camchain`、time-shift/orientation 初始化、pose motion prior、`--imu-model scale-misalignment`；solver 默认来自 `--corner-defaults` | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
 
 只想验证当前 Ceres native 改动时，不要用 `benchmark-single` 默认双平台口径重跑 Kalibr。传 `--kalibr-platform linux/arm64 --reuse-kalibr-from <旧out-root>` 后，runner 会复用旧目录中的 Kalibr arm64 result/log/summary，只重新执行 Ceres 和 compare。
+
+### `run_docker_benchmark.py` 常用调试参数
+
+这些参数只属于 runner，不会直接透传给 Ceres native 标定器，除非 runner 在构造 Ceres 命令时显式转换。
+
+| runner 参数 | 默认 | 作用 | 典型用途 |
+|---|---:|---|---|
+| `--benchmark-multi-subset all|joint|single` | `all` | 控制 `benchmark-multi-imu` 跑 joint、single 或全部 | Ceres-only 验证 joint 配置时用 `joint`，避免重跑 48 路 single |
+| `--ceres-multi-imu-stage-free` | `pbg,pbegti` | multi-IMU joint staged 的 free mask 列表 | ablation 单阶段或调整释放顺序 |
+| `--ceres-multi-imu-stage-iterations` | `30` | 每个 stage 的最大迭代数 | 控制 joint 每阶段上限；runner 会按 stage 数自动展开 |
+| `--ceres-multi-imu-stage-step-tolerances` | 空 | 覆盖每个 stage 的 absolute step tolerance | 验证停止条件对速度/残差的影响 |
+| `--ceres-multi-imu-extrinsic-translation-bound-m` | `0.003` | 传给 Ceres 的非参考 IMU extrinsic 平移 component-wise bound | 当前 default tight joint 配置 |
+| `--ceres-multi-imu-extrinsic-rotation-bound-rad` | `0.005` | 传给 Ceres 的非参考 IMU extrinsic rotation-vector component-wise bound | 当前 default tight joint 配置 |
 
 ## 轨迹、数据裁剪与问题规模
 
@@ -127,8 +140,8 @@ production solver defaults：
 | `--fix-imu-time-offsets` | 关闭 | 显式请求 Kalibr-style 固定 correction 语义 | 默认已经固定；该开关主要用于和 `--optimize-imu-time-offsets` 组合时保持不进 parameter block |
 | `--optimize-imu-time-offsets` | 关闭 | 显式要求优化非参考 IMU offset | 多 IMU + `calibrated` 模型下才支持；默认不启用,以对齐 Kalibr 主优化 |
 | `--imu-time-offset-bound-s` | `0.005` | 每路非参考 IMU offset 的 box bound 半宽 | 仅在 `--optimize-imu-time-offsets` 时生效；太大可能跨 spline support |
-| `--imu-extrinsic-translation-bound-m` | `-1`；multi-IMU joint runner 传 `0.005` | 非参考 IMU extrinsic 平移相对当前 problem 构建值的 box bound 半宽 | `-1` 关闭；必须为正数才启用；当前用于 staged 第二阶段小范围释放 |
-| `--imu-extrinsic-rotation-bound-rad` | `-1`；multi-IMU joint runner 传 `0.01` | 非参考 IMU extrinsic rotation-vector 相对当前 problem 构建值的 box bound 半宽 | `-1` 关闭；必须为正数才启用；不要用 `0` 表示固定，固定整块请用 `--fix-imu-extrinsics` |
+| `--imu-extrinsic-translation-bound-m` | `-1`；multi-IMU joint runner 传 `0.003` | 非参考 IMU extrinsic 平移相对当前 problem 构建值的 component-wise box bound 半宽 | `-1` 关闭；必须为正数才启用；当前用于 staged 第二阶段小范围释放；三维平移范数尾部可能到 `sqrt(3)` 倍 component bound |
+| `--imu-extrinsic-rotation-bound-rad` | `-1`；multi-IMU joint runner 传 `0.005` | 非参考 IMU extrinsic rotation-vector 相对当前 problem 构建值的 component-wise box bound 半宽 | `-1` 关闭；必须为正数才启用；不要用 `0` 表示固定，固定整块请用 `--fix-imu-extrinsics` |
 | `--no-estimate-imu-chain-prior` | 关闭 | 禁用多 IMU chain prior | 会失去非参考 IMU rotation/delay 初值，通常只用于消融 |
 | `--imu-chain-prior-max-offset-s` | 基础默认 `0.2`；`--corner-defaults` + 多 IMU topology 不传该参数时使用 raw overlap 全长 | gyro correlation 的 delay 搜索窗口 | 对齐 Kalibr：按当前两路 IMU 原始时间轴重叠序列长度做 full-correlation；显式传该参数才切回固定秒数窗口；只影响多 IMU chain prior 初始化搜索，不扩大 camera time-shift residual 的 pose-control buffer |
 | `--imu-chain-prior-stride` | `1` | chain prior 初始化下采样 | 大于 1 加速初始化，但可能影响 correlation 峰值 |

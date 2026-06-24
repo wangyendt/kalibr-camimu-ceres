@@ -425,21 +425,37 @@ def ceres_corner_command(args, dataset: pathlib.Path, run_dir: pathlib.Path,
                 kalibr_result_path,
                 "--init-from-kalibr",
             ])
+        stage_masks = [
+            mask.strip()
+            for mask in args.ceres_multi_imu_stage_free.split(",")
+            if mask.strip()
+        ]
+        stage_count = max(1, len(stage_masks))
+        stage_iterations = ",".join(
+            [str(args.ceres_multi_imu_stage_iterations)] * stage_count
+        )
+        stage_initial_radii = ",".join(["1"] * stage_count)
+        stage_max_radii = ",".join(["10000000"] * stage_count)
         command.extend([
             "--staged",
             "--stage-free",
-            "pbg,pbegti",
+            args.ceres_multi_imu_stage_free,
             "--stage-iterations",
-            f"{args.ceres_multi_imu_stage_iterations},{args.ceres_multi_imu_stage_iterations}",
+            stage_iterations,
             "--stage-solver-initial-trust-region-radii",
-            "1,1",
+            stage_initial_radii,
             "--stage-solver-max-trust-region-radii",
-            "10000000,10000000",
+            stage_max_radii,
             "--imu-extrinsic-translation-bound-m",
-            "0.005",
+            str(args.ceres_multi_imu_extrinsic_translation_bound_m),
             "--imu-extrinsic-rotation-bound-rad",
-            "0.01",
+            str(args.ceres_multi_imu_extrinsic_rotation_bound_rad),
         ])
+        if args.ceres_multi_imu_stage_step_tolerances:
+            command.extend([
+                "--stage-solver-absolute-step-tolerances",
+                args.ceres_multi_imu_stage_step_tolerances,
+            ])
     else:
         command.extend([
             "--estimate-time-shift-prior",
@@ -691,10 +707,32 @@ def reused_kalibr_dirs(args, out_root: pathlib.Path, name: str, label: str,
         if label_subdir
         else pathlib.Path(name) / f"kalibr_{variant_label}"
     )
-    return [
+    candidates = [
         root / out_root.name / tail,
         root / tail,
     ]
+    parts = name.split("_", 3)
+    if len(parts) == 4 and parts[0] == "benchmark" and parts[1] == "multi":
+        session_suffix = parts[3]
+        for base in (root / out_root.name, root):
+            if not base.is_dir():
+                continue
+            for matched_case in sorted(base.glob(f"benchmark_multi_*_{session_suffix}")):
+                matched_tail = (
+                    matched_case / label / f"kalibr_{variant_label}"
+                    if label_subdir
+                    else matched_case / f"kalibr_{variant_label}"
+                )
+                candidates.append(matched_tail)
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
 
 
 def load_reused_kalibr_run(args, out_root: pathlib.Path, name: str,
@@ -1474,23 +1512,25 @@ def run_benchmark_multi(args, out_root: pathlib.Path):
     for index, session in enumerate(sessions, start=1):
         dataset = (args.benchmark_root / session / "cam_imu").resolve()
         name = f"benchmark_multi_{index:02d}_{session}"
-        rows.extend(
-            run_benchmark_case(
-                args, name, dataset, out_root,
-                ["data1.csv", "data2.csv", "data3.csv", "data4.csv"],
-                "joint_4imu",
-            )
-        )
-        write_summary(out_root / "benchmark_multi_imu_summary.csv", rows)
-        for imu_index in range(1, 5):
+        if args.benchmark_multi_subset in ("all", "joint"):
             rows.extend(
                 run_benchmark_case(
                     args, name, dataset, out_root,
-                    [f"data{imu_index}.csv"],
-                    f"single_imu{imu_index}",
+                    ["data1.csv", "data2.csv", "data3.csv", "data4.csv"],
+                    "joint_4imu",
                 )
             )
             write_summary(out_root / "benchmark_multi_imu_summary.csv", rows)
+        if args.benchmark_multi_subset in ("all", "single"):
+            for imu_index in range(1, 5):
+                rows.extend(
+                    run_benchmark_case(
+                        args, name, dataset, out_root,
+                        [f"data{imu_index}.csv"],
+                        f"single_imu{imu_index}",
+                    )
+                )
+                write_summary(out_root / "benchmark_multi_imu_summary.csv", rows)
     return rows
 
 
@@ -1717,6 +1757,9 @@ def parse_args():
                         help="Benchmark session name. Repeat to run a subset.")
     parser.add_argument("--multi-session",
                         help="Benchmark session used by --suite benchmark-multi-imu.")
+    parser.add_argument("--benchmark-multi-subset",
+                        choices=["all", "joint", "single"], default="all",
+                        help="Subset for --suite benchmark-multi-imu; default runs joint_4imu plus single_imu1..4.")
     parser.add_argument("--kalibr-amd64-image", default=KALIBR_AMD64_IMAGE)
     parser.add_argument("--kalibr-arm64-image", default=KALIBR_ARM64_IMAGE)
     parser.add_argument("--kalibr-platform", action="append",
@@ -1751,6 +1794,16 @@ def parse_args():
                         help="Override Ceres max_iterations for benchmark corner runs; default uses --corner-defaults topology preset.")
     parser.add_argument("--ceres-multi-imu-stage-iterations", type=int,
                         default=30)
+    parser.add_argument("--ceres-multi-imu-stage-free", default="pbg,pbegti",
+                        help="Comma-separated Ceres stage-free masks for multi-IMU benchmark Ceres runs.")
+    parser.add_argument("--ceres-multi-imu-stage-step-tolerances",
+                        help="Comma-separated stage absolute step tolerances for multi-IMU benchmark Ceres runs.")
+    parser.add_argument("--ceres-multi-imu-extrinsic-translation-bound-m",
+                        type=float, default=0.003,
+                        help="Per-component bound for non-reference IMU extrinsic translation in multi-IMU benchmark Ceres runs.")
+    parser.add_argument("--ceres-multi-imu-extrinsic-rotation-bound-rad",
+                        type=float, default=0.005,
+                        help="Per-component bound for non-reference IMU extrinsic rotation-vector in multi-IMU benchmark Ceres runs.")
     parser.add_argument("--ceres-tum-max-iterations", type=int,
                         help="Override Ceres max_iterations for TUM runs; default uses --corner-defaults topology preset.")
     parser.add_argument("--timeoffset-padding", type=float, default=0.04)

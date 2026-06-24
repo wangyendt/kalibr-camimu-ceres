@@ -67,7 +67,7 @@ Topology 专用补充：
 | 场景 | Topology | runner 额外参数 |
 |---|---|---|
 | `benchmark-single` | `1cam+1imu` | time-shift/orientation 初始化、pose fit boundary anchors、time-shift prior、pose motion prior；topology preset 使用 `absolute_cost_change_tolerance=0.005` |
-| `benchmark-multi-imu joint_4imu` | `1cam+Nimu` | `--staged --stage-free pbg,pbegti --stage-iterations 30,30 --imu-extrinsic-translation-bound-m 0.005 --imu-extrinsic-rotation-bound-rad 0.01` 等 staged 参数 |
+| `benchmark-multi-imu joint_4imu` | `1cam+Nimu` | `--staged --stage-free pbg,pbegti --stage-iterations 30,30 --imu-extrinsic-translation-bound-m 0.003 --imu-extrinsic-rotation-bound-rad 0.005` 等 staged 参数 |
 | `benchmark-multi-imu single_imu1..4` | `1cam+1imu` | 同单 IMU 初始化/先验 |
 | `tum` | `Mcam+1imu` | `--init-from-camchain`、time-shift/orientation 初始化、pose motion prior、`--imu-model scale-misalignment` |
 
@@ -123,7 +123,7 @@ Topology 专用补充：
 
 - `1cam+1imu` 已加入更保守的 cost plateau stop；现有定点验证覆盖 `b05` 的负例和 `b10` 的收益，但仍需要完整 `benchmark-single` 复跑确认 12 组统计。
 - `Mcam+1imu` 需要单独的 stop criterion 或变量归一化诊断，不能简单继承单目阈值。
-- `1cam+Nimu` 已用现有 Kalibr arm64 结果做 Ceres-only 预验证；正式实验文档仍要等完整 `benchmark-multi-imu` 命令复跑后更新。
+- `1cam+Nimu` 已用现有 Kalibr arm64 结果做 Ceres-only joint 复跑；当前默认 tight bound 已验证能压住 C/K joint effective chain 平移 tail，但不修复 `b09` accel residual。
 
 ## 2026-06-24 Ceres-only 预验证
 
@@ -132,15 +132,19 @@ Topology 专用补充：
 | 范围 | 配置 | 旧结果 | 新结果 | 判断 |
 |---|---|---:|---:|---|
 | Suite A `benchmark-single` 12 组 | `1cam+1imu` 增加 `absolute_cost_change_tolerance=0.005`，保留 `step=0.02` | Ceres wall 总和 `1373.2 s`，iter 总和 `1363`，平移均/最大 `1.92 / 4.03 mm` | Ceres wall 总和 `1295.9 s`，iter 总和 `1230`，平移均/最大 `2.05 / 4.03 mm` | 效率小幅改善，最大平移不变；`b05` 未复现早停退化 |
-| Suite B `benchmark-multi-imu` 12 个 joint | `pbg,pbegti`，非参考 IMU extrinsic `translation<=0.005 m`、rotation-vector `<=0.01 rad` | effective chain 平移均/中/最大 `30.7 / 17.9 / 163.0 mm` | `5.6 / 6.1 / 8.7 mm` | 平移 tail 明显收敛 |
-| Suite B joint 耗时 | 同上 | wall 总和 `1002.1 s`，stage 总和按旧 summary 约 `1002.1 s` | wall 总和 `1025.6 s`，stage timing 总和 `993.3 s` | overall 没有明显变慢；`b07/b08` 单点变慢，`b09/b10` 变快 |
-| Suite B residual | 同上 | accel mean 均/最大 `0.255 / 0.762 m/s^2` | `0.272 / 0.858 m/s^2` | 外参 tail 改善的代价是 accel residual 略升，需正式复测继续观察 |
+| Suite B `benchmark-multi-imu` 12 个 joint | `pbg,pbegti`，非参考 IMU extrinsic `translation<=0.005 m`、rotation-vector `<=0.01 rad` | effective chain 平移均/中/最大 `30.7 / 17.9 / 163.0 mm` | case-max 平移均/中/最大 `5.6 / 6.1 / 8.7 mm` | 平移 tail 明显收敛 |
+| Suite B `benchmark-multi-imu` 12 个 tight joint | `pbg,pbegti`，非参考 IMU extrinsic component-wise `translation<=0.003 m`、rotation-vector `<=0.005 rad` | case-max 平移均/中/最大 `5.6 / 6.1 / 8.7 mm` | `4.3 / 4.5 / 5.2 mm`；all-chain 平移均/中/最大 `2.9 / 3.7 / 5.2 mm` | 当前默认推荐；进一步压住外参链 tail |
+| Suite B tight joint 耗时 | 同上 | 5mm joint wall 总和 `1260.8 s` | tight joint wall 总和 `1084.9 s`，stage timing 总和 `1038.4 s` | 总体未变慢；单点仍有长尾，`b07/b09/b12` 超过 190s |
+| Suite B tight joint residual | 同上 | 5mm accel delta 均/中/最大 `0.140 / 0.130 / 0.644 m/s^2` | `0.147 / 0.131 / 0.651 m/s^2` | 外参 tail 改善不修复 residual；`b09` accel delta 仍是主问题 |
 
 预验证产物：
+
+2026-06-24 的 full tight joint 复跑只重跑 Ceres native，并通过 `--reuse-kalibr-from out/docker_benchmarks/multi_imu_arm64` 复用 Kalibr arm64。它证明当前 default tight bound 可以把 C/K joint effective chain 控制到 `<=5.21 mm / <=0.405 deg`，但 `b09` accel residual delta 仍为 `+0.651 m/s^2`，后续应围绕 pose spline / stage0 basin 定位，而不是继续只收紧外参 bound。
 
 ```text
 /private/tmp/ceres_native_validation_current/summary.csv
 /private/tmp/ceres_native_validation_suiteb_5mm/summary.csv
+out/docker_benchmarks/multi_imu_arm64_ceres_current_joint_tight/benchmark_multi_imu/summary.csv
 ```
 
 正式做 Ceres-only 复验时使用 `--reuse-kalibr-from`，只复用既有 Kalibr arm64 结果并重跑当前 Ceres native。不要在这个场景使用未指定平台的 `benchmark-single` 默认命令，否则会重新启动 Kalibr amd64 + arm64：
@@ -150,7 +154,7 @@ python3 tools/run_docker_benchmark.py --suite benchmark-single --kalibr-platform
 ```
 
 ```bash
-python3 tools/run_docker_benchmark.py --suite benchmark-multi-imu --kalibr-platform linux/arm64 --reuse-kalibr-from out/docker_benchmarks/multi_imu_arm64 --out-root out/docker_benchmarks/multi_imu_arm64_ceres_current
+python3 tools/run_docker_benchmark.py --suite benchmark-multi-imu --benchmark-multi-subset joint --kalibr-platform linux/arm64 --reuse-kalibr-from out/docker_benchmarks/multi_imu_arm64 --out-root out/docker_benchmarks/multi_imu_arm64_ceres_current_joint_tight
 ```
 
 ## 验证命令
