@@ -48,8 +48,8 @@
 
 | Topology | 识别条件 | 当前默认配置 | 备注 |
 |---|---|---|---|
-| `1cam+1imu` | 1 个 `--corners`，1 个 `--imu-data` | 公共 corner defaults + production solver defaults | benchmark-single、benchmark-multi-imu 的 `single_imu1..4` 子项都会落到这里 |
-| `1cam+Nimu` | 1 个 `--corners`，多个 `--imu-data` | 公共 corner defaults + production solver defaults | runner 当前对 joint 多 IMU 额外走 staged，这是按 IMU 数量触发，不按数据集名触发 |
+| `1cam+1imu` | 1 个 `--corners`，1 个 `--imu-data` | 公共 corner defaults + production solver defaults + `absolute_cost_change_tolerance=0.005` | benchmark-single、benchmark-multi-imu 的 `single_imu1..4` 子项都会落到这里；保留 `step=0.02`，用 cost plateau 省掉长尾迭代 |
+| `1cam+Nimu` | 1 个 `--corners`，多个 `--imu-data` | 公共 corner defaults + production solver defaults | runner 当前对 joint 多 IMU 额外走 staged 和非参考 IMU extrinsic 小范围释放，这是按 IMU 数量触发，不按数据集名触发 |
 | `Mcam+1imu` | 多个 `--corners`，1 个 `--imu-data` | 公共 corner defaults + production solver defaults | TUM 双目单 IMU 落到这里 |
 | `Mcam+Nimu` | 多个 `--corners`，多个 `--imu-data` | 公共 corner defaults + production solver defaults | 预留多相机多 IMU；当前没有单独数值 |
 
@@ -80,7 +80,7 @@ production solver defaults：
 | `solver_gradient_tolerance` | `0` |
 | `solver_parameter_tolerance` | `0` |
 | `solver_max_trust_region_radius` | `1e7` |
-| `solver_absolute_cost_change_tolerance` | `-1` |
+| `solver_absolute_cost_change_tolerance` | 公共默认 `-1`；`1cam+1imu` 为 `0.005` |
 | `solver_absolute_step_tolerance` | `0.02` |
 | `solver_absolute_parameter_tolerance` | `-1` |
 | `solver_use_nonmonotonic_steps` | `true` |
@@ -93,8 +93,10 @@ production solver defaults：
 | 命令 | Ceres 输入规模 | Topology | runner 额外做什么 | Kalibr 平台 |
 |---|---|---|---|---|
 | `--suite benchmark-single` | 1 个 corners + `data1.csv` | `1cam+1imu` | 加 time-shift/orientation 初始化、pose fit boundary anchors、time-shift prior、pose motion prior；solver 默认来自 `--corner-defaults` | 不传 `--kalibr-platform` 时跑 amd64 + arm64 |
-| `--suite benchmark-multi-imu` | joint: 1 个 corners + `data1..4.csv`；single 子项: 1 个 corners + 单路 IMU CSV | joint 为 `1cam+Nimu`；single 子项为 `1cam+1imu` | joint 多 IMU 按 topology 触发 staged：`pbg,pbegt`，默认 `30,30`；single 子项同 `1cam+1imu` 初始化/先验 | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
+| `--suite benchmark-multi-imu` | joint: 1 个 corners + `data1..4.csv`；single 子项: 1 个 corners + 单路 IMU CSV | joint 为 `1cam+Nimu`；single 子项为 `1cam+1imu` | joint 多 IMU按 topology 触发 staged：`pbg,pbegti`，默认 `30,30`，非参考 IMU extrinsic 先固定后以 `translation<=0.005 m`、rotation-vector `<=0.01 rad` 小范围释放；single 子项同 `1cam+1imu` 初始化/先验 | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
 | `--suite tum` | 2 个 corners + 1 个 IMU CSV | `Mcam+1imu` | 加 `--init-from-camchain`、time-shift/orientation 初始化、pose motion prior、`--imu-model scale-misalignment`；solver 默认来自 `--corner-defaults` | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
+
+只想验证当前 Ceres native 改动时，不要用 `benchmark-single` 默认双平台口径重跑 Kalibr。传 `--kalibr-platform linux/arm64 --reuse-kalibr-from <旧out-root>` 后，runner 会复用旧目录中的 Kalibr arm64 result/log/summary，只重新执行 Ceres 和 compare。
 
 ## 轨迹、数据裁剪与问题规模
 
@@ -125,6 +127,8 @@ production solver defaults：
 | `--fix-imu-time-offsets` | 关闭 | 显式请求 Kalibr-style 固定 correction 语义 | 默认已经固定；该开关主要用于和 `--optimize-imu-time-offsets` 组合时保持不进 parameter block |
 | `--optimize-imu-time-offsets` | 关闭 | 显式要求优化非参考 IMU offset | 多 IMU + `calibrated` 模型下才支持；默认不启用,以对齐 Kalibr 主优化 |
 | `--imu-time-offset-bound-s` | `0.005` | 每路非参考 IMU offset 的 box bound 半宽 | 仅在 `--optimize-imu-time-offsets` 时生效；太大可能跨 spline support |
+| `--imu-extrinsic-translation-bound-m` | `-1`；multi-IMU joint runner 传 `0.005` | 非参考 IMU extrinsic 平移相对当前 problem 构建值的 box bound 半宽 | `-1` 关闭；必须为正数才启用；当前用于 staged 第二阶段小范围释放 |
+| `--imu-extrinsic-rotation-bound-rad` | `-1`；multi-IMU joint runner 传 `0.01` | 非参考 IMU extrinsic rotation-vector 相对当前 problem 构建值的 box bound 半宽 | `-1` 关闭；必须为正数才启用；不要用 `0` 表示固定，固定整块请用 `--fix-imu-extrinsics` |
 | `--no-estimate-imu-chain-prior` | 关闭 | 禁用多 IMU chain prior | 会失去非参考 IMU rotation/delay 初值，通常只用于消融 |
 | `--imu-chain-prior-max-offset-s` | 基础默认 `0.2`；`--corner-defaults` + 多 IMU topology 不传该参数时使用 raw overlap 全长 | gyro correlation 的 delay 搜索窗口 | 对齐 Kalibr：按当前两路 IMU 原始时间轴重叠序列长度做 full-correlation；显式传该参数才切回固定秒数窗口；只影响多 IMU chain prior 初始化搜索，不扩大 camera time-shift residual 的 pose-control buffer |
 | `--imu-chain-prior-stride` | `1` | chain prior 初始化下采样 | 大于 1 加速初始化，但可能影响 correlation 峰值 |
@@ -214,7 +218,7 @@ timeshift(cam0 -> imui) = camera_time_shift_s - imu_time_offsets_s[i]
 | `--solver-max-trust-region-radius` | `1e16`；`--corner-defaults` 设为 `1e7` | 最大 trust region | production preset 用 `1e7` 限制异常步长 |
 | `--solver-min-trust-region-radius` | `1e-32` | 最小 trust region | 太小可能耗时 |
 | `--solver-min-relative-decrease` | `1e-3` | Ceres 相对下降阈值 | 影响接受步 |
-| `--solver-absolute-cost-change-tolerance` | `-1` | 绝对 cost change 停止 | production preset 保持关闭 |
+| `--solver-absolute-cost-change-tolerance` | `-1`；`--corner-defaults` 的 `1cam+1imu` 设为 `0.005` | 绝对 cost change 停止 | 只在单相机单 IMU topology 用作保守 cost plateau stop；其他 topology 默认关闭 |
 | `--solver-absolute-step-tolerance` | `-1`；`--corner-defaults` 设为 `0.02` | 绝对 step 停止 | 当前 production preset 主要停止条件 |
 | `--solver-absolute-parameter-tolerance` | `-1` | active 参数最大变化停止 | production preset 保持关闭 |
 | `--solver-linear-solver` | `SPARSE_NORMAL_CHOLESKY` | Ceres 线性求解器 | 可选 `DENSE_QR/CGNR/SPARSE_SCHUR/...` |
@@ -258,6 +262,7 @@ timeshift(cam0 -> imui) = camera_time_shift_s - imu_time_offsets_s[i]
 | `tools/prepare_ceres_inputs.py` | `--source-type pkl|bag|euroc --out-dir ... --run-calibration -- ...` | 把 Kalibr pkl、ROS bag、EuRoC/TUM 转成 Ceres CSV，可顺手跑标定 |
 | `tools/run_kalibr_docker.py` | `--dataset --run-name --max-iter --trim-imu-edge-count --export-poses --extra-arg` | 用 Docker 跑 Kalibr 基线 |
 | `tools/run_docker_benchmark.py` | `--suite benchmark-single|benchmark-multi-imu|tum --out-root ...` | suite 只选择数据和 Kalibr 平台；Ceres running 默认来自 `--corner-defaults` topology，`--ceres-max-iterations` 只有显式传入才覆盖 |
+| `tools/run_docker_benchmark.py` | `--reuse-kalibr-from <旧out-root或suite目录>` | 跳过 Kalibr Docker，复用旧 Kalibr result/log/summary，适合只验证当前 Ceres native 配置；缺少匹配结果会直接报错，不会静默重跑 Kalibr |
 | `tools/run_ceres_sweep.py` | `--dataset --preset --variant --base-arg --extra-arg` | 批量跑 Ceres 变体并汇总 CSV |
 | `tools/run_ceres_two_stage.py` | `--stage1-* --stage2-* --imu-model --out-dir` | TUM/轨迹频率诊断，不是默认主路径 |
 

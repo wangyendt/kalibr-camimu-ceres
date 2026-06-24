@@ -202,6 +202,9 @@ applyCornerDefaults(const std::size_t camera_count, const std::size_t imu_count,
   // dedicated benchmarks, but bare --corner-defaults should not expose the old
   // 30-iteration early-stop behavior.
   applyProductionSolverDefaults(options);
+  if (topology == CornerDefaultTopology::kOneCameraOneImu) {
+    options->solver_absolute_cost_change_tolerance = 0.005;
+  }
   return topology;
 }
 
@@ -543,6 +546,8 @@ void usage() {
          "[--fix-poses] [--fix-biases] [--fix-camera-extrinsic] "
          "[--fix-camera-chain-extrinsics] "
          "[--fix-time-shift] [--fix-gravity] [--fix-imu-extrinsics] "
+         "[--imu-extrinsic-translation-bound-m M] "
+         "[--imu-extrinsic-rotation-bound-rad R] "
          "[--extrinsic-manifold] "
          "[--estimate-gravity-length] "
          "[--imu-model calibrated|scale-misalignment|"
@@ -606,8 +611,9 @@ void usage() {
          "buffer 0, IMU edge trim 1000, Cauchy width 10), infers the "
          "camera/IMU topology, and applies the current production solver "
          "defaults: max-iter 150, Ceres function/gradient/parameter "
-         "tolerances 0, absolute step 0.02, absolute cost/parameter disabled, "
-         "and nonmonotonic steps enabled with max consecutive steps 20. "
+         "tolerances 0, absolute step 0.02, absolute parameter disabled, "
+         "absolute cost disabled except 1cam+1imu uses 0.005, and "
+         "nonmonotonic steps enabled with max consecutive steps 20. "
          "--kalibr-corner-defaults is accepted as a deprecated alias.\n";
   std::cout
       << "  --pose-fit-motion-lambda adds Kalibr-style derivative-integral "
@@ -651,6 +657,10 @@ void usage() {
          "Ceres variables, --fix-imu-time-offsets to request the default "
          "fixed-correction mode explicitly, "
          "--imu-time-offset-bound-s S to bound the Ceres refinement window, "
+         "--imu-extrinsic-translation-bound-m M and "
+         "--imu-extrinsic-rotation-bound-rad R to bound non-reference IMU "
+         "extrinsics around their current stage-start values (-1 disables, "
+         "positive values enable), "
          "--imu-chain-prior-max-offset-s S to override multi-IMU "
          "corner-defaults full-overlap time search with a bounded search, and "
          "--imu-chain-prior-stride N to downsample initialization samples.\n";
@@ -1536,6 +1546,19 @@ int main(int argc, char **argv) {
     return 2;
   }
   options.fix_imu_extrinsics = hasFlag(argc, argv, "--fix-imu-extrinsics");
+  options.imu_extrinsic_translation_bound_m =
+      doubleArg(argc, argv, "--imu-extrinsic-translation-bound-m",
+                options.imu_extrinsic_translation_bound_m);
+  options.imu_extrinsic_rotation_bound_rad =
+      doubleArg(argc, argv, "--imu-extrinsic-rotation-bound-rad",
+                options.imu_extrinsic_rotation_bound_rad);
+  if ((options.imu_extrinsic_translation_bound_m != -1.0 &&
+       options.imu_extrinsic_translation_bound_m <= 0.0) ||
+      (options.imu_extrinsic_rotation_bound_rad != -1.0 &&
+       options.imu_extrinsic_rotation_bound_rad <= 0.0)) {
+    std::cerr << "IMU extrinsic bounds must be -1 or positive\n";
+    return 2;
+  }
   options.use_extrinsic_manifold = hasFlag(argc, argv, "--extrinsic-manifold");
   options.use_pose_control_manifold =
       hasFlag(argc, argv, "--pose-control-manifold");
@@ -2567,12 +2590,18 @@ int main(int argc, char **argv) {
               << " timeoffset_padding_s=" << options.time_padding_s
               << " camera_time_offset_buffer_s="
               << options.camera_time_offset_buffer_s
+              << " absolute_cost_tolerance="
+              << options.solver_absolute_cost_change_tolerance
               << " absolute_step_tolerance="
               << options.solver_absolute_step_tolerance
               << " use_nonmonotonic_steps="
               << options.solver_use_nonmonotonic_steps
               << " max_consecutive_nonmonotonic_steps="
               << options.solver_max_consecutive_nonmonotonic_steps
+              << " imu_extrinsic_translation_bound_m="
+              << options.imu_extrinsic_translation_bound_m
+              << " imu_extrinsic_rotation_bound_rad="
+              << options.imu_extrinsic_rotation_bound_rad
               << " imu_chain_prior_offset_search="
               << imu_chain_prior_offset_search.str()
               << " imu_trim_edge_count=" << imu_trim_edge_count

@@ -567,6 +567,28 @@ void addImuParameterBlocksForIndex(const std::size_t imu_index,
     problem->SetParameterBlockConstant(dataPtr(imu_extrinsic));
   } else if (imu_index > 0 && options.fix_imu_extrinsics) {
     problem->SetParameterBlockConstant(dataPtr(imu_extrinsic));
+  } else if (imu_index > 0 &&
+             (options.imu_extrinsic_translation_bound_m > 0.0 ||
+              options.imu_extrinsic_rotation_bound_rad > 0.0)) {
+    double *extrinsic = dataPtr(imu_extrinsic);
+    if (options.imu_extrinsic_translation_bound_m > 0.0) {
+      for (int i = 0; i < 3; ++i) {
+        const double center = extrinsic[i];
+        problem->SetParameterLowerBound(
+            extrinsic, i, center - options.imu_extrinsic_translation_bound_m);
+        problem->SetParameterUpperBound(
+            extrinsic, i, center + options.imu_extrinsic_translation_bound_m);
+      }
+    }
+    if (options.imu_extrinsic_rotation_bound_rad > 0.0) {
+      for (int i = 3; i < 6; ++i) {
+        const double center = extrinsic[i];
+        problem->SetParameterLowerBound(
+            extrinsic, i, center - options.imu_extrinsic_rotation_bound_rad);
+        problem->SetParameterUpperBound(
+            extrinsic, i, center + options.imu_extrinsic_rotation_bound_rad);
+      }
+    }
   }
 
   ImuIntrinsicBlocks &imu_intrinsics = imuIntrinsicsFor(state, imu_index);

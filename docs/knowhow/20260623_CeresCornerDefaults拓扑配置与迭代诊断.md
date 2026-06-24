@@ -9,7 +9,7 @@
 - `Mcam+1imu`
 - `Mcam+Nimu`
 
-当前没有 `--topology` 这类显式参数，也没有四份独立配置文件。拓扑由输入数量自动推断。四类 topology 仍共享同一套 production solver defaults；多 IMU topology 另外把 gyro-correlation delay 搜索改为 Kalibr 口径的 raw overlap full-correlation。显式传 `--imu-chain-prior-max-offset-s` 时才退回固定秒数窗口。
+当前没有 `--topology` 这类显式参数，也没有四份独立配置文件。拓扑由输入数量自动推断。四类 topology 共享 production solver defaults 的主体配置，但允许少量 topology 覆写；多 IMU topology 另外把 gyro-correlation delay 搜索改为 Kalibr 口径的 raw overlap full-correlation。显式传 `--imu-chain-prior-max-offset-s` 时才退回固定秒数窗口。
 
 ## 自动检测规则
 
@@ -47,7 +47,7 @@ Topology 专用补充：
 | `1cam+Nimu` / `Mcam+Nimu` | `imu_chain_prior_offset_search` | `full-overlap` | 对齐 Kalibr：按当前两路 IMU 原始时间轴重叠序列长度做 gyro correlation delay 搜索；不影响 camera time-shift residual 的 pose-control buffer |
 | 单 IMU topology | `imu_chain_prior_offset_search` | `bounded:0.2` | 保持 `ImuChainInitializerOptions` 基础默认；显式 `--imu-chain-prior-max-offset-s` 可覆盖 |
 
-四类 topology 也共享同一套 production solver defaults：
+四类 topology 共享 production solver defaults 的主体配置；少量 stop policy 会按 topology 局部覆写：
 
 | 参数 | 值 |
 |---|---:|
@@ -56,18 +56,18 @@ Topology 专用补充：
 | `solver_gradient_tolerance` | `0` |
 | `solver_parameter_tolerance` | `0` |
 | `solver_max_trust_region_radius` | `1e7` |
-| `solver_absolute_cost_change_tolerance` | `-1` |
+| `solver_absolute_cost_change_tolerance` | 公共默认 `-1`；`1cam+1imu` 为 `0.005` |
 | `solver_absolute_step_tolerance` | `0.02` |
 | `solver_absolute_parameter_tolerance` | `-1` |
 | `solver_use_nonmonotonic_steps` | `true` |
 | `solver_max_consecutive_nonmonotonic_steps` | `20` |
 
-除 `1cam+Nimu` 的 delay 搜索窗口外，当前真正的 running 差异来自 runner 额外传入的参数：
+除 `1cam+Nimu` 的 delay 搜索窗口和 `1cam+1imu` 的 cost plateau stop 外，当前真正的 running 差异来自 runner 额外传入的参数：
 
 | 场景 | Topology | runner 额外参数 |
 |---|---|---|
-| `benchmark-single` | `1cam+1imu` | time-shift/orientation 初始化、pose fit boundary anchors、time-shift prior、pose motion prior |
-| `benchmark-multi-imu joint_4imu` | `1cam+Nimu` | `--staged --stage-free pbg,pbegt --stage-iterations 30,30` 等 staged 参数 |
+| `benchmark-single` | `1cam+1imu` | time-shift/orientation 初始化、pose fit boundary anchors、time-shift prior、pose motion prior；topology preset 使用 `absolute_cost_change_tolerance=0.005` |
+| `benchmark-multi-imu joint_4imu` | `1cam+Nimu` | `--staged --stage-free pbg,pbegti --stage-iterations 30,30 --imu-extrinsic-translation-bound-m 0.005 --imu-extrinsic-rotation-bound-rad 0.01` 等 staged 参数 |
 | `benchmark-multi-imu single_imu1..4` | `1cam+1imu` | 同单 IMU 初始化/先验 |
 | `tum` | `Mcam+1imu` | `--init-from-camchain`、time-shift/orientation 初始化、pose motion prior、`--imu-model scale-misalignment` |
 
@@ -106,7 +106,7 @@ Topology 专用补充：
 
 初步判断：
 
-- `1cam+1imu` 的部分 case 在后期 cost change 已经很小，但 step 仍略高于 `0.02`，所以只靠 absolute step stop 会继续跑到 max iteration。
+- `1cam+1imu` 的部分 case 在后期 cost change 已经很小，但 step 仍略高于 `0.02`，所以只靠 absolute step stop 会继续跑到 max iteration。当前代码只对 `1cam+1imu` 增加 `absolute_cost_change_tolerance=0.005`，保留 `step=0.02`，避免 b05 在 `step=0.05/0.07` 下出现 5-7mm 级退化。
 - TUM 的 `Mcam+1imu + scale-misalignment` raw step 更不稳定，可能被 IMU intrinsic、camera-chain、多相机变量尺度影响；同一个 `absolute_step_tolerance=0.02` 不一定适合所有 topology。
 - 非单调步上限从 `20` 改 `10` 不一定能解决 150 iteration。它会改变可接受的非单调窗口，但当前这些日志主要问题是停止条件没有触发，而不是连续失败步过多；日志里 `num_unsuccessful_steps=0`。
 
@@ -121,9 +121,37 @@ Topology 专用补充：
 
 当前最可能的方向：
 
-- `1cam+1imu` 可以考虑加入更保守的 cost plateau stop 或相对精度平台判断，但要先确认 `b05/b08/b12` 不退化。
+- `1cam+1imu` 已加入更保守的 cost plateau stop；现有定点验证覆盖 `b05` 的负例和 `b10` 的收益，但仍需要完整 `benchmark-single` 复跑确认 12 组统计。
 - `Mcam+1imu` 需要单独的 stop criterion 或变量归一化诊断，不能简单继承单目阈值。
-- `1cam+Nimu` 要等 `benchmark-multi-imu` 当前配置结果回来后再定。
+- `1cam+Nimu` 已用现有 Kalibr arm64 结果做 Ceres-only 预验证；正式实验文档仍要等完整 `benchmark-multi-imu` 命令复跑后更新。
+
+## 2026-06-24 Ceres-only 预验证
+
+这次预验证不重跑 Kalibr Docker，只复用 `out/docker_benchmarks/*` 里的 Kalibr arm64 结果，重跑当前工作树的 Ceres native。它用于快速筛选 running 配置，不能替代正式三 suite 复测。
+
+| 范围 | 配置 | 旧结果 | 新结果 | 判断 |
+|---|---|---:|---:|---|
+| Suite A `benchmark-single` 12 组 | `1cam+1imu` 增加 `absolute_cost_change_tolerance=0.005`，保留 `step=0.02` | Ceres wall 总和 `1373.2 s`，iter 总和 `1363`，平移均/最大 `1.92 / 4.03 mm` | Ceres wall 总和 `1295.9 s`，iter 总和 `1230`，平移均/最大 `2.05 / 4.03 mm` | 效率小幅改善，最大平移不变；`b05` 未复现早停退化 |
+| Suite B `benchmark-multi-imu` 12 个 joint | `pbg,pbegti`，非参考 IMU extrinsic `translation<=0.005 m`、rotation-vector `<=0.01 rad` | effective chain 平移均/中/最大 `30.7 / 17.9 / 163.0 mm` | `5.6 / 6.1 / 8.7 mm` | 平移 tail 明显收敛 |
+| Suite B joint 耗时 | 同上 | wall 总和 `1002.1 s`，stage 总和按旧 summary 约 `1002.1 s` | wall 总和 `1025.6 s`，stage timing 总和 `993.3 s` | overall 没有明显变慢；`b07/b08` 单点变慢，`b09/b10` 变快 |
+| Suite B residual | 同上 | accel mean 均/最大 `0.255 / 0.762 m/s^2` | `0.272 / 0.858 m/s^2` | 外参 tail 改善的代价是 accel residual 略升，需正式复测继续观察 |
+
+预验证产物：
+
+```text
+/private/tmp/ceres_native_validation_current/summary.csv
+/private/tmp/ceres_native_validation_suiteb_5mm/summary.csv
+```
+
+正式做 Ceres-only 复验时使用 `--reuse-kalibr-from`，只复用既有 Kalibr arm64 结果并重跑当前 Ceres native。不要在这个场景使用未指定平台的 `benchmark-single` 默认命令，否则会重新启动 Kalibr amd64 + arm64：
+
+```bash
+python3 tools/run_docker_benchmark.py --suite benchmark-single --kalibr-platform linux/arm64 --reuse-kalibr-from out/docker_benchmarks/single_amd64_arm64 --out-root out/docker_benchmarks/single_arm64_ceres_current
+```
+
+```bash
+python3 tools/run_docker_benchmark.py --suite benchmark-multi-imu --kalibr-platform linux/arm64 --reuse-kalibr-from out/docker_benchmarks/multi_imu_arm64 --out-root out/docker_benchmarks/multi_imu_arm64_ceres_current
+```
 
 ## 验证命令
 

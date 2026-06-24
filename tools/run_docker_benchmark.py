@@ -201,6 +201,8 @@ def run_metadata(args):
         "kalibr_docker_repo_commit": short_git_revision(args.kalibr_docker_repo),
         "kalibr_extra_args": " ".join(args.kalibr_extra_arg),
     }
+    if args.reuse_kalibr_from:
+        metadata["kalibr_reuse_root"] = str(args.reuse_kalibr_from)
     if args.ceres_mode == "docker":
         metadata["ceres_image"] = args.ceres_image
         metadata["ceres_image_id"] = docker_image_id(args.ceres_image)
@@ -210,10 +212,10 @@ def run_metadata(args):
 
 
 def ensure_images(args) -> None:
-    if args.pull_kalibr:
+    if args.pull_kalibr and not args.reuse_kalibr_from:
         for variant in args.kalibr_variants:
             pull_image(variant["image"], args.print_only)
-    if not args.print_only:
+    if not args.print_only and not args.reuse_kalibr_from:
         for variant in args.kalibr_variants:
             if not docker_image_exists(variant["image"]):
                 raise RuntimeError(
@@ -426,13 +428,17 @@ def ceres_corner_command(args, dataset: pathlib.Path, run_dir: pathlib.Path,
         command.extend([
             "--staged",
             "--stage-free",
-            "pbg,pbegt",
+            "pbg,pbegti",
             "--stage-iterations",
             f"{args.ceres_multi_imu_stage_iterations},{args.ceres_multi_imu_stage_iterations}",
             "--stage-solver-initial-trust-region-radii",
             "1,1",
             "--stage-solver-max-trust-region-radii",
             "10000000,10000000",
+            "--imu-extrinsic-translation-bound-m",
+            "0.005",
+            "--imu-extrinsic-rotation-bound-rad",
+            "0.01",
         ])
     else:
         command.extend([
@@ -648,6 +654,93 @@ def ceres_tum_command(args, input_dir: pathlib.Path, run_dir: pathlib.Path,
 def first_result_txt(run_dir: pathlib.Path):
     results = sorted(run_dir.rglob("*-results-imucam.txt"))
     return results[-1] if results else None
+
+
+def read_summary_csv_if_exists(path: pathlib.Path):
+    if not path.is_file():
+        return []
+    return read_summary_csv(path)
+
+
+def build_reuse_summary_index(root: pathlib.Path):
+    index = {}
+    if not root:
+        return index
+    summary_paths = []
+    for pattern in ["summary.csv", "*_summary.csv"]:
+        summary_paths.extend(root.rglob(pattern))
+    for path in sorted(set(summary_paths)):
+        for row in read_summary_csv_if_exists(path):
+            case = row.get("case", "")
+            label = row.get("label", "")
+            variant = row.get("kalibr_variant", "")
+            if not case or not label or not variant:
+                continue
+            key = (case, label, variant)
+            index.setdefault(key, row)
+    return index
+
+
+def reused_kalibr_dirs(args, out_root: pathlib.Path, name: str, label: str,
+                       variant_label: str, label_subdir: bool):
+    if not args.reuse_kalibr_from:
+        return []
+    root = args.reuse_kalibr_from
+    tail = (
+        pathlib.Path(name) / label / f"kalibr_{variant_label}"
+        if label_subdir
+        else pathlib.Path(name) / f"kalibr_{variant_label}"
+    )
+    return [
+        root / out_root.name / tail,
+        root / tail,
+    ]
+
+
+def load_reused_kalibr_run(args, out_root: pathlib.Path, name: str,
+                           label: str, variant, label_subdir: bool):
+    candidates = reused_kalibr_dirs(
+        args, out_root, name, label, variant["label"], label_subdir
+    )
+    for kalibr_dir in candidates:
+        kalibr_result = first_result_txt(kalibr_dir)
+        if kalibr_result:
+            clean_log = kalibr_dir / "kalibr.clean.log"
+            log_text = (
+                clean_log.read_text(encoding="utf-8", errors="replace")
+                if clean_log.is_file()
+                else ""
+            )
+            summary_row = args.reuse_kalibr_summary_index.get(
+                (name, label, variant["label"]), {}
+            )
+            kalibr_row = {
+                key: value
+                for key, value in summary_row.items()
+                if key.startswith("kalibr_")
+            }
+            kalibr_row.update({
+                "kalibr_variant": variant["label"],
+                "kalibr_platform": variant["platform"],
+                "kalibr_image": variant["image"],
+                "kalibr_image_id": variant.get("image_id", ""),
+                "kalibr_return_code": kalibr_row.get("kalibr_return_code", "0"),
+                "kalibr_log": str(clean_log),
+                "kalibr_result": str(kalibr_result),
+                "kalibr_reused_from": str(kalibr_dir),
+            })
+            kalibr_row.update(parse_kalibr_log(log_text))
+            kalibr_row.update(parse_kalibr_result(kalibr_result))
+            return {
+                "variant": variant,
+                "result": kalibr_result,
+                "row": kalibr_row,
+            }
+    searched = "\n  ".join(str(path) for path in candidates)
+    raise FileNotFoundError(
+        f"reused Kalibr result not found for {name}/{label} "
+        f"{variant['label']} under:\n  {searched}"
+    )
 
 
 def extract_first_number(text: str):
@@ -1283,33 +1376,44 @@ def run_benchmark_case(args, name, dataset: pathlib.Path, out_root: pathlib.Path
 
     kalibr_runs = []
     for variant in args.kalibr_variants:
-        kalibr_dir = case_dir / f"kalibr_{variant['label']}"
-        print(f"[{name}/{label}] Kalibr {variant['label']}", flush=True)
-        k_cmd = kalibr_corner_command(
-            args, dataset, kalibr_dir, imu_data_names, variant
-        )
-        k_code, k_elapsed, k_log = run_logged(
-            k_cmd, kalibr_dir, "kalibr", args.print_only
-        )
-        kalibr_result = first_result_txt(kalibr_dir)
-        kalibr_row = {
-            "kalibr_variant": variant["label"],
-            "kalibr_platform": variant["platform"],
-            "kalibr_image": variant["image"],
-            "kalibr_image_id": variant.get("image_id", ""),
-            "kalibr_return_code": str(k_code),
-            "kalibr_elapsed_s": f"{k_elapsed:.6f}",
-            "kalibr_log": str(kalibr_dir / "kalibr.clean.log"),
-            "kalibr_result": str(kalibr_result or ""),
-        }
-        kalibr_row.update(parse_kalibr_log(k_log))
-        if kalibr_result:
-            kalibr_row.update(parse_kalibr_result(kalibr_result))
-        kalibr_runs.append({
-            "variant": variant,
-            "result": kalibr_result,
-            "row": kalibr_row,
-        })
+        if args.reuse_kalibr_from:
+            print(
+                f"[{name}/{label}] reuse Kalibr {variant['label']}",
+                flush=True,
+            )
+            kalibr_runs.append(
+                load_reused_kalibr_run(
+                    args, out_root, name, label, variant, label_subdir=True
+                )
+            )
+        else:
+            kalibr_dir = case_dir / f"kalibr_{variant['label']}"
+            print(f"[{name}/{label}] Kalibr {variant['label']}", flush=True)
+            k_cmd = kalibr_corner_command(
+                args, dataset, kalibr_dir, imu_data_names, variant
+            )
+            k_code, k_elapsed, k_log = run_logged(
+                k_cmd, kalibr_dir, "kalibr", args.print_only
+            )
+            kalibr_result = first_result_txt(kalibr_dir)
+            kalibr_row = {
+                "kalibr_variant": variant["label"],
+                "kalibr_platform": variant["platform"],
+                "kalibr_image": variant["image"],
+                "kalibr_image_id": variant.get("image_id", ""),
+                "kalibr_return_code": str(k_code),
+                "kalibr_elapsed_s": f"{k_elapsed:.6f}",
+                "kalibr_log": str(kalibr_dir / "kalibr.clean.log"),
+                "kalibr_result": str(kalibr_result or ""),
+            }
+            kalibr_row.update(parse_kalibr_log(k_log))
+            if kalibr_result:
+                kalibr_row.update(parse_kalibr_result(kalibr_result))
+            kalibr_runs.append({
+                "variant": variant,
+                "result": kalibr_result,
+                "row": kalibr_row,
+            })
 
     print(f"[{name}/{label}] Ceres", flush=True)
     init_run = select_kalibr_run(kalibr_runs, args.ceres_init_kalibr_variant)
@@ -1419,39 +1523,48 @@ def run_tum_case(args, name, source_type: str, out_root: pathlib.Path):
 
     kalibr_runs = []
     for variant in args.kalibr_variants:
-        kalibr_dir = case_dir / f"kalibr_{variant['label']}"
-        k_cmd = kalibr_bag_command(
-            args,
-            bag,
-            tum_root / "dataset-calib-imu2_512_16/dso/camchain.yaml",
-            tum_root / "dataset-calib-imu2_512_16/dso/imu_config.yaml",
-            tum_root / "april_6x6_80x80cm.yaml",
-            kalibr_dir,
-            variant,
-        )
-        print(f"[{name}] Kalibr {variant['label']}", flush=True)
-        k_code, k_elapsed, k_log = run_logged(
-            k_cmd, kalibr_dir, "kalibr", args.print_only
-        )
-        kalibr_result = first_result_txt(kalibr_dir)
-        kalibr_row = {
-            "kalibr_variant": variant["label"],
-            "kalibr_platform": variant["platform"],
-            "kalibr_image": variant["image"],
-            "kalibr_image_id": variant.get("image_id", ""),
-            "kalibr_return_code": str(k_code),
-            "kalibr_elapsed_s": f"{k_elapsed:.6f}",
-            "kalibr_result": str(kalibr_result or ""),
-            "kalibr_log": str(kalibr_dir / "kalibr.clean.log"),
-        }
-        kalibr_row.update(parse_kalibr_log(k_log))
-        if kalibr_result:
-            kalibr_row.update(parse_kalibr_result(kalibr_result))
-        kalibr_runs.append({
-            "variant": variant,
-            "result": kalibr_result,
-            "row": kalibr_row,
-        })
+        if args.reuse_kalibr_from:
+            print(f"[{name}] reuse Kalibr {variant['label']}", flush=True)
+            kalibr_runs.append(
+                load_reused_kalibr_run(
+                    args, out_root, name, source_type, variant,
+                    label_subdir=False,
+                )
+            )
+        else:
+            kalibr_dir = case_dir / f"kalibr_{variant['label']}"
+            k_cmd = kalibr_bag_command(
+                args,
+                bag,
+                tum_root / "dataset-calib-imu2_512_16/dso/camchain.yaml",
+                tum_root / "dataset-calib-imu2_512_16/dso/imu_config.yaml",
+                tum_root / "april_6x6_80x80cm.yaml",
+                kalibr_dir,
+                variant,
+            )
+            print(f"[{name}] Kalibr {variant['label']}", flush=True)
+            k_code, k_elapsed, k_log = run_logged(
+                k_cmd, kalibr_dir, "kalibr", args.print_only
+            )
+            kalibr_result = first_result_txt(kalibr_dir)
+            kalibr_row = {
+                "kalibr_variant": variant["label"],
+                "kalibr_platform": variant["platform"],
+                "kalibr_image": variant["image"],
+                "kalibr_image_id": variant.get("image_id", ""),
+                "kalibr_return_code": str(k_code),
+                "kalibr_elapsed_s": f"{k_elapsed:.6f}",
+                "kalibr_result": str(kalibr_result or ""),
+                "kalibr_log": str(kalibr_dir / "kalibr.clean.log"),
+            }
+            kalibr_row.update(parse_kalibr_log(k_log))
+            if kalibr_result:
+                kalibr_row.update(parse_kalibr_result(kalibr_result))
+            kalibr_runs.append({
+                "variant": variant,
+                "result": kalibr_result,
+                "row": kalibr_row,
+            })
 
     ceres_dir = case_dir / "ceres"
     c_cmd = ceres_tum_command(args, prepared_dir, ceres_dir, tum_root)
@@ -1617,6 +1730,8 @@ def parse_args():
                         help="Docker platform used by TUM input preparation; default is linux/arm64.")
     parser.add_argument("--kalibr-docker-repo", type=pathlib.Path,
                         default=KALIBR_DOCKER_REPO)
+    parser.add_argument("--reuse-kalibr-from", type=pathlib.Path,
+                        help="Skip Kalibr Docker and reuse Kalibr outputs from a previous out-root or suite directory.")
     parser.add_argument("--ceres-image", default=CERES_IMAGE)
     parser.add_argument("--ceres-mode", choices=["native", "docker"],
                         default="native")
@@ -1656,6 +1771,12 @@ def main():
     args.ceres_bin = args.ceres_bin.expanduser().resolve()
     args.compare_bin = args.compare_bin.expanduser().resolve()
     args.kalibr_docker_repo = args.kalibr_docker_repo.expanduser().resolve()
+    if args.reuse_kalibr_from:
+        args.reuse_kalibr_from = args.reuse_kalibr_from.expanduser().resolve()
+        if not args.reuse_kalibr_from.is_dir():
+            raise FileNotFoundError(
+                f"--reuse-kalibr-from not found: {args.reuse_kalibr_from}"
+            )
     if args.policy_artifacts_only:
         return refresh_existing_policy_artifacts(args.out_root)
     if args.ceres_max_iterations is not None and args.ceres_max_iterations < 0:
@@ -1673,6 +1794,9 @@ def main():
     suites = set(args.suite or ["all"])
     if "all" in suites:
         suites.update(["benchmark-single", "benchmark-multi-imu", "tum"])
+    args.reuse_kalibr_summary_index = build_reuse_summary_index(
+        args.reuse_kalibr_from
+    )
     ensure_images(args)
     for variant in args.kalibr_variants:
         variant["image_id"] = docker_image_id(variant["image"])

@@ -64,6 +64,10 @@ struct CalibrationOptions {
   double pose_motion_local_rotation_variance_scale = 1.0;
   bool fix_reference_imu_extrinsic = true;
   bool fix_imu_extrinsics = false;
+  // Optional positive bounds around the current non-reference IMU extrinsic
+  // value when a problem is built. Negative disables the corresponding bound.
+  double imu_extrinsic_translation_bound_m = -1.0;
+  double imu_extrinsic_rotation_bound_rad = -1.0;
   bool use_extrinsic_manifold = false;
   bool use_pose_control_manifold = false;
   bool fix_pose_controls = false;
