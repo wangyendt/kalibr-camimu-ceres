@@ -556,6 +556,7 @@ void usage() {
          "[--initial-time-shift-s S] "
          "[--time-shift-pose-kps K] [--time-shift-fit-lambda L] "
          "[--estimate-orientation-gravity-prior] "
+         "[--estimate-multi-imu-orientation-gravity-prior] "
          "[--orientation-prior-pose-kps K] [--orientation-prior-fit-lambda L] "
          "[--no-orientation-prior-boundary-anchors] "
          "[--no-orientation-prior-ceres-refine] "
@@ -566,13 +567,19 @@ void usage() {
          "[--optimize-imu-time-offsets] [--fix-imu-time-offsets] "
          "[--imu-time-offset-bound-s S] "
          "[--imu-chain-prior-max-lever-m M] "
+         "[--imu-chain-prior-max-lever-accel-rms M] "
          "[--estimate-camera-translation-prior] "
          "[--no-estimate-camera-translation-prior] "
+         "[--estimate-multi-imu-translation-prior] "
          "[--camera-translation-prior-pose-kps K] "
          "[--camera-translation-prior-fit-lambda L] "
          "[--camera-translation-prior-stride N] "
          "[--camera-translation-prior-min-lever-norm V] "
          "[--camera-translation-prior-max-norm M] "
+         "[--multi-imu-translation-prior-max-lever-m M] "
+         "[--multi-imu-translation-prior-camera-sigma-m S] "
+         "[--multi-imu-translation-prior-lever-sigma-m S] "
+         "[--multi-imu-translation-prior-accel-bias-sigma M] "
          "[--time-shift-prior-sigma S] [--pose-motion-prior] "
          "[--pose-motion-all-segments] "
          "[--camera-loss cauchy|huber|none] [--camera-loss-width W] "
@@ -584,6 +591,8 @@ void usage() {
          "[--stage-pose-rotation-variances V0,V1,...] "
          "[--stage-pose-motion-orders N0,N1,...] "
          "[--stage-time-shift-prior-sigmas S0,S1,...] "
+         "[--stage-imu-extrinsic-translation-bounds-m B0,B1,...] "
+         "[--stage-imu-extrinsic-rotation-bounds-rad B0,B1,...] "
          "[--stage-solver-initial-trust-region-radii R0,R1,...] "
          "[--stage-solver-max-trust-region-radii R0,R1,...] "
          "[--stage-solver-min-trust-region-radii R0,R1,...] "
@@ -623,7 +632,8 @@ void usage() {
   std::cout
       << "  --estimate-time-shift-prior uses the Kalibr-style gyro-norm "
          "cross-correlation initializer: time-shift pose kps defaults to 100 "
-         "and time-shift fit lambda defaults to 1e-4.\n";
+         "time-shift fit lambda defaults to 1e-4, and "
+         "--time-shift-max-search-s defaults to 0.05.\n";
   std::cout
       << "  --initial-time-shift-s sets an explicit cold-start camera-to-IMU "
          "time shift before orientation/gravity initialization; it overrides "
@@ -646,9 +656,10 @@ void usage() {
   std::cout
       << "  Multi-IMU cold starts estimate non-reference IMU rotations from "
          "gyro correlation by default and apply the same gyro-correlation "
-         "time offsets as fixed IMU delay correction. Experimental non-reference "
-         "lever-arm "
-         "initialization from accelerometer differences is available through "
+         "time offsets as fixed IMU delay correction. Multi-IMU "
+         "--corner-defaults also tries non-reference lever-arm initialization "
+         "from accelerometer differences with an RMS gate; outside "
+         "corner-defaults it is available through "
          "--estimate-imu-chain-lever-prior. Use "
          "--no-estimate-imu-chain-prior to disable the whole chain prior, "
          "--no-imu-delay-correction to keep all IMU residual timestamps "
@@ -663,16 +674,38 @@ void usage() {
          "positive values enable), "
          "--imu-chain-prior-max-offset-s S to override multi-IMU "
          "corner-defaults full-overlap time search with a bounded search, and "
-         "--imu-chain-prior-stride N to downsample initialization samples.\n";
+         "--imu-chain-prior-stride N to downsample initialization samples. "
+         "--imu-chain-prior-max-lever-accel-rms rejects noisy lever-arm "
+         "candidates while keeping the rotation/time chain prior. "
+         "--imu-chain-prior-refine-with-accel is an experimental local "
+         "refinement of non-reference IMU rotation, lever, and accel-bias "
+         "delta from accelerometer residuals; the weight, rotation bound, "
+         "lever sigma, and accel-bias sigma flags tune that refinement. "
+         "--imu-chain-prior-refine-rotation-after-translation-prior first "
+         "uses the non-accel chain prior for multi-IMU translation "
+         "initialization, then reapplies only the accel-refined chain "
+         "rotations while preserving the translation/lever seed.\n";
   std::cout
       << "  --estimate-orientation-gravity-prior estimates camera-IMU "
          "rotation, gyro bias, and gravity from camera-pose angular velocity "
          "and IMU samples before building the main problem.\n";
   std::cout
+      << "  --estimate-multi-imu-orientation-gravity-prior reruns the "
+         "orientation/gravity initializer after the IMU chain prior and "
+         "averages all IMUs in the reference body frame for multi-IMU cold "
+         "starts.\n";
+  std::cout
       << "  --estimate-camera-translation-prior estimates cam0 translation "
          "from camera-pose acceleration and reference-IMU accelerometer data "
          "after the orientation/gravity prior. It is experimental and stays "
          "off unless requested.\n";
+  std::cout
+      << "  --estimate-multi-imu-translation-prior runs after the IMU chain "
+         "rotation/time prior and jointly initializes cam0 translation, "
+         "non-reference IMU lever arms, and per-IMU accelerometer biases from "
+         "accelerometer data. The optional camera/lever/bias sigma flags add "
+         "weak Tikhonov priors to test physical regularization. It is "
+         "experimental and off unless requested.\n";
   std::cout << "  --solver-linear-solver accepts Ceres names such as "
                "SPARSE_NORMAL_CHOLESKY, DENSE_QR, DENSE_NORMAL_CHOLESKY, "
                "CGNR, SPARSE_SCHUR, or ITERATIVE_SCHUR.\n";
@@ -692,6 +725,11 @@ void usage() {
          "extrinsics; use '-' or 'none' for an evaluation-only stage. When no "
          "non-empty stage mask contains i, IMU extrinsics keep the legacy "
          "always-free behavior for non-empty stages.\n";
+  std::cout
+      << "  --stage-imu-extrinsic-translation-bounds-m and "
+         "--stage-imu-extrinsic-rotation-bounds-rad override the global "
+         "non-reference IMU extrinsic bounds per stage; use -1 to disable a "
+         "bound for a stage.\n";
   std::cout
       << "  --extrinsic-manifold enables an experimental SO(3) update for "
          "camera/IMU extrinsics. The default keeps the legacy additive "
@@ -1502,20 +1540,62 @@ int main(int argc, char **argv) {
   imu_chain_prior_options.min_rotation_excitation =
       doubleArg(argc, argv, "--imu-chain-prior-min-excitation",
                 imu_chain_prior_options.min_rotation_excitation);
+  const bool explicitly_estimate_imu_chain_lever_prior =
+      hasFlag(argc, argv, "--estimate-imu-chain-lever-prior");
+  const bool explicitly_disable_imu_chain_lever_prior =
+      hasFlag(argc, argv, "--no-estimate-imu-chain-lever-prior");
   imu_chain_prior_options.estimate_lever_arms =
-      hasFlag(argc, argv, "--estimate-imu-chain-lever-prior") &&
-      !hasFlag(argc, argv, "--no-estimate-imu-chain-lever-prior");
+      (explicitly_estimate_imu_chain_lever_prior ||
+       (corner_defaults && corner_default_multi_imu)) &&
+      !explicitly_disable_imu_chain_lever_prior;
   imu_chain_prior_options.min_lever_excitation =
       doubleArg(argc, argv, "--imu-chain-prior-min-lever-excitation",
                 imu_chain_prior_options.min_lever_excitation);
   imu_chain_prior_options.max_lever_arm_norm_m =
       doubleArg(argc, argv, "--imu-chain-prior-max-lever-m",
                 imu_chain_prior_options.max_lever_arm_norm_m);
+  const std::string imu_chain_prior_max_lever_accel_rms_arg =
+      argValue(argc, argv, "--imu-chain-prior-max-lever-accel-rms");
+  if (corner_defaults && corner_default_multi_imu &&
+      imu_chain_prior_options.estimate_lever_arms &&
+      imu_chain_prior_max_lever_accel_rms_arg.empty()) {
+    imu_chain_prior_options.max_lever_accel_rms_m_s2 = 0.5;
+  }
+  if (!imu_chain_prior_max_lever_accel_rms_arg.empty()) {
+    imu_chain_prior_options.max_lever_accel_rms_m_s2 =
+        std::stod(imu_chain_prior_max_lever_accel_rms_arg);
+  }
   imu_chain_prior_options.refine_with_ceres =
       !hasFlag(argc, argv, "--no-imu-chain-prior-ceres-refine");
   imu_chain_prior_options.refine_max_iterations =
       intArg(argc, argv, "--imu-chain-prior-refine-iterations",
              imu_chain_prior_options.refine_max_iterations);
+  imu_chain_prior_options.refine_with_accel =
+      hasFlag(argc, argv, "--imu-chain-prior-refine-with-accel");
+  imu_chain_prior_options.refine_gyro_weight =
+      doubleArg(argc, argv, "--imu-chain-prior-refine-gyro-weight",
+                imu_chain_prior_options.refine_gyro_weight);
+  imu_chain_prior_options.refine_accel_weight =
+      doubleArg(argc, argv, "--imu-chain-prior-refine-accel-weight",
+                imu_chain_prior_options.refine_accel_weight);
+  imu_chain_prior_options.refine_rotation_bound_rad =
+      doubleArg(argc, argv, "--imu-chain-prior-refine-rotation-bound-rad",
+                imu_chain_prior_options.refine_rotation_bound_rad);
+  imu_chain_prior_options.refine_lever_prior_sigma_m =
+      doubleArg(argc, argv, "--imu-chain-prior-refine-lever-sigma-m",
+                imu_chain_prior_options.refine_lever_prior_sigma_m);
+  imu_chain_prior_options.refine_accel_bias_prior_sigma_m_s2 =
+      doubleArg(argc, argv, "--imu-chain-prior-refine-accel-bias-sigma",
+                imu_chain_prior_options.refine_accel_bias_prior_sigma_m_s2);
+  const bool refine_imu_chain_rotation_after_translation_prior =
+      hasFlag(argc, argv,
+              "--imu-chain-prior-refine-rotation-after-translation-prior");
+  if (refine_imu_chain_rotation_after_translation_prior &&
+      !imu_chain_prior_options.refine_with_accel) {
+    std::cerr << "--imu-chain-prior-refine-rotation-after-translation-prior "
+                 "requires --imu-chain-prior-refine-with-accel\n";
+    return 2;
+  }
   if ((!imu_chain_prior_options.use_full_overlap_time_offset_search &&
        imu_chain_prior_options.max_time_offset_search_s < 0.0) ||
       imu_chain_prior_options.sample_stride <= 0 ||
@@ -1523,10 +1603,21 @@ int main(int argc, char **argv) {
       imu_chain_prior_options.min_rotation_excitation < 0.0 ||
       imu_chain_prior_options.min_lever_excitation < 0.0 ||
       imu_chain_prior_options.max_lever_arm_norm_m <= 0.0 ||
-      imu_chain_prior_options.refine_max_iterations < 0) {
+      imu_chain_prior_options.max_lever_accel_rms_m_s2 < -1.0 ||
+      imu_chain_prior_options.refine_max_iterations < 0 ||
+      imu_chain_prior_options.refine_gyro_weight <= 0.0 ||
+      imu_chain_prior_options.refine_accel_weight <= 0.0 ||
+      imu_chain_prior_options.refine_rotation_bound_rad < -1.0 ||
+      (imu_chain_prior_options.refine_lever_prior_sigma_m != -1.0 &&
+       imu_chain_prior_options.refine_lever_prior_sigma_m <= 0.0) ||
+      (imu_chain_prior_options.refine_accel_bias_prior_sigma_m_s2 != -1.0 &&
+       imu_chain_prior_options.refine_accel_bias_prior_sigma_m_s2 <= 0.0)) {
     std::cerr << "IMU chain prior options must use non-negative bounded offset/"
                  "excitation, positive stride/min-samples/max-lever, and "
-                 "non-negative refine iterations\n";
+                 "non-negative refine iterations; max lever accel RMS must be "
+                 "-1 or non-negative; accel-refine weights must be positive, "
+                 "rotation bound must be -1 or non-negative, and accel-refine "
+                 "sigmas must be -1 or positive\n";
     return 2;
   }
   options.fix_pose_controls = hasFlag(argc, argv, "--fix-poses");
@@ -1679,6 +1770,12 @@ int main(int argc, char **argv) {
       parseIntList(argValue(argc, argv, "--stage-pose-motion-orders"));
   const std::vector<double> stage_time_shift_prior_sigmas =
       parseDoubleList(argValue(argc, argv, "--stage-time-shift-prior-sigmas"));
+  const std::vector<double> stage_imu_extrinsic_translation_bounds_m =
+      parseDoubleList(argValue(
+          argc, argv, "--stage-imu-extrinsic-translation-bounds-m"));
+  const std::vector<double> stage_imu_extrinsic_rotation_bounds_rad =
+      parseDoubleList(
+          argValue(argc, argv, "--stage-imu-extrinsic-rotation-bounds-rad"));
   const std::vector<double> stage_solver_initial_trust_region_radii =
       parseDoubleList(
           argValue(argc, argv, "--stage-solver-initial-trust-region-radii"));
@@ -1722,6 +1819,12 @@ int main(int argc, char **argv) {
     std::cerr << "--stage-time-shift-prior-sigmas requires --staged\n";
     return 2;
   }
+  if ((!stage_imu_extrinsic_translation_bounds_m.empty() ||
+       !stage_imu_extrinsic_rotation_bounds_rad.empty()) &&
+      !staged) {
+    std::cerr << "--stage-imu-extrinsic-*-bounds require --staged\n";
+    return 2;
+  }
   if ((!stage_solver_initial_trust_region_radii.empty() ||
        !stage_solver_max_trust_region_radii.empty() ||
        !stage_solver_min_trust_region_radii.empty() ||
@@ -1762,6 +1865,18 @@ int main(int argc, char **argv) {
       stage_time_shift_prior_sigmas.size() != stage_count) {
     std::cerr << "--stage-time-shift-prior-sigmas expects " << stage_count
               << " comma-separated values\n";
+    return 2;
+  }
+  if (!stage_imu_extrinsic_translation_bounds_m.empty() &&
+      stage_imu_extrinsic_translation_bounds_m.size() != stage_count) {
+    std::cerr << "--stage-imu-extrinsic-translation-bounds-m expects "
+              << stage_count << " comma-separated values\n";
+    return 2;
+  }
+  if (!stage_imu_extrinsic_rotation_bounds_rad.empty() &&
+      stage_imu_extrinsic_rotation_bounds_rad.size() != stage_count) {
+    std::cerr << "--stage-imu-extrinsic-rotation-bounds-rad expects "
+              << stage_count << " comma-separated values\n";
     return 2;
   }
   if (!stage_solver_initial_trust_region_radii.empty() &&
@@ -1836,6 +1951,20 @@ int main(int argc, char **argv) {
     if (sigma < 0.0) {
       std::cerr
           << "--stage-time-shift-prior-sigmas values must be non-negative\n";
+      return 2;
+    }
+  }
+  for (const double bound : stage_imu_extrinsic_translation_bounds_m) {
+    if (bound < -1.0) {
+      std::cerr << "--stage-imu-extrinsic-translation-bounds-m values must be "
+                   "-1 or non-negative\n";
+      return 2;
+    }
+  }
+  for (const double bound : stage_imu_extrinsic_rotation_bounds_rad) {
+    if (bound < -1.0) {
+      std::cerr << "--stage-imu-extrinsic-rotation-bounds-rad values must be "
+                   "-1 or non-negative\n";
       return 2;
     }
   }
@@ -2338,6 +2467,9 @@ int main(int argc, char **argv) {
     time_shift_options.pose_fit_regularization =
         doubleArg(argc, argv, "--time-shift-fit-lambda",
                   time_shift_options.pose_fit_regularization);
+    time_shift_options.max_search_s =
+        doubleArg(argc, argv, "--time-shift-max-search-s",
+                  time_shift_options.max_search_s);
     const ceres_cam_imu::TimeShiftPriorEstimate time_shift =
         ceres_cam_imu::estimateCameraImuTimeShiftPrior(
             poses, imu_samples, initial_T_c_b, time_shift_options);
@@ -2350,10 +2482,18 @@ int main(int argc, char **argv) {
               << "estimated time shift prior: shift_s=" << time_shift.shift_s
               << " pose_kps=" << time_shift_options.pose_knots_per_second
               << " fit_lambda=" << time_shift_options.pose_fit_regularization
+              << " max_search_s=" << time_shift_options.max_search_s
               << " discrete_shift_samples=" << time_shift.discrete_shift_samples
               << " sample_dt_s=" << time_shift.sample_dt_s
               << " samples=" << time_shift.num_samples
               << " peak_correlation=" << time_shift.peak_correlation
+              << " second_best_discrete_shift_samples="
+              << time_shift.second_best_discrete_shift_samples
+              << " second_best_correlation="
+              << time_shift.second_best_correlation
+              << " zero_lag_correlation=" << time_shift.zero_lag_correlation
+              << " boundary_peak_rejected="
+              << time_shift.boundary_peak_rejected
               << " predicted_norm_rms=" << time_shift.predicted_norm_rms
               << " measured_norm_rms=" << time_shift.measured_norm_rms;
     if (have_kalibr_result) {
@@ -2380,11 +2520,26 @@ int main(int argc, char **argv) {
   bool have_initial_reference_accel_bias = false;
   const bool estimate_orientation_gravity_prior =
       hasFlag(argc, argv, "--estimate-orientation-gravity-prior");
+  const bool estimate_multi_imu_orientation_gravity_prior =
+      hasFlag(argc, argv, "--estimate-multi-imu-orientation-gravity-prior");
   const bool estimate_camera_translation_prior =
       hasFlag(argc, argv, "--estimate-camera-translation-prior") &&
       estimate_orientation_gravity_prior &&
       !hasFlag(argc, argv, "--no-estimate-camera-translation-prior") &&
       !init_from_kalibr && !init_from_result && !did_initialize_from_camchain;
+  const bool have_multi_imu_translation_gravity_seed =
+      estimate_orientation_gravity_prior || have_initial_gravity;
+  const bool estimate_multi_imu_translation_prior =
+      hasFlag(argc, argv, "--estimate-multi-imu-translation-prior") &&
+      multi_imu && have_multi_imu_translation_gravity_seed &&
+      !init_from_kalibr;
+  if (refine_imu_chain_rotation_after_translation_prior &&
+      !estimate_multi_imu_translation_prior) {
+    std::cerr << "--imu-chain-prior-refine-rotation-after-translation-prior "
+                 "requires --estimate-multi-imu-translation-prior and an "
+                 "orientation/gravity or gravity seed\n";
+    return 2;
+  }
 
   if (estimate_orientation_gravity_prior) {
     if (poses.empty()) {
@@ -2604,6 +2759,12 @@ int main(int argc, char **argv) {
               << options.imu_extrinsic_rotation_bound_rad
               << " imu_chain_prior_offset_search="
               << imu_chain_prior_offset_search.str()
+              << " imu_chain_lever_prior="
+              << imu_chain_prior_options.estimate_lever_arms
+              << " imu_chain_lever_accel_rms_gate="
+              << imu_chain_prior_options.max_lever_accel_rms_m_s2
+              << " imu_chain_accel_refine="
+              << imu_chain_prior_options.refine_with_accel
               << " imu_trim_edge_count=" << imu_trim_edge_count
               << " losses="
               << robustLossTypeName(options.camera_loss_type) << ":"
@@ -2684,9 +2845,14 @@ int main(int argc, char **argv) {
     const std::size_t result_imu_count =
         init_from_result ? init_result.imu_extrinsics.size() : 0;
     try {
+      ceres_cam_imu::ImuChainInitializerOptions initial_imu_chain_options =
+          imu_chain_prior_options;
+      if (refine_imu_chain_rotation_after_translation_prior) {
+        initial_imu_chain_options.refine_with_accel = false;
+      }
       const ceres_cam_imu::ImuChainInitializerResult imu_chain_prior =
           ceres_cam_imu::estimateImuChainPrior(imus,
-                                               imu_chain_prior_options);
+                                               initial_imu_chain_options);
       for (const ceres_cam_imu::ImuChainInitializerPairResult &imu_result :
            imu_chain_prior.imu_results) {
         if (imu_result.imu_index >= state.imu_extrinsics.size()) {
@@ -2725,6 +2891,14 @@ int main(int argc, char **argv) {
                   << " sample_dt_s=" << imu_result.sample_dt_s
                   << " matched_samples=" << imu_result.matched_samples
                   << " peak_correlation=" << imu_result.peak_correlation
+                  << " time_offset_boundary_peak_rejected="
+                  << (imu_result.time_offset_boundary_peak_rejected ? 1 : 0)
+                  << " rejected_discrete_shift_samples="
+                  << imu_result.rejected_discrete_shift_samples
+                  << " rejected_matched_samples="
+                  << imu_result.rejected_matched_samples
+                  << " rejected_peak_correlation="
+                  << imu_result.rejected_peak_correlation
                   << " r_i_b=" << imu_result.r_i_b.transpose()
                   << " lever_estimated="
                   << (imu_result.lever_arm_estimated ? 1 : 0)
@@ -2742,12 +2916,315 @@ int main(int argc, char **argv) {
                   << " refine_iterations="
                   << imu_result.refine_iterations
                   << " refine_final_cost=" << imu_result.refine_final_cost
+                  << " accel_refined=" << (imu_result.accel_refined ? 1 : 0)
+                  << " accel_refine_rms_m_s2="
+                  << imu_result.accel_refine_rms_m_s2
                   << "\n";
         std::cout.precision(old_precision);
       }
     } catch (const std::exception &e) {
       std::cerr << "failed to estimate IMU chain prior: " << e.what()
                 << "\n";
+      return 2;
+    }
+  }
+
+  if (multi_imu && estimate_multi_imu_orientation_gravity_prior &&
+      !init_from_kalibr) {
+    if (poses.empty()) {
+      std::cerr << "--estimate-multi-imu-orientation-gravity-prior requires "
+                   "--corner-poses poses.csv\n";
+      return 2;
+    }
+    try {
+      ceres_cam_imu::OrientationGravityInitializerOptions
+          orientation_options;
+      orientation_options.pose_knots_per_second =
+          doubleArg(argc, argv, "--orientation-prior-pose-kps",
+                    orientation_options.pose_knots_per_second);
+      orientation_options.pose_fit_regularization =
+          doubleArg(argc, argv, "--orientation-prior-fit-lambda",
+                    orientation_options.pose_fit_regularization);
+      orientation_options.pose_fit_boundary_anchors =
+          !hasFlag(argc, argv, "--no-orientation-prior-boundary-anchors");
+      orientation_options.refine_with_ceres = false;
+      if (orientation_options.pose_knots_per_second <= 0.0 ||
+          orientation_options.pose_fit_regularization < 0.0) {
+        std::cerr << "multi-IMU orientation prior kps must be positive and "
+                     "fit lambda must be non-negative\n";
+        return 2;
+      }
+      const ceres_cam_imu::OrientationGravityInitializerResult orientation =
+          ceres_cam_imu::estimateMultiImuOrientationGravityAndGyroBiasPrior(
+              poses, imus, state.imu_extrinsics, state.imu_time_offsets_s,
+              state.T_c_b, options.initial_camera_time_shift_s,
+              orientation_options);
+      for (int i = 0; i < 3; ++i) {
+        state.T_c_b.values[static_cast<std::size_t>(3 + i)] =
+            orientation.T_c_b.values[static_cast<std::size_t>(3 + i)];
+        if (!state.camera_extrinsics.empty()) {
+          state.camera_extrinsics[0].values[static_cast<std::size_t>(3 + i)] =
+              orientation.T_c_b.values[static_cast<std::size_t>(3 + i)];
+        }
+        state.gravity.values[static_cast<std::size_t>(i)] =
+            orientation.gravity_m_s2(i);
+      }
+      initial_T_c_b = state.T_c_b;
+      initial_gravity = orientation.gravity_m_s2;
+      have_initial_gravity = true;
+      options.initial_gyro_bias_rad_s = orientation.gyro_bias_rad_s;
+
+      const std::streamsize old_precision = std::cout.precision();
+      std::cout << std::setprecision(17)
+                << "estimated multi-IMU orientation/gravity prior: samples="
+                << orientation.num_samples
+                << " pose_kps="
+                << orientation_options.pose_knots_per_second
+                << " fit_lambda="
+                << orientation_options.pose_fit_regularization
+                << " boundary_anchors="
+                << (orientation_options.pose_fit_boundary_anchors ? 1 : 0)
+                << " gyro_bias_rad_s="
+                << orientation.gyro_bias_rad_s.transpose()
+                << " gravity_m_s2="
+                << orientation.gravity_m_s2.transpose()
+                << " gravity_mean_norm_m_s2="
+                << orientation.gravity_mean_norm_m_s2
+                << " gyro_rms_rad_s=" << orientation.gyro_rms_rad_s
+                << " singular_values="
+                << orientation.singular_values.transpose()
+                << " pose_fit_rms_translation_m="
+                << orientation.pose_fit_rms_translation_m
+                << " pose_fit_rms_rotation_rad="
+                << orientation.pose_fit_rms_rotation_rad
+                << " pose_fit_boundary_anchor_observations="
+                << orientation.pose_fit_boundary_anchor_observations;
+      if (have_kalibr_result) {
+        const ceres_cam_imu::Mat4 T_c_b_matrix =
+            ceres_cam_imu::pose6ToMatrix(orientation.T_c_b);
+        const ceres_cam_imu::Mat3 dR =
+            T_c_b_matrix.block<3, 3>(0, 0) *
+            kalibr.T_ci.block<3, 3>(0, 0).transpose();
+        const double cos_angle =
+            std::clamp((dR.trace() - 1.0) * 0.5, -1.0, 1.0);
+        constexpr double kPi = 3.14159265358979323846;
+        const double angle_deg = std::acos(cos_angle) * 180.0 / kPi;
+        std::cout << " kalibr_rotation_delta_deg=" << angle_deg
+                  << " kalibr_gravity_delta_norm="
+                  << (orientation.gravity_m_s2 - kalibr.gravity).norm();
+      }
+      std::cout << "\n";
+      std::cout.precision(old_precision);
+    } catch (const std::exception &e) {
+      std::cerr << "failed to estimate multi-IMU orientation/gravity prior: "
+                << e.what() << "\n";
+      return 2;
+    }
+  }
+
+  if (estimate_multi_imu_translation_prior) {
+    if (poses.empty()) {
+      std::cerr << "--estimate-multi-imu-translation-prior requires "
+                   "--corner-poses poses.csv\n";
+      return 2;
+    }
+    try {
+      ceres_cam_imu::MultiImuTranslationInitializerOptions
+          translation_options;
+      translation_options.pose_knots_per_second =
+          doubleArg(argc, argv, "--camera-translation-prior-pose-kps",
+                    translation_options.pose_knots_per_second);
+      translation_options.pose_fit_regularization =
+          doubleArg(argc, argv, "--camera-translation-prior-fit-lambda",
+                    translation_options.pose_fit_regularization);
+      translation_options.sample_stride =
+          intArg(argc, argv, "--camera-translation-prior-stride",
+                 translation_options.sample_stride);
+      translation_options.min_lever_jacobian_norm =
+          doubleArg(argc, argv, "--camera-translation-prior-min-lever-norm",
+                    translation_options.min_lever_jacobian_norm);
+      translation_options.max_translation_norm_m =
+          doubleArg(argc, argv, "--camera-translation-prior-max-norm",
+                    translation_options.max_translation_norm_m);
+      translation_options.max_lever_arm_norm_m =
+          doubleArg(argc, argv, "--multi-imu-translation-prior-max-lever-m",
+                    translation_options.max_lever_arm_norm_m);
+      translation_options.camera_prior_sigma_m = doubleArg(
+          argc, argv, "--multi-imu-translation-prior-camera-sigma-m",
+          translation_options.camera_prior_sigma_m);
+      translation_options.lever_prior_sigma_m = doubleArg(
+          argc, argv, "--multi-imu-translation-prior-lever-sigma-m",
+          translation_options.lever_prior_sigma_m);
+      translation_options.accel_bias_prior_sigma_m_s2 =
+          doubleArg(argc, argv,
+                    "--multi-imu-translation-prior-accel-bias-sigma",
+                    translation_options.accel_bias_prior_sigma_m_s2);
+      if (translation_options.pose_knots_per_second <= 0.0 ||
+          translation_options.pose_fit_regularization < 0.0 ||
+          translation_options.sample_stride <= 0 ||
+          translation_options.min_lever_jacobian_norm < 0.0 ||
+          translation_options.max_translation_norm_m <= 0.0 ||
+          translation_options.max_lever_arm_norm_m <= 0.0 ||
+          (translation_options.camera_prior_sigma_m != -1.0 &&
+           translation_options.camera_prior_sigma_m <= 0.0) ||
+          (translation_options.lever_prior_sigma_m != -1.0 &&
+           translation_options.lever_prior_sigma_m <= 0.0) ||
+          (translation_options.accel_bias_prior_sigma_m_s2 != -1.0 &&
+           translation_options.accel_bias_prior_sigma_m_s2 <= 0.0)) {
+        std::cerr << "multi-IMU translation prior options are out of range\n";
+        return 2;
+      }
+      const ceres_cam_imu::MultiImuTranslationInitializerResult translation =
+          ceres_cam_imu::estimateMultiImuCameraTranslationAndLeverPrior(
+              poses, imus, state.imu_extrinsics, state.imu_time_offsets_s,
+              state.T_c_b, initial_gravity, options.initial_camera_time_shift_s,
+              translation_options);
+      for (int i = 0; i < 3; ++i) {
+        state.T_c_b.values[static_cast<std::size_t>(i)] =
+            translation.t_c_b_m(i);
+        if (!state.camera_extrinsics.empty()) {
+          state.camera_extrinsics[0].values[static_cast<std::size_t>(i)] =
+              translation.t_c_b_m(i);
+        }
+      }
+      for (std::size_t imu_index = 0;
+           imu_index < translation.r_b_m.size() &&
+           imu_index < state.imu_extrinsics.size();
+           ++imu_index) {
+        if (imu_index == 0) {
+          continue;
+        }
+        for (int i = 0; i < 3; ++i) {
+          state.imu_extrinsics[imu_index]
+              .values[static_cast<std::size_t>(i)] =
+              translation.r_b_m[imu_index](i);
+        }
+      }
+      for (std::size_t imu_index = 0;
+           imu_index < translation.accel_bias_m_s2.size(); ++imu_index) {
+        if (imu_index == 0) {
+          setBiasControls(translation.accel_bias_m_s2[imu_index],
+                          &state.accel_bias_controls);
+        }
+        if (imu_index < state.accel_bias_controls_by_imu.size()) {
+          setBiasControls(translation.accel_bias_m_s2[imu_index],
+                          &state.accel_bias_controls_by_imu[imu_index]);
+        }
+      }
+
+      const std::streamsize old_precision = std::cout.precision();
+      std::cout << std::setprecision(17)
+                << "estimated multi-IMU translation prior: samples="
+                << translation.num_samples
+                << " pose_kps="
+                << translation_options.pose_knots_per_second
+                << " fit_lambda="
+                << translation_options.pose_fit_regularization
+                << " stride=" << translation_options.sample_stride
+                << " min_lever_norm="
+                << translation_options.min_lever_jacobian_norm
+                << " camera_prior_sigma_m="
+                << translation_options.camera_prior_sigma_m
+                << " lever_prior_sigma_m="
+                << translation_options.lever_prior_sigma_m
+                << " accel_bias_prior_sigma_m_s2="
+                << translation_options.accel_bias_prior_sigma_m_s2
+                << " t_c_b_m=" << translation.t_c_b_m.transpose()
+                << " accel_rms_m_s2=" << translation.accel_rms_m_s2
+                << " singular_values="
+                << translation.singular_values.transpose()
+                << " pose_fit_rms_translation_m="
+                << translation.pose_fit_rms_translation_m
+                << " pose_fit_rms_rotation_rad="
+                << translation.pose_fit_rms_rotation_rad
+                << " pose_fit_boundary_anchor_observations="
+                << translation.pose_fit_boundary_anchor_observations;
+      for (std::size_t imu_index = 0; imu_index < translation.r_b_m.size();
+           ++imu_index) {
+        std::cout << " imu" << imu_index
+                  << "_r_b_m=" << translation.r_b_m[imu_index].transpose()
+                  << " imu" << imu_index << "_accel_bias_m_s2="
+                  << translation.accel_bias_m_s2[imu_index].transpose();
+      }
+      if (have_kalibr_result) {
+        const ceres_cam_imu::Mat4 initial_T =
+            ceres_cam_imu::pose6ToMatrix(state.T_c_b);
+        std::cout << " kalibr_translation_delta_m="
+                  << (initial_T.block<3, 1>(0, 3) -
+                      kalibr.T_ci.block<3, 1>(0, 3))
+                         .norm();
+      }
+      std::cout << "\n";
+      std::cout.precision(old_precision);
+    } catch (const std::exception &e) {
+      std::cerr << "failed to estimate multi-IMU translation prior: "
+                << e.what() << "\n";
+      return 2;
+    }
+  }
+
+  if (multi_imu && estimate_imu_chain_prior &&
+      refine_imu_chain_rotation_after_translation_prior && !init_from_kalibr) {
+    try {
+      const ceres_cam_imu::ImuChainInitializerResult imu_chain_prior =
+          ceres_cam_imu::estimateImuChainPrior(imus,
+                                               imu_chain_prior_options);
+      for (const ceres_cam_imu::ImuChainInitializerPairResult &imu_result :
+           imu_chain_prior.imu_results) {
+        if (imu_result.imu_index >= state.imu_extrinsics.size()) {
+          continue;
+        }
+        for (int i = 0; i < 3; ++i) {
+          state.imu_extrinsics[imu_result.imu_index]
+              .values[static_cast<std::size_t>(3 + i)] =
+              imu_result.r_i_b(i);
+        }
+        if (enable_imu_delay_correction) {
+          if (state.imu_time_offsets_s.size() < imus.size()) {
+            state.imu_time_offsets_s.resize(imus.size(), 0.0);
+          }
+          state.imu_time_offsets_s[imu_result.imu_index] =
+              imu_result.time_offset_s;
+          state.imu_time_offsets_s[0] = 0.0;
+        }
+        const std::streamsize old_precision = std::cout.precision();
+        std::cout << std::setprecision(17)
+                  << "estimated post-translation IMU chain rotation prior: imu="
+                  << imu_result.imu_index
+                  << " time_offset_s=" << imu_result.time_offset_s
+                  << " delay_correction_applied="
+                  << (enable_imu_delay_correction ? 1 : 0)
+                  << " time_offset_search_radius_s="
+                  << imu_result.time_offset_search_radius_s
+                  << " max_search_lag_samples="
+                  << imu_result.max_search_lag_samples
+                  << " discrete_shift_samples="
+                  << imu_result.discrete_shift_samples
+                  << " sample_dt_s=" << imu_result.sample_dt_s
+                  << " matched_samples=" << imu_result.matched_samples
+                  << " peak_correlation=" << imu_result.peak_correlation
+                  << " time_offset_boundary_peak_rejected="
+                  << (imu_result.time_offset_boundary_peak_rejected ? 1 : 0)
+                  << " r_i_b=" << imu_result.r_i_b.transpose()
+                  << " preserved_translation_m="
+                  << ceres_cam_imu::Vec3(
+                         state.imu_extrinsics[imu_result.imu_index].values[0],
+                         state.imu_extrinsics[imu_result.imu_index].values[1],
+                         state.imu_extrinsics[imu_result.imu_index].values[2])
+                         .transpose()
+                  << " gyro_bias_rad_s="
+                  << imu_result.gyro_bias_rad_s.transpose()
+                  << " gyro_rms_rad_s=" << imu_result.gyro_rms_rad_s
+                  << " accel_refined=" << (imu_result.accel_refined ? 1 : 0)
+                  << " accel_refine_rms_m_s2="
+                  << imu_result.accel_refine_rms_m_s2
+                  << "\n";
+        std::cout.precision(old_precision);
+      }
+    } catch (const std::exception &e) {
+      std::cerr << "failed to estimate post-translation IMU chain rotation "
+                   "prior: "
+                << e.what() << "\n";
       return 2;
     }
   }
@@ -2782,6 +3259,9 @@ int main(int argc, char **argv) {
                                               &stages);
     ceres_cam_imu::applyStageTimeShiftPriorSigmas(stage_time_shift_prior_sigmas,
                                                   &stages);
+    ceres_cam_imu::applyStageImuExtrinsicBounds(
+        stage_imu_extrinsic_translation_bounds_m,
+        stage_imu_extrinsic_rotation_bounds_rad, &stages);
     ceres_cam_imu::applyStageSolverOptions(
         stage_solver_initial_trust_region_radii,
         stage_solver_max_trust_region_radii,
@@ -2823,6 +3303,11 @@ int main(int argc, char **argv) {
                 " solver_abs_param_tol=" +
                 std::to_string(
                     stage.options.solver_absolute_parameter_tolerance) +
+                " imu_translation_bound_m=" +
+                std::to_string(
+                    stage.options.imu_extrinsic_translation_bound_m) +
+                " imu_rotation_bound_rad=" +
+                std::to_string(stage.options.imu_extrinsic_rotation_bound_rad) +
                 "]: ",
             stage_build);
       }
@@ -2848,6 +3333,10 @@ int main(int argc, char **argv) {
                 << stage.options.solver_absolute_step_tolerance
                 << " solver_abs_param_tol="
                 << stage.options.solver_absolute_parameter_tolerance
+                << " imu_translation_bound_m="
+                << stage.options.imu_extrinsic_translation_bound_m
+                << " imu_rotation_bound_rad="
+                << stage.options.imu_extrinsic_rotation_bound_rad
                 << " solver_restore_best_state="
                 << stage.options.solver_restore_best_state << "\n";
       const ceres_cam_imu::CalibrationStageResult stage_result =

@@ -357,6 +357,34 @@ void applyStageTimeShiftPriorSigmas(
   }
 }
 
+void applyStageImuExtrinsicBounds(
+    const std::vector<double> &translation_bounds_m,
+    const std::vector<double> &rotation_bounds_rad,
+    std::vector<CalibrationStage> *stages) {
+  if (!stages) {
+    throw std::invalid_argument("stages must be non-null");
+  }
+  validateDisabledOrNonNegativeSchedule(
+      translation_bounds_m, stages->size(),
+      "stage IMU extrinsic translation bound");
+  validateDisabledOrNonNegativeSchedule(rotation_bounds_rad, stages->size(),
+                                        "stage IMU extrinsic rotation bound");
+  if (translation_bounds_m.empty() && rotation_bounds_rad.empty()) {
+    return;
+  }
+  for (std::size_t i = 0; i < stages->size(); ++i) {
+    CalibrationOptions &options = stages->at(i).options;
+    if (!translation_bounds_m.empty()) {
+      options.imu_extrinsic_translation_bound_m =
+          translation_bounds_m.at(i);
+    }
+    if (!rotation_bounds_rad.empty()) {
+      options.imu_extrinsic_rotation_bound_rad =
+          rotation_bounds_rad.at(i);
+    }
+  }
+}
+
 void applyStageSolverOptions(
     const std::vector<double> &initial_trust_region_radii,
     const std::vector<double> &max_trust_region_radii,

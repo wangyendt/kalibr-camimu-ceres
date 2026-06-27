@@ -9,7 +9,11 @@
 - `Mcam+1imu`
 - `Mcam+Nimu`
 
-当前没有 `--topology` 这类显式参数，也没有四份独立配置文件。拓扑由输入数量自动推断。四类 topology 共享 production solver defaults 的主体配置，但允许少量 topology 覆写；多 IMU topology 另外把 gyro-correlation delay 搜索改为 Kalibr 口径的 raw overlap full-correlation。显式传 `--imu-chain-prior-max-offset-s` 时才退回固定秒数窗口。
+当前没有 `--topology` 这类显式参数，也没有四份独立配置文件。拓扑由输入数量自动推断。四类 topology 共享 production solver defaults 的主体配置，但允许少量 topology 覆写；多 IMU topology 另外把 IMU chain delay 搜索改为 full-overlap 搜索半径 + 去均值归一化 gyro-norm correlation，并默认尝试带 RMS gate 的 IMU chain lever prior。显式传 `--imu-chain-prior-max-offset-s` 时 delay 搜索才退回固定秒数窗口。
+
+实验性的 `--imu-chain-prior-refine-with-accel` 不属于 `--corner-defaults`
+默认差异。它只会作为 runner 级 `1cam+Nimu` no-Kalibr trimmed selector
+中的 health-gated 候选出现，不能无条件下沉到裸 `calibrate_cam_imu` 默认。
 
 ## 自动检测规则
 
@@ -44,7 +48,9 @@ Topology 专用补充：
 
 | Topology | 参数 | 值 | 说明 |
 |---|---|---:|---|
-| `1cam+Nimu` / `Mcam+Nimu` | `imu_chain_prior_offset_search` | `full-overlap` | 对齐 Kalibr：按当前两路 IMU 原始时间轴重叠序列长度做 gyro correlation delay 搜索；不影响 camera time-shift residual 的 pose-control buffer |
+| `1cam+Nimu` / `Mcam+Nimu` | `imu_chain_prior_offset_search` | `full-overlap` | 按当前两路 IMU 原始时间轴重叠序列长度确定搜索半径，并对 gyro norm 做去均值归一化 correlation；不影响 camera time-shift residual 的 pose-control buffer |
+| `1cam+Nimu` / `Mcam+Nimu` | `imu_chain_lever_prior` | 开启 | 默认尝试从 accel difference 估非参考 IMU lever；显式 `--no-estimate-imu-chain-lever-prior` 可关闭 |
+| `1cam+Nimu` / `Mcam+Nimu` | `imu_chain_lever_accel_rms_gate` | `0.5 m/s^2` | 高 RMS lever 候选会被拒绝并保持 `r_b=0`，但 rotation/time chain prior 仍保留 |
 | 单 IMU topology | `imu_chain_prior_offset_search` | `bounded:0.2` | 保持 `ImuChainInitializerOptions` 基础默认；显式 `--imu-chain-prior-max-offset-s` 可覆盖 |
 
 四类 topology 共享 production solver defaults 的主体配置；少量 stop policy 会按 topology 局部覆写：
@@ -62,14 +68,38 @@ Topology 专用补充：
 | `solver_use_nonmonotonic_steps` | `true` |
 | `solver_max_consecutive_nonmonotonic_steps` | `20` |
 
-除 `1cam+Nimu` 的 delay 搜索窗口和 `1cam+1imu` 的 cost plateau stop 外，当前真正的 running 差异来自 runner 额外传入的参数：
+除多 IMU topology 的 delay/lever prior 和 `1cam+1imu` 的 cost plateau stop 外，当前真正的 running 差异来自 runner 额外传入的参数：
 
 | 场景 | Topology | runner 额外参数 |
 |---|---|---|
 | `benchmark-single` | `1cam+1imu` | time-shift/orientation 初始化、pose fit boundary anchors、time-shift prior、pose motion prior；topology preset 使用 `absolute_cost_change_tolerance=0.005` |
-| `benchmark-multi-imu joint_4imu` | `1cam+Nimu` | `--staged --stage-free pbg,pbegti --stage-iterations 30,30 --imu-extrinsic-translation-bound-m 0.003 --imu-extrinsic-rotation-bound-rad 0.005` 等 staged 参数 |
+| `benchmark-multi-imu joint_4imu` | `1cam+Nimu` | 默认跑 no-Kalibr trimmed 六候选 selector；候选统一按 topology 触发，不按 benchmark 编号分支。候选内部使用 staged `pbg,pbegti` 或 `pbg,pbegti,pbegti`、wide/wide/tight 非参考 IMU extrinsic bound、Ceres single time seed 和 residual-health gate |
 | `benchmark-multi-imu single_imu1..4` | `1cam+1imu` | 同单 IMU 初始化/先验 |
 | `tum` | `Mcam+1imu` | `--init-from-camchain`、time-shift/orientation 初始化、pose motion prior、`--imu-model scale-misalignment` |
+
+`--estimate-multi-imu-translation-prior` 及其
+`--multi-imu-translation-prior-lever-sigma-m` /
+`--multi-imu-translation-prior-accel-bias-sigma` 仍不是
+`--corner-defaults` 裸默认；但 runner 的 `1cam+Nimu` no-Kalibr trimmed
+selector 会在 chain 候选里显式使用 `lever_sigma=0.01m` 和
+`accel_bias_sigma=0.05m/s^2`，再由 health gate 决定是否接受。b09 ablation 显示它能把 no-Kalibr
+camera0 平移差从 `79mm` 拉到 `36-55mm`，但 rotation 仍约 `1.055deg`，
+不能作为无条件单候选默认。该开关显式传入时也允许在
+`--init-from-result` 后运行；Ceres-single seed + multi-IMU translation
+prior 可把 b09 camera0 从约 `95.7mm` 拉到 `77.3mm`，并把非参考 effective
+chain 平移压到约 `38/50/36mm`，但仍未达到 Kalibr-init tight 同量级。仿真
+GT 上它会把默认 camera 平移从 `0.70mm` 拉到 `6-10mm`，因此继续保持实验
+开关或 selector 候选，不单独作为最终输出。
+
+`tools/run_docker_benchmark.py` 当前把
+`--ceres-multi-imu-candidate-preset no-kalibr-accuracy-trimmed` 作为
+`1cam+Nimu` runner 默认。这个默认不使用 Kalibr 初始化或候选选择；Kalibr
+只用于最终 compare。若要复现历史 Kalibr-init tight joint，必须显式传
+`--ceres-multi-imu-candidate-preset none --ceres-multi-imu-init kalibr`。
+
+`--ceres-multi-imu-adaptive-long-solve` 仍保留为旧 stop policy ablation 入口，
+但不再是收尾默认。当前默认由六候选 selector 同时覆盖 short/long single
+和 health-gated chain 候选。
 
 ## 修改非单调步上限的影响
 
@@ -118,6 +148,7 @@ Topology 专用补充：
 2. 对 `benchmark_02/03/10` 做固定迭代数截断实验，例如 `80/100/120/150`，比较外参差、time-shift、reproj/gyro/accel residual，找精度平台点。
 3. 对 TUM 单独做 `Mcam+1imu` stop policy 实验，因为 scale-misalignment 和双目链路会让 raw step 与单目单 IMU不可直接共用阈值。
 4. 只在实验显示不伤精度后，再把某个 topology 的 running 分支收紧；不要直接改共享 production defaults。
+5. 对 no-Kalibr `1cam+Nimu`，优先用 runner 的 adaptive short/long 做 full 12 组验证；它是评测入口，不是生产默认。若 full 12 组显示稳定，再考虑把对应 stop policy 下沉到 `1cam+Nimu` topology。
 
 当前最可能的方向：
 

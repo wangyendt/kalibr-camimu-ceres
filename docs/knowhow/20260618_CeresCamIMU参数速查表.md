@@ -49,9 +49,9 @@
 | Topology | 识别条件 | 当前默认配置 | 备注 |
 |---|---|---|---|
 | `1cam+1imu` | 1 个 `--corners`，1 个 `--imu-data` | 公共 corner defaults + production solver defaults + `absolute_cost_change_tolerance=0.005` | benchmark-single、benchmark-multi-imu 的 `single_imu1..4` 子项都会落到这里；保留 `step=0.02`，用 cost plateau 省掉长尾迭代 |
-| `1cam+Nimu` | 1 个 `--corners`，多个 `--imu-data` | 公共 corner defaults + production solver defaults | runner 当前对 joint 多 IMU 额外走 staged 和非参考 IMU extrinsic 小范围释放，这是按 IMU 数量触发，不按数据集名触发 |
+| `1cam+Nimu` | 1 个 `--corners`，多个 `--imu-data` | 公共 corner defaults + production solver defaults + IMU chain full-overlap delay + lever prior RMS gate | runner 当前对 joint 多 IMU 额外走 staged 和非参考 IMU extrinsic 小范围释放，这是按 IMU 数量触发，不按数据集名触发 |
 | `Mcam+1imu` | 多个 `--corners`，1 个 `--imu-data` | 公共 corner defaults + production solver defaults | TUM 双目单 IMU 落到这里 |
-| `Mcam+Nimu` | 多个 `--corners`，多个 `--imu-data` | 公共 corner defaults + production solver defaults | 预留多相机多 IMU；当前没有单独数值 |
+| `Mcam+Nimu` | 多个 `--corners`，多个 `--imu-data` | 公共 corner defaults + production solver defaults + IMU chain full-overlap delay + lever prior RMS gate | 预留多相机多 IMU |
 
 公共 corner defaults：
 
@@ -68,7 +68,9 @@
 
 | 参数 | 适用 topology | 值 | 说明 |
 |---|---|---:|---|
-| `imu_chain_prior_offset_search` | `1cam+Nimu` / `Mcam+Nimu` | `full-overlap` | 不传 `--imu-chain-prior-max-offset-s` 时启用；按当前两路 IMU 原始时间轴重叠序列长度做 gyro correlation delay 搜索，对齐 Kalibr |
+| `imu_chain_prior_offset_search` | `1cam+Nimu` / `Mcam+Nimu` | `full-overlap` | 不传 `--imu-chain-prior-max-offset-s` 时启用；按当前两路 IMU 原始时间轴重叠序列长度做去均值归一化 gyro-norm correlation delay 搜索，对齐 Kalibr overlap 口径 |
+| `imu_chain_lever_prior` | `1cam+Nimu` / `Mcam+Nimu` | 开启 | 默认尝试从加速度差估非参考 IMU lever；显式 `--no-estimate-imu-chain-lever-prior` 可关闭 |
+| `imu_chain_lever_accel_rms_gate` | `1cam+Nimu` / `Mcam+Nimu` | `0.5 m/s^2` | 默认拒绝高 RMS 的 lever 候选，但仍保留 rotation/time chain prior；显式 `--imu-chain-prior-max-lever-accel-rms` 可覆盖 |
 | `imu_chain_prior_offset_search` | 单 IMU topology | `bounded:0.2` | 保持 `ImuChainInitializerOptions` 基础默认；单 IMU 不会实际估 IMU chain prior |
 
 production solver defaults：
@@ -93,23 +95,33 @@ production solver defaults：
 | 命令 | Ceres 输入规模 | Topology | runner 额外做什么 | Kalibr 平台 |
 |---|---|---|---|---|
 | `--suite benchmark-single` | 1 个 corners + `data1.csv` | `1cam+1imu` | 加 time-shift/orientation 初始化、pose fit boundary anchors、time-shift prior、pose motion prior；solver 默认来自 `--corner-defaults` | 不传 `--kalibr-platform` 时跑 amd64 + arm64 |
-| `--suite benchmark-multi-imu` | joint: 1 个 corners + `data1..4.csv`；single 子项: 1 个 corners + 单路 IMU CSV | joint 为 `1cam+Nimu`；single 子项为 `1cam+1imu` | joint 多 IMU按 topology 触发 staged：`pbg,pbegti`，默认 `30,30`，非参考 IMU extrinsic 先固定后以 component-wise `translation<=0.003 m`、rotation-vector `<=0.005 rad` 小范围释放；single 子项同 `1cam+1imu` 初始化/先验 | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
+| `--suite benchmark-multi-imu` | joint: 1 个 corners + `data1..4.csv`；single 子项: 1 个 corners + 单路 IMU CSV | joint 为 `1cam+Nimu`；single 子项为 `1cam+1imu` | joint 默认按 topology 触发 no-Kalibr trimmed 六候选 selector；候选内部仍使用 staged `pbg,pbegti` 或 `pbg,pbegti,pbegti`、wide/wide/tight 非参考 IMU extrinsic bound 和 residual-health gate。single 子项同 `1cam+1imu` 初始化/先验 | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
 | `--suite tum` | 2 个 corners + 1 个 IMU CSV | `Mcam+1imu` | 加 `--init-from-camchain`、time-shift/orientation 初始化、pose motion prior、`--imu-model scale-misalignment`；solver 默认来自 `--corner-defaults` | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
 
 只想验证当前 Ceres native 改动时，不要用 `benchmark-single` 默认双平台口径重跑 Kalibr。传 `--kalibr-platform linux/arm64 --reuse-kalibr-from <旧out-root>` 后，runner 会复用旧目录中的 Kalibr arm64 result/log/summary，只重新执行 Ceres 和 compare。
 
-### `run_docker_benchmark.py` 常用调试参数
+### `run_docker_benchmark.py` 最小可用参数
 
 这些参数只属于 runner，不会直接透传给 Ceres native 标定器，除非 runner 在构造 Ceres 命令时显式转换。
 
 | runner 参数 | 默认 | 作用 | 典型用途 |
 |---|---:|---|---|
+| `--suite benchmark-single|benchmark-multi-imu|tum|all` | `all` | 选择要跑的实验套件 | 日常只需要三条标准命令里的 suite |
+| `--out-root` | 时间戳目录 | 输出目录 | 固定实验产物路径 |
+| `--kalibr-platform linux/arm64|linux/amd64` | benchmark-single 默认双平台；其它按命令传 | 选择 Kalibr Docker 平台 | M1/M2 日常用 `linux/arm64` |
+| `--reuse-kalibr-from` | 空 | 复用旧 Kalibr 输出，只重跑 Ceres/compare | Ceres 参数或代码变更后的快速复测 |
+| `--session` | 空 | benchmark-single 子集 | 临时只跑某几个 session |
+| `--multi-session` | 空 | benchmark-multi-imu 子集 | 临时只跑某个 4IMU session |
 | `--benchmark-multi-subset all|joint|single` | `all` | 控制 `benchmark-multi-imu` 跑 joint、single 或全部 | Ceres-only 验证 joint 配置时用 `joint`，避免重跑 48 路 single |
-| `--ceres-multi-imu-stage-free` | `pbg,pbegti` | multi-IMU joint staged 的 free mask 列表 | ablation 单阶段或调整释放顺序 |
-| `--ceres-multi-imu-stage-iterations` | `30` | 每个 stage 的最大迭代数 | 控制 joint 每阶段上限；runner 会按 stage 数自动展开 |
-| `--ceres-multi-imu-stage-step-tolerances` | 空 | 覆盖每个 stage 的 absolute step tolerance | 验证停止条件对速度/残差的影响 |
-| `--ceres-multi-imu-extrinsic-translation-bound-m` | `0.003` | 传给 Ceres 的非参考 IMU extrinsic 平移 component-wise bound | 当前 default tight joint 配置 |
-| `--ceres-multi-imu-extrinsic-rotation-bound-rad` | `0.005` | 传给 Ceres 的非参考 IMU extrinsic rotation-vector component-wise bound | 当前 default tight joint 配置 |
+| `--ceres-multi-imu-candidate-preset none\|no-kalibr-accuracy\|no-kalibr-accuracy-trimmed` | `no-kalibr-accuracy-trimmed` | runner 级 `1cam+Nimu` topology 默认多候选 preset，不用 Kalibr 初始化或选择 | full 跑 9 个候选；trimmed 保留 6 个候选：`single_short/single_long/chain_multi_t_wide_tight/chain_multi_ograv_t_wide_tight/chain_accel_refine_t_wide_tight/chain_long_single_time_t_wide_tight`。该默认只属于 runner orchestration；裸 `calibrate_cam_imu --corner-defaults` 仍是单次求解 |
+| `--ceres-multi-imu-init kalibr|chain-prior|ceres-single` | `chain-prior` | 单候选 multi-IMU Ceres 的初始化来源 | 只有复现历史 Kalibr-init tight joint 时需要：`--ceres-multi-imu-candidate-preset none --ceres-multi-imu-init kalibr` |
+| `--print-only` | 关闭 | 只打印命令，不执行 | 检查默认展开了哪些 Ceres/Kalibr 命令 |
+| `--ceres-extra-arg` | 空 | 原样追加给 Ceres | 少数临时实验的 escape hatch |
+| `--kalibr-extra-arg` | 空 | 原样追加给 Kalibr | 少数临时实验的 escape hatch |
+
+其余 runner 参数已经从 `--help` 隐藏，只保留兼容旧 ablation 命令。日常不要再通过
+`stage-free`、`stage-cost-tolerances`、`accuracy-chain-*`、`translation-prior-*`
+这类细粒度参数调默认策略；需要复现实验时查对应实验文档和旧命令即可。
 
 ## 轨迹、数据裁剪与问题规模
 
@@ -142,27 +154,43 @@ production solver defaults：
 | `--imu-time-offset-bound-s` | `0.005` | 每路非参考 IMU offset 的 box bound 半宽 | 仅在 `--optimize-imu-time-offsets` 时生效；太大可能跨 spline support |
 | `--imu-extrinsic-translation-bound-m` | `-1`；multi-IMU joint runner 传 `0.003` | 非参考 IMU extrinsic 平移相对当前 problem 构建值的 component-wise box bound 半宽 | `-1` 关闭；必须为正数才启用；当前用于 staged 第二阶段小范围释放；三维平移范数尾部可能到 `sqrt(3)` 倍 component bound |
 | `--imu-extrinsic-rotation-bound-rad` | `-1`；multi-IMU joint runner 传 `0.005` | 非参考 IMU extrinsic rotation-vector 相对当前 problem 构建值的 component-wise box bound 半宽 | `-1` 关闭；必须为正数才启用；不要用 `0` 表示固定，固定整块请用 `--fix-imu-extrinsics` |
+| `--stage-imu-extrinsic-translation-bounds-m` | 空；runner 可传逗号列表 | staged 模式下逐阶段覆盖非参考 IMU extrinsic 平移 bound | 每阶段一个值；`-1` 关闭该阶段 bound；用于 no-Kalibr `1cam+Nimu` 的 “wide release -> tight polish” 消融 |
+| `--stage-imu-extrinsic-rotation-bounds-rad` | 空；runner 可传逗号列表 | staged 模式下逐阶段覆盖非参考 IMU extrinsic rotation-vector bound | 每阶段一个值；`-1` 关闭该阶段 bound；b09 验证了 `0.05,0.05,0.005` 能改善 nonref rotation/residual，但不能解决 camera0 translation basin |
 | `--no-estimate-imu-chain-prior` | 关闭 | 禁用多 IMU chain prior | 会失去非参考 IMU rotation/delay 初值，通常只用于消融 |
-| `--imu-chain-prior-max-offset-s` | 基础默认 `0.2`；`--corner-defaults` + 多 IMU topology 不传该参数时使用 raw overlap 全长 | gyro correlation 的 delay 搜索窗口 | 对齐 Kalibr：按当前两路 IMU 原始时间轴重叠序列长度做 full-correlation；显式传该参数才切回固定秒数窗口；只影响多 IMU chain prior 初始化搜索，不扩大 camera time-shift residual 的 pose-control buffer |
+| `--imu-chain-prior-max-offset-s` | 基础默认 `0.2`；`--corner-defaults` + 多 IMU topology 不传该参数时使用 full-overlap 搜索半径 | gyro correlation 的 delay 搜索窗口 | 按当前两路 IMU 原始时间轴重叠序列长度确定搜索半径，并对 gyro norm 做去均值归一化 correlation；显式传该参数才切回固定秒数窗口；只影响多 IMU chain prior 初始化搜索，不扩大 camera time-shift residual 的 pose-control buffer |
 | `--imu-chain-prior-stride` | `1` | chain prior 初始化下采样 | 大于 1 加速初始化，但可能影响 correlation 峰值 |
 | `--imu-chain-prior-min-samples` | `200` | chain prior 最少匹配样本 | 过少会拒绝估计 |
 | `--imu-chain-prior-min-excitation` | `1e-8` | rotation prior 最小激励阈值 | 动作太弱时会拒绝估计 |
 | `--no-imu-chain-prior-ceres-refine` | 关闭 | 跳过 IMU chain 小 Ceres refine | 只保留 correlation/closed-form 初值 |
 | `--imu-chain-prior-refine-iterations` | `50` | IMU chain 小 refine 迭代数 | 只影响 solve 前的 pair prior refine |
-| `--estimate-imu-chain-lever-prior` | 关闭 | 从加速度差估非参考 IMU lever arm 初值 | 实验功能；默认只估 rotation 和 delay |
-| `--no-estimate-imu-chain-lever-prior` | 关闭 | 显式关闭 lever prior | 与上项配合 |
+| `--imu-chain-prior-refine-with-accel` | 关闭 | 实验性地用 accel residual 联合 refine 非参考 IMU `R_i_b`、lever 和 accel-bias delta | 不进入 `--corner-defaults` 默认，也不进入当前 no-Kalibr preset；b09 `gyro_weight=10/accel_weight=1` 能明显降低 chain rotation tail，但仿真、b08、b12 已证明会触发 camera/accel/time 退化 |
+| `--imu-chain-prior-refine-gyro-weight` | `1.0` | accel-refine 中 gyro residual 权重 | 只在 `--imu-chain-prior-refine-with-accel` 开启时生效 |
+| `--imu-chain-prior-refine-accel-weight` | `1.0` | accel-refine 中 accel residual 权重 | 权重过弱会退回 gyro-only basin，过强可能牺牲 gyro residual 或 camera translation |
+| `--imu-chain-prior-refine-rotation-bound-rad` | `-1` | accel-refine 中 `R_i_b` rotation-vector component-wise bound 半宽 | `-1` 关闭；正数围绕 gyro-only 初值限制 pair-level rotation 更新 |
+| `--imu-chain-prior-refine-lever-sigma-m` | `-1` | accel-refine 中 lever Tikhonov prior sigma | `-1` 关闭；正数启用，中心为进入 refine 前的 lever 初值 |
+| `--imu-chain-prior-refine-accel-bias-sigma` | `-1` | accel-refine 中 accel-bias delta Tikhonov prior sigma | `-1` 关闭；正数启用，中心为进入 refine 前的 accel-bias delta |
+| `--estimate-imu-chain-lever-prior` | 基础默认关闭；`--corner-defaults` + 多 IMU topology 默认开启 | 从加速度差估非参考 IMU lever arm 初值 | 多 IMU topology 默认带 RMS gate，避免坏 lever 进入 tight bound |
+| `--no-estimate-imu-chain-lever-prior` | 关闭 | 显式关闭 lever prior | 可用于消融或复现旧默认 |
 | `--imu-chain-prior-min-lever-excitation` | `1e-8` | lever prior 最小激励阈值 | 激励不足时不估 lever |
 | `--imu-chain-prior-max-lever-m` | `1.0` | lever prior 最大模长 | 过滤异常 lever 解 |
+| `--imu-chain-prior-max-lever-accel-rms` | 基础默认 `-1`；`--corner-defaults` + 多 IMU topology 默认为 `0.5` | lever prior 拟合 RMS 门限 | 候选 RMS 超过门限时不写入 `r_b`，但 rotation/time chain prior 仍保留 |
+| `--estimate-multi-imu-translation-prior` | 关闭 | 在 IMU chain rotation/time prior 后，用线性 LS 联合估 `cam0 translation + 非参考 IMU lever + 每路 accel bias` | 实验开关，不进入 `--corner-defaults` 默认；显式传入时也可在 `--init-from-result` 后运行；b09 可降低 accel residual，但不能单独解决 camera0 rotation/effective chain |
+| `--multi-imu-translation-prior-max-lever-m` | `1.0` | multi-IMU translation LS 的 lever 最大模长 | 只在显式 `--estimate-multi-imu-translation-prior` 时生效 |
+| `--multi-imu-translation-prior-camera-sigma-m` | `-1` | multi-IMU translation LS 中 cam0 translation 围绕当前初值的 Tikhonov 正则 sigma | `-1` 关闭；正数启用。若前面已经跑 reference-only camera translation prior，该中心与 multi-IMU LS 解几乎相同，b09 `0.02m` 对最终结果无增益 |
+| `--multi-imu-translation-prior-lever-sigma-m` | `-1` | multi-IMU translation LS 中非参考 lever 的 Tikhonov 正则 sigma | `-1` 关闭；正数启用。b09 chain-prior 上 `0.02/0.01m` 可把 camera0 平移差从 `79mm` 拉到 `55/36mm`，但仿真会把 camera 平移从 `0.70mm` 拉到 `10.06mm`，不能默认 |
+| `--multi-imu-translation-prior-accel-bias-sigma` | `-1` | multi-IMU translation LS 中 accel bias 的 Tikhonov 正则 sigma | `-1` 关闭；正数启用；通常与 lever sigma 成对做 ablation |
 
 IMU chain prior 搜索日志：
 
 | 日志字段 | 含义 | 判断方式 |
 |---|---|---|
-| `imu_chain_prior_offset_search=full-overlap` | 当前使用 Kalibr-style raw overlap 搜索 | `--corner-defaults` + 多 IMU topology 且未显式传 `--imu-chain-prior-max-offset-s` |
+| `imu_chain_prior_offset_search=full-overlap` | 当前使用 Kalibr-style overlap 搜索半径，并对 gyro norm 做去均值归一化相关 | `--corner-defaults` + 多 IMU topology 且未显式传 `--imu-chain-prior-max-offset-s` |
 | `imu_chain_prior_offset_search=bounded:S` | 当前使用固定秒数窗口 | 显式传了 `--imu-chain-prior-max-offset-s S`，或不走多 IMU corner-defaults |
 | `time_offset_search_radius_s` | 实际 correlation 搜索半径 | full-overlap 时约等于两路 IMU 原始时间轴重叠时长；bounded 时等于 `S` |
 | `max_search_lag_samples` | 搜索半径折算到目标 IMU sample lag | 约为 `round(time_offset_search_radius_s / sample_dt_s)` |
 | `discrete_shift_samples` | 互相关峰值对应的 lag | 如果等于 `±max_search_lag_samples`，说明有界窗口可能截断了真实 delay |
+| `peak_correlation` | 被接受 lag 的归一化相关系数 | 当前为 `[-1, 1]` 量纲；旧 raw-dot 日志不可直接比较 |
+| `time_offset_boundary_peak_rejected` | IMU-chain 最优峰是否落在搜索边界并被拒绝 | `1` 时实际回退到 `0` lag，同时打印 `rejected_*` 字段保留被拒绝峰 |
 
 时间变量语义：
 

@@ -17,8 +17,15 @@ struct ImuChainInitializerOptions {
   bool estimate_lever_arms = false;
   double min_lever_excitation = 1e-8;
   double max_lever_arm_norm_m = 1.0;
+  double max_lever_accel_rms_m_s2 = -1.0;
   bool refine_with_ceres = true;
   int refine_max_iterations = 50;
+  bool refine_with_accel = false;
+  double refine_gyro_weight = 1.0;
+  double refine_accel_weight = 1.0;
+  double refine_rotation_bound_rad = -1.0;
+  double refine_lever_prior_sigma_m = -1.0;
+  double refine_accel_bias_prior_sigma_m_s2 = -1.0;
 };
 
 struct ImuChainInitializerPairResult {
@@ -30,6 +37,10 @@ struct ImuChainInitializerPairResult {
   int max_search_lag_samples = 0;
   int matched_samples = 0;
   double peak_correlation = 0.0;
+  bool time_offset_boundary_peak_rejected = false;
+  int rejected_discrete_shift_samples = 0;
+  int rejected_matched_samples = 0;
+  double rejected_peak_correlation = 0.0;
   Mat3 R_i_b = Mat3::Identity();
   Vec3 r_b = Vec3::Zero();
   Vec3 r_i_b = Vec3::Zero();
@@ -42,6 +53,8 @@ struct ImuChainInitializerPairResult {
   double accel_rms_m_s2 = 0.0;
   int refine_iterations = 0;
   double refine_final_cost = 0.0;
+  bool accel_refined = false;
+  double accel_refine_rms_m_s2 = 0.0;
 };
 
 struct ImuChainInitializerResult {

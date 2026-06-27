@@ -62,6 +62,11 @@ void applyStageTimeShiftPriorSigmas(
     const std::vector<double> &time_shift_prior_sigmas,
     std::vector<CalibrationStage> *stages);
 
+void applyStageImuExtrinsicBounds(
+    const std::vector<double> &translation_bounds_m,
+    const std::vector<double> &rotation_bounds_rad,
+    std::vector<CalibrationStage> *stages);
+
 void applyStageSolverOptions(
     const std::vector<double> &initial_trust_region_radii,
     const std::vector<double> &max_trust_region_radii,

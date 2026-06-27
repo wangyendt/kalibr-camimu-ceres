@@ -84,6 +84,12 @@ TimeShiftPriorEstimate estimateCameraImuTimeShiftPrior(
   if (pose_observations.empty()) {
     throw std::runtime_error("pose observations are required for time shift estimation");
   }
+  if (!(options.min_overlap_fraction > 0.0 &&
+        options.min_overlap_fraction <= 1.0) ||
+      !(options.max_search_s > 0.0)) {
+    throw std::invalid_argument(
+        "time shift estimator options are out of range");
+  }
 
   const auto [first_pose_time, last_pose_time] = poseTimeSpan(pose_observations);
   const UniformBSpline pose_spline = makeSplineForTimes(
@@ -125,29 +131,92 @@ TimeShiftPriorEstimate estimateCameraImuTimeShiftPrior(
   }
 
   const int n = static_cast<int>(predicted_norms.size());
+  const int min_overlap =
+      std::max(10, static_cast<int>(
+                       std::ceil(options.min_overlap_fraction *
+                                 static_cast<double>(n))));
   int best_lag = 0;
+  int second_best_lag = 0;
   double best_correlation = -std::numeric_limits<double>::infinity();
-  for (int lag = -(n - 1); lag <= n - 1; ++lag) {
-    double correlation = 0.0;
+  double second_best_correlation = -std::numeric_limits<double>::infinity();
+  double zero_lag_correlation = std::numeric_limits<double>::quiet_NaN();
+  const int max_lag =
+      std::min(n - 1, static_cast<int>(std::round(
+                          options.max_search_s / meanImuDt(imu_samples))));
+  for (int lag = -max_lag; lag <= max_lag; ++lag) {
+    double sum_predicted = 0.0;
+    double sum_measured = 0.0;
+    double sum_predicted_sq = 0.0;
+    double sum_measured_sq = 0.0;
+    double sum_cross = 0.0;
+    int matched = 0;
     for (int i = 0; i < n; ++i) {
       const int j = i - lag;
       if (j >= 0 && j < n) {
-        correlation += predicted_norms[static_cast<std::size_t>(i)]
-                     * measured_norms[static_cast<std::size_t>(j)];
+        const double predicted = predicted_norms[static_cast<std::size_t>(i)];
+        const double measured = measured_norms[static_cast<std::size_t>(j)];
+        sum_predicted += predicted;
+        sum_measured += measured;
+        sum_predicted_sq += predicted * predicted;
+        sum_measured_sq += measured * measured;
+        sum_cross += predicted * measured;
+        ++matched;
       }
     }
-    if (correlation > best_correlation) {
+    if (matched < min_overlap) {
+      continue;
+    }
+    const double inv_count = 1.0 / static_cast<double>(matched);
+    const double covariance =
+        sum_cross - sum_predicted * sum_measured * inv_count;
+    const double predicted_variance =
+        sum_predicted_sq - sum_predicted * sum_predicted * inv_count;
+    const double measured_variance =
+        sum_measured_sq - sum_measured * sum_measured * inv_count;
+    if (predicted_variance <= 0.0 || measured_variance <= 0.0) {
+      continue;
+    }
+    const double correlation =
+        covariance / std::sqrt(predicted_variance * measured_variance);
+    if (lag == 0) {
+      zero_lag_correlation = correlation;
+    }
+    if (correlation > best_correlation ||
+        (correlation == best_correlation &&
+         std::abs(lag) < std::abs(best_lag))) {
+      second_best_correlation = best_correlation;
+      second_best_lag = best_lag;
       best_correlation = correlation;
       best_lag = lag;
+    } else if (correlation > second_best_correlation ||
+               (correlation == second_best_correlation &&
+                std::abs(lag) < std::abs(second_best_lag))) {
+      second_best_correlation = correlation;
+      second_best_lag = lag;
     }
+  }
+  if (!std::isfinite(best_correlation)) {
+    throw std::runtime_error(
+        "not enough overlapping samples for time shift norm correlation");
   }
 
   TimeShiftPriorEstimate estimate;
-  estimate.discrete_shift_samples = best_lag;
   estimate.sample_dt_s = meanImuDt(imu_samples);
-  estimate.shift_s = -static_cast<double>(best_lag) * estimate.sample_dt_s;
+  if (max_lag > 0 && std::abs(best_lag) == max_lag) {
+    estimate.boundary_peak_rejected = true;
+    estimate.discrete_shift_samples = 0;
+    estimate.shift_s = 0.0;
+  } else {
+    estimate.discrete_shift_samples = best_lag;
+    estimate.shift_s = static_cast<double>(best_lag) * estimate.sample_dt_s;
+  }
   estimate.num_samples = n;
   estimate.peak_correlation = best_correlation;
+  estimate.second_best_discrete_shift_samples = second_best_lag;
+  estimate.second_best_correlation =
+      std::isfinite(second_best_correlation) ? second_best_correlation : 0.0;
+  estimate.zero_lag_correlation =
+      std::isfinite(zero_lag_correlation) ? zero_lag_correlation : 0.0;
   estimate.predicted_norm_rms = rms(predicted_norms);
   estimate.measured_norm_rms = rms(measured_norms);
   return estimate;

@@ -42,4 +42,14 @@ estimateOrientationGravityAndGyroBiasPrior(
     double camera_time_shift_s,
     const OrientationGravityInitializerOptions& options);
 
+OrientationGravityInitializerResult
+estimateMultiImuOrientationGravityAndGyroBiasPrior(
+    const std::vector<PoseObservation>& pose_observations,
+    const std::vector<ImuObservationDataset>& imus,
+    const std::vector<ImuExtrinsicBlock>& initial_imu_extrinsics,
+    const std::vector<double>& imu_time_offsets_s,
+    const CameraExtrinsicBlock& initial_T_c_b,
+    double camera_time_shift_s,
+    const OrientationGravityInitializerOptions& options);
+
 }  // namespace ceres_cam_imu

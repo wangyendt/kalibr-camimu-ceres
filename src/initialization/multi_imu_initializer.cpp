@@ -29,16 +29,19 @@ void writeMat3RowMajor(const Mat3& matrix, double* jacobian) {
 class RelativeGyroRotationCost final
     : public ceres::SizedCostFunction<3, 3, 3> {
  public:
-  RelativeGyroRotationCost(Vec3 omega_reference, Vec3 omega_target)
+  RelativeGyroRotationCost(Vec3 omega_reference, Vec3 omega_target,
+                           const double weight = 1.0)
       : omega_reference_(std::move(omega_reference)),
-        omega_target_(std::move(omega_target)) {}
+        omega_target_(std::move(omega_target)),
+        weight_(weight) {}
 
   bool Evaluate(double const* const* parameters, double* residuals,
                 double** jacobians) const override {
     const Eigen::Map<const Vec3> r_i_b(parameters[0]);
     const Eigen::Map<const Vec3> bias(parameters[1]);
     const Mat3 R_i_b = rotationVectorToMatrix(r_i_b);
-    const Vec3 residual = R_i_b * omega_reference_ + bias - omega_target_;
+    const Vec3 residual =
+        weight_ * (R_i_b * omega_reference_ + bias - omega_target_);
     residuals[0] = residual.x();
     residuals[1] = residual.y();
     residuals[2] = residual.z();
@@ -48,11 +51,12 @@ class RelativeGyroRotationCost final
     }
     if (jacobians[0]) {
       const Mat3 J =
-          R_i_b * skew(omega_reference_) * leftJacobianSO3(r_i_b);
+          weight_ * R_i_b * skew(omega_reference_) *
+          leftJacobianSO3(r_i_b);
       writeMat3RowMajor(J, jacobians[0]);
     }
     if (jacobians[1]) {
-      writeMat3RowMajor(Mat3::Identity(), jacobians[1]);
+      writeMat3RowMajor(weight_ * Mat3::Identity(), jacobians[1]);
     }
     return true;
   }
@@ -60,6 +64,86 @@ class RelativeGyroRotationCost final
  private:
   Vec3 omega_reference_;
   Vec3 omega_target_;
+  double weight_;
+};
+
+class RelativeAccelLeverCost final
+    : public ceres::SizedCostFunction<3, 3, 3, 3> {
+ public:
+  RelativeAccelLeverCost(Vec3 omega_reference, Vec3 alpha_reference,
+                         Vec3 accel_reference, Vec3 accel_target,
+                         const double weight)
+      : omega_reference_(std::move(omega_reference)),
+        alpha_reference_(std::move(alpha_reference)),
+        accel_reference_(std::move(accel_reference)),
+        accel_target_(std::move(accel_target)),
+        weight_(weight) {}
+
+  bool Evaluate(double const* const* parameters, double* residuals,
+                double** jacobians) const override {
+    const Eigen::Map<const Vec3> r_i_b(parameters[0]);
+    const Eigen::Map<const Vec3> lever_b(parameters[1]);
+    const Eigen::Map<const Vec3> accel_bias_delta_b(parameters[2]);
+    const Mat3 R_i_b = rotationVectorToMatrix(r_i_b);
+    const Mat3 lever_jacobian =
+        skew(alpha_reference_) + skew(omega_reference_) *
+                                     skew(omega_reference_);
+    const Vec3 accel_delta_b =
+        R_i_b.transpose() * accel_target_ - accel_reference_;
+    const Vec3 residual =
+        weight_ * (lever_jacobian * lever_b + accel_bias_delta_b -
+                   accel_delta_b);
+    residuals[0] = residual.x();
+    residuals[1] = residual.y();
+    residuals[2] = residual.z();
+
+    if (!jacobians) {
+      return true;
+    }
+    if (jacobians[0]) {
+      const Mat3 J =
+          -weight_ *
+          rotationTransposeTimesVectorDerivative(r_i_b, accel_target_);
+      writeMat3RowMajor(J, jacobians[0]);
+    }
+    if (jacobians[1]) {
+      writeMat3RowMajor(weight_ * lever_jacobian, jacobians[1]);
+    }
+    if (jacobians[2]) {
+      writeMat3RowMajor(weight_ * Mat3::Identity(), jacobians[2]);
+    }
+    return true;
+  }
+
+ private:
+  Vec3 omega_reference_;
+  Vec3 alpha_reference_;
+  Vec3 accel_reference_;
+  Vec3 accel_target_;
+  double weight_;
+};
+
+class VectorPriorCost final : public ceres::SizedCostFunction<3, 3> {
+ public:
+  VectorPriorCost(Vec3 prior, const double sigma)
+      : prior_(std::move(prior)), inv_sigma_(1.0 / sigma) {}
+
+  bool Evaluate(double const* const* parameters, double* residuals,
+                double** jacobians) const override {
+    const Eigen::Map<const Vec3> value(parameters[0]);
+    const Vec3 residual = inv_sigma_ * (value - prior_);
+    residuals[0] = residual.x();
+    residuals[1] = residual.y();
+    residuals[2] = residual.z();
+    if (jacobians && jacobians[0]) {
+      writeMat3RowMajor(inv_sigma_ * Mat3::Identity(), jacobians[0]);
+    }
+    return true;
+  }
+
+ private:
+  Vec3 prior_;
+  double inv_sigma_;
 };
 
 double meanPositiveDt(const std::vector<ImuSample>& samples) {
@@ -180,6 +264,16 @@ struct CorrelationResult {
   int max_lag_samples = 0;
   int matched_samples = 0;
   double peak_correlation = 0.0;
+  bool boundary_peak_rejected = false;
+  int rejected_discrete_shift_samples = 0;
+  int rejected_matched_samples = 0;
+  double rejected_peak_correlation = 0.0;
+};
+
+struct LagCorrelationStats {
+  bool valid = false;
+  int matched_samples = 0;
+  double correlation = -std::numeric_limits<double>::infinity();
 };
 
 double rawOverlapDurationSeconds(const ImuObservationDataset& reference_imu,
@@ -210,6 +304,55 @@ int maxCorrelationLagSamples(const double search_radius_s, const double dt) {
   return std::max(0, static_cast<int>(std::round(search_radius_s / dt)));
 }
 
+LagCorrelationStats gyroNormCorrelationAtLag(
+    const ImuObservationDataset& reference_imu,
+    const ImuObservationDataset& target_imu, const int lag,
+    const double dt, const int stride, const int min_samples) {
+  const double offset_s = static_cast<double>(lag) * dt;
+  double sum_reference = 0.0;
+  double sum_target = 0.0;
+  double sum_reference_sq = 0.0;
+  double sum_target_sq = 0.0;
+  double sum_cross = 0.0;
+  int matched = 0;
+  for (std::size_t i = 0; i < target_imu.samples.size();
+       i += static_cast<std::size_t>(stride)) {
+    const ImuSample& target = target_imu.samples[i];
+    Vec3 reference_gyro = Vec3::Zero();
+    if (!interpolateGyro(reference_imu.samples,
+                         target.timestamp_s + offset_s, &reference_gyro)) {
+      continue;
+    }
+    const double reference_norm = reference_gyro.norm();
+    const double target_norm = target.gyro_rad_s.norm();
+    sum_reference += reference_norm;
+    sum_target += target_norm;
+    sum_reference_sq += reference_norm * reference_norm;
+    sum_target_sq += target_norm * target_norm;
+    sum_cross += reference_norm * target_norm;
+    ++matched;
+  }
+  LagCorrelationStats stats;
+  stats.matched_samples = matched;
+  if (matched < min_samples) {
+    return stats;
+  }
+  const double inv_count = 1.0 / static_cast<double>(matched);
+  const double covariance =
+      sum_cross - sum_reference * sum_target * inv_count;
+  const double reference_variance =
+      sum_reference_sq - sum_reference * sum_reference * inv_count;
+  const double target_variance =
+      sum_target_sq - sum_target * sum_target * inv_count;
+  if (reference_variance <= 0.0 || target_variance <= 0.0) {
+    return stats;
+  }
+  stats.valid = true;
+  stats.correlation =
+      covariance / std::sqrt(reference_variance * target_variance);
+  return stats;
+}
+
 CorrelationResult estimateTimeOffsetByGyroNorm(
     const ImuObservationDataset& reference_imu,
     const ImuObservationDataset& target_imu,
@@ -227,30 +370,40 @@ CorrelationResult estimateTimeOffsetByGyroNorm(
   best.max_lag_samples = max_lag_samples;
   best.peak_correlation = -std::numeric_limits<double>::infinity();
   for (int lag = -max_lag_samples; lag <= max_lag_samples; ++lag) {
-    const double offset_s = static_cast<double>(lag) * dt;
-    double correlation = 0.0;
-    int matched = 0;
-    for (std::size_t i = 0; i < target_imu.samples.size();
-         i += static_cast<std::size_t>(stride)) {
-      const ImuSample& target = target_imu.samples[i];
-      Vec3 reference_gyro = Vec3::Zero();
-      if (!interpolateGyro(reference_imu.samples,
-                           target.timestamp_s + offset_s, &reference_gyro)) {
-        continue;
-      }
-      correlation += reference_gyro.norm() * target.gyro_rad_s.norm();
-      ++matched;
+    const LagCorrelationStats stats = gyroNormCorrelationAtLag(
+        reference_imu, target_imu, lag, dt, stride, options.min_samples);
+    if (!stats.valid) {
+      continue;
     }
-    if (matched >= options.min_samples && correlation > best.peak_correlation) {
-      best.time_offset_s = offset_s;
+    if (stats.correlation > best.peak_correlation ||
+        (stats.correlation == best.peak_correlation &&
+         std::abs(lag) < std::abs(best.discrete_shift_samples))) {
+      best.time_offset_s = static_cast<double>(lag) * dt;
       best.discrete_shift_samples = lag;
-      best.matched_samples = matched;
-      best.peak_correlation = correlation;
+      best.matched_samples = stats.matched_samples;
+      best.peak_correlation = stats.correlation;
     }
   }
   if (!std::isfinite(best.peak_correlation)) {
     throw std::runtime_error(
         "not enough overlapping IMU samples for gyro-norm correlation");
+  }
+  if (max_lag_samples > 0 &&
+      std::abs(best.discrete_shift_samples) == max_lag_samples) {
+    const LagCorrelationStats zero_lag = gyroNormCorrelationAtLag(
+        reference_imu, target_imu, 0, dt, stride, options.min_samples);
+    if (!zero_lag.valid) {
+      throw std::runtime_error(
+          "not enough zero-lag IMU samples for boundary-peak rejection");
+    }
+    best.boundary_peak_rejected = true;
+    best.rejected_discrete_shift_samples = best.discrete_shift_samples;
+    best.rejected_matched_samples = best.matched_samples;
+    best.rejected_peak_correlation = best.peak_correlation;
+    best.time_offset_s = 0.0;
+    best.discrete_shift_samples = 0;
+    best.matched_samples = zero_lag.matched_samples;
+    best.peak_correlation = zero_lag.correlation;
   }
   return best;
 }
@@ -280,6 +433,43 @@ void collectGyroPairs(const ImuObservationDataset& reference_imu,
     reference_gyro->push_back(reference);
     target_gyro->push_back(target.gyro_rad_s);
   }
+}
+
+struct ImuPairSample {
+  Vec3 omega_reference = Vec3::Zero();
+  Vec3 omega_target = Vec3::Zero();
+  Vec3 alpha_reference = Vec3::Zero();
+  Vec3 accel_reference = Vec3::Zero();
+  Vec3 accel_target = Vec3::Zero();
+};
+
+std::vector<ImuPairSample> collectImuPairSamples(
+    const ImuObservationDataset& reference_imu,
+    const ImuObservationDataset& target_imu, const double time_offset_s,
+    const int stride) {
+  std::vector<ImuPairSample> samples;
+  const int safe_stride = std::max(1, stride);
+  samples.reserve(target_imu.samples.size() /
+                  static_cast<std::size_t>(safe_stride) + 1);
+  for (std::size_t i = 0; i < target_imu.samples.size();
+       i += static_cast<std::size_t>(safe_stride)) {
+    const ImuSample& target = target_imu.samples[i];
+    ImuSample reference;
+    Vec3 alpha_reference = Vec3::Zero();
+    if (!interpolateImuSample(reference_imu.samples,
+                              target.timestamp_s + time_offset_s,
+                              &reference, &alpha_reference)) {
+      continue;
+    }
+    ImuPairSample pair;
+    pair.omega_reference = reference.gyro_rad_s;
+    pair.omega_target = target.gyro_rad_s;
+    pair.alpha_reference = alpha_reference;
+    pair.accel_reference = reference.accel_m_s2;
+    pair.accel_target = target.accel_m_s2;
+    samples.push_back(pair);
+  }
+  return samples;
 }
 
 Mat3 wahbaRotationReferenceToTarget(const std::vector<Vec3>& reference_gyro,
@@ -329,6 +519,27 @@ double gyroRms(const std::vector<Vec3>& reference_gyro,
     sum_sq += (R_i_b * reference_gyro[i] + bias - target_gyro[i]).squaredNorm();
   }
   return std::sqrt(sum_sq / static_cast<double>(reference_gyro.size()));
+}
+
+double accelLeverRms(const std::vector<ImuPairSample>& samples,
+                     const Mat3& R_i_b, const Vec3& r_b,
+                     const Vec3& accel_bias_delta_body) {
+  if (samples.empty()) {
+    return 0.0;
+  }
+  double sum_sq = 0.0;
+  const Mat3 R_b_i = R_i_b.transpose();
+  for (const ImuPairSample& sample : samples) {
+    const Mat3 lever_jacobian =
+        skew(sample.alpha_reference) + skew(sample.omega_reference) *
+                                           skew(sample.omega_reference);
+    const Vec3 accel_delta =
+        R_b_i * sample.accel_target - sample.accel_reference;
+    const Vec3 residual =
+        lever_jacobian * r_b + accel_bias_delta_body - accel_delta;
+    sum_sq += residual.squaredNorm();
+  }
+  return std::sqrt(sum_sq / static_cast<double>(samples.size()));
 }
 
 struct LeverArmEstimate {
@@ -419,6 +630,10 @@ LeverArmEstimate estimateLeverArmFromAccelDifference(
     sum_sq += residual.squaredNorm();
   }
   result.rms_m_s2 = std::sqrt(sum_sq / static_cast<double>(sample_count));
+  if (options.max_lever_accel_rms_m_s2 >= 0.0 &&
+      result.rms_m_s2 > options.max_lever_accel_rms_m_s2) {
+    return result;
+  }
   result.estimated = true;
   return result;
 }
@@ -456,6 +671,88 @@ ceres::Solver::Summary refineRotationAndBias(
   ceres::Solve(solver_options, &problem, &summary);
   *R_i_b = rotationVectorToMatrix(r_i_b);
   *bias = mutable_bias;
+  return summary;
+}
+
+ceres::Solver::Summary refineRotationLeverAndBiasWithAccel(
+    const std::vector<ImuPairSample>& samples,
+    const ImuChainInitializerOptions& options, Mat3* R_i_b, Vec3* gyro_bias,
+    Vec3* r_b, Vec3* accel_bias_delta_body, double* accel_rms_m_s2) {
+  if (!R_i_b || !gyro_bias || !r_b || !accel_bias_delta_body ||
+      !accel_rms_m_s2) {
+    throw std::invalid_argument("accel refinement outputs must be non-null");
+  }
+  Vec3 r_i_b = rotationMatrixToVector(*R_i_b);
+  const Vec3 initial_r_i_b = r_i_b;
+  Vec3 mutable_gyro_bias = *gyro_bias;
+  Vec3 mutable_r_b = *r_b;
+  Vec3 mutable_accel_bias = *accel_bias_delta_body;
+
+  ceres::Problem problem;
+  problem.AddParameterBlock(r_i_b.data(), 3);
+  problem.AddParameterBlock(mutable_gyro_bias.data(), 3);
+  problem.AddParameterBlock(mutable_r_b.data(), 3);
+  problem.AddParameterBlock(mutable_accel_bias.data(), 3);
+  if (options.refine_rotation_bound_rad > 0.0) {
+    for (int i = 0; i < 3; ++i) {
+      problem.SetParameterLowerBound(
+          r_i_b.data(), i, initial_r_i_b(i) - options.refine_rotation_bound_rad);
+      problem.SetParameterUpperBound(
+          r_i_b.data(), i, initial_r_i_b(i) + options.refine_rotation_bound_rad);
+    }
+  }
+  for (int i = 0; i < 3; ++i) {
+    problem.SetParameterLowerBound(mutable_r_b.data(), i,
+                                   -options.max_lever_arm_norm_m);
+    problem.SetParameterUpperBound(mutable_r_b.data(), i,
+                                   options.max_lever_arm_norm_m);
+  }
+
+  for (const ImuPairSample& sample : samples) {
+    problem.AddResidualBlock(
+        new RelativeGyroRotationCost(sample.omega_reference,
+                                     sample.omega_target,
+                                     options.refine_gyro_weight),
+        nullptr, r_i_b.data(), mutable_gyro_bias.data());
+    problem.AddResidualBlock(
+        new RelativeAccelLeverCost(sample.omega_reference,
+                                   sample.alpha_reference,
+                                   sample.accel_reference,
+                                   sample.accel_target,
+                                   options.refine_accel_weight),
+        nullptr, r_i_b.data(), mutable_r_b.data(),
+        mutable_accel_bias.data());
+  }
+  if (options.refine_lever_prior_sigma_m > 0.0) {
+    problem.AddResidualBlock(
+        new VectorPriorCost(*r_b, options.refine_lever_prior_sigma_m),
+        nullptr, mutable_r_b.data());
+  }
+  if (options.refine_accel_bias_prior_sigma_m_s2 > 0.0) {
+    problem.AddResidualBlock(
+        new VectorPriorCost(*accel_bias_delta_body,
+                            options.refine_accel_bias_prior_sigma_m_s2),
+        nullptr, mutable_accel_bias.data());
+  }
+
+  ceres::Solver::Options solver_options;
+  solver_options.max_num_iterations = std::max(0, options.refine_max_iterations);
+  solver_options.linear_solver_type = ceres::DENSE_QR;
+  solver_options.num_threads = 2;
+  solver_options.minimizer_progress_to_stdout = false;
+  solver_options.logging_type = ceres::SILENT;
+  solver_options.parameter_tolerance = 1e-4;
+  solver_options.function_tolerance = 1e-12;
+  solver_options.gradient_tolerance = 1e-12;
+
+  ceres::Solver::Summary summary;
+  ceres::Solve(solver_options, &problem, &summary);
+  *R_i_b = rotationVectorToMatrix(r_i_b);
+  *gyro_bias = mutable_gyro_bias;
+  *r_b = mutable_r_b;
+  *accel_bias_delta_body = mutable_accel_bias;
+  *accel_rms_m_s2 =
+      accelLeverRms(samples, *R_i_b, *r_b, *accel_bias_delta_body);
   return summary;
 }
 
@@ -523,6 +820,33 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
     lever = estimateLeverArmFromAccelDifference(
         reference_imu, target_imu, correlation.time_offset_s, R_i_b, options);
   }
+  ceres::Solver::Summary accel_refine_summary;
+  bool accel_refined = false;
+  double accel_refine_rms_m_s2 = 0.0;
+  if (options.refine_with_accel && options.refine_max_iterations > 0) {
+    std::vector<ImuPairSample> pair_samples = collectImuPairSamples(
+        reference_imu, target_imu, correlation.time_offset_s,
+        options.sample_stride);
+    if (pair_samples.size() < static_cast<std::size_t>(options.min_samples)) {
+      throw std::runtime_error(
+          "not enough overlapping samples for IMU chain accel refinement");
+    }
+    Vec3 refined_r_b = lever.estimated ? lever.r_b : Vec3::Zero();
+    Vec3 refined_accel_bias =
+        lever.estimated ? lever.bias_delta_body : Vec3::Zero();
+    accel_refine_summary = refineRotationLeverAndBiasWithAccel(
+        pair_samples, options, &R_i_b, &bias, &refined_r_b,
+        &refined_accel_bias, &accel_refine_rms_m_s2);
+    accel_refined = true;
+    lever.r_b = refined_r_b;
+    lever.bias_delta_body = refined_accel_bias;
+    lever.rms_m_s2 = accel_refine_rms_m_s2;
+    lever.estimated =
+        options.estimate_lever_arms &&
+        refined_r_b.norm() <= options.max_lever_arm_norm_m &&
+        (options.max_lever_accel_rms_m_s2 < 0.0 ||
+         accel_refine_rms_m_s2 <= options.max_lever_accel_rms_m_s2);
+  }
 
   ImuChainInitializerPairResult result;
   result.imu_index = imu_index;
@@ -533,8 +857,13 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
   result.max_search_lag_samples = correlation.max_lag_samples;
   result.matched_samples = static_cast<int>(reference_gyro.size());
   result.peak_correlation = correlation.peak_correlation;
+  result.time_offset_boundary_peak_rejected = correlation.boundary_peak_rejected;
+  result.rejected_discrete_shift_samples =
+      correlation.rejected_discrete_shift_samples;
+  result.rejected_matched_samples = correlation.rejected_matched_samples;
+  result.rejected_peak_correlation = correlation.rejected_peak_correlation;
   result.R_i_b = R_i_b;
-  result.r_b = lever.r_b;
+  result.r_b = lever.estimated ? lever.r_b : Vec3::Zero();
   result.r_i_b = rotationMatrixToVector(R_i_b);
   result.gyro_bias_rad_s = bias;
   result.singular_values = singular_values;
@@ -543,8 +872,15 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
   result.accel_bias_delta_body_m_s2 = lever.bias_delta_body;
   result.lever_singular_values = lever.singular_values;
   result.accel_rms_m_s2 = lever.rms_m_s2;
-  result.refine_iterations = static_cast<int>(refine_summary.iterations.size());
-  result.refine_final_cost = refine_summary.final_cost;
+  result.refine_iterations = accel_refined
+                                 ? static_cast<int>(
+                                       accel_refine_summary.iterations.size())
+                                 : static_cast<int>(
+                                       refine_summary.iterations.size());
+  result.refine_final_cost = accel_refined ? accel_refine_summary.final_cost
+                                           : refine_summary.final_cost;
+  result.accel_refined = accel_refined;
+  result.accel_refine_rms_m_s2 = accel_refine_rms_m_s2;
   return result;
 }
 

@@ -14,6 +14,11 @@ struct TimeShiftPriorOptions {
   double pose_knots_per_second = 100.0;
   // Matches the smoothness lambda passed to Kalibr's initPoseSplineSparse().
   double pose_fit_regularization = 1e-4;
+  // Prevent normalized correlation from selecting tiny-overlap edge lags.
+  double min_overlap_fraction = 0.5;
+  // Camera/IMU time shift is expected to be small; keep IMU/IMU full-overlap
+  // search separate from this camera prior.
+  double max_search_s = 0.05;
 };
 
 struct TimeShiftPriorEstimate {
@@ -22,8 +27,12 @@ struct TimeShiftPriorEstimate {
   double sample_dt_s = 0.0;
   int num_samples = 0;
   double peak_correlation = 0.0;
+  int second_best_discrete_shift_samples = 0;
+  double second_best_correlation = 0.0;
+  double zero_lag_correlation = 0.0;
   double predicted_norm_rms = 0.0;
   double measured_norm_rms = 0.0;
+  bool boundary_peak_rejected = false;
 };
 
 TimeShiftPriorEstimate estimateCameraImuTimeShiftPrior(

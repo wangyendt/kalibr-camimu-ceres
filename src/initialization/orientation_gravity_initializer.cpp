@@ -315,4 +315,204 @@ estimateOrientationGravityAndGyroBiasPrior(
   return result;
 }
 
+OrientationGravityInitializerResult
+estimateMultiImuOrientationGravityAndGyroBiasPrior(
+    const std::vector<PoseObservation>& pose_observations,
+    const std::vector<ImuObservationDataset>& imus,
+    const std::vector<ImuExtrinsicBlock>& initial_imu_extrinsics,
+    const std::vector<double>& imu_time_offsets_s,
+    const CameraExtrinsicBlock& initial_T_c_b,
+    const double camera_time_shift_s,
+    const OrientationGravityInitializerOptions& options) {
+  if (options.spline_order != SplineSegmentMeta6::kOrder) {
+    throw std::runtime_error(
+        "multi-IMU orientation/gravity initializer currently requires order-6 splines");
+  }
+  if (pose_observations.empty()) {
+    throw std::runtime_error(
+        "pose observations are required for multi-IMU orientation/gravity initialization");
+  }
+  if (imus.empty()) {
+    throw std::runtime_error(
+        "IMU samples are required for multi-IMU orientation/gravity initialization");
+  }
+  if (initial_imu_extrinsics.size() < imus.size()) {
+    throw std::runtime_error(
+        "multi-IMU orientation/gravity initialization requires IMU chain rotations");
+  }
+
+  const auto [first_pose_time, last_pose_time] =
+      shiftedPoseTimeSpan(pose_observations, camera_time_shift_s);
+  const UniformBSpline camera_pose_spline = makeSplineForTimes(
+      6, options.spline_order, first_pose_time, last_pose_time,
+      options.pose_knots_per_second, 0.0);
+
+  CameraExtrinsicBlock identity_T_c_b;
+  identity_T_c_b.values = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  PoseSplineFitOptions fit_options;
+  fit_options.motion_regularization = options.pose_fit_regularization;
+  fit_options.motion_regularization_order = 2;
+  fit_options.add_boundary_anchors = options.pose_fit_boundary_anchors;
+  fit_options.unwrap_rotation_vectors = true;
+
+  std::vector<PoseControlBlock> camera_pose_controls;
+  const PoseSplineFitSummary fit_summary = fitPoseSplineControlsFromCameraPoses(
+      pose_observations, identity_T_c_b, camera_time_shift_s,
+      camera_pose_spline, fit_options, &camera_pose_controls);
+  if (fit_summary.used_observations == 0) {
+    throw std::runtime_error(
+        "no pose observations overlap the multi-IMU orientation initializer spline");
+  }
+
+  struct ImuAngularData {
+    std::vector<Vec3> omega_camera;
+    std::vector<Vec3> omega_body;
+    Vec3 mean_camera = Vec3::Zero();
+    Vec3 mean_body = Vec3::Zero();
+  };
+
+  std::vector<ImuAngularData> angular_data(imus.size());
+  int total_samples = 0;
+  for (std::size_t imu_index = 0; imu_index < imus.size(); ++imu_index) {
+    const ImuExtrinsicBlock& extrinsic = initial_imu_extrinsics[imu_index];
+    const Vec3 r_i_b(extrinsic.values[3], extrinsic.values[4],
+                     extrinsic.values[5]);
+    const Mat3 R_i_b = rotationVectorToMatrix(r_i_b);
+    const Mat3 R_b_i = R_i_b.transpose();
+    const double imu_time_offset_s =
+        imu_index < imu_time_offsets_s.size() ? imu_time_offsets_s[imu_index]
+                                              : 0.0;
+    ImuAngularData& data = angular_data[imu_index];
+    for (const ImuSample& sample : imus[imu_index].samples) {
+      const double t = sample.timestamp_s + imu_time_offset_s;
+      if (t <= camera_pose_spline.tMin() || t >= camera_pose_spline.tMax()) {
+        continue;
+      }
+      data.omega_camera.push_back(
+          angularVelocityAt(camera_pose_spline, camera_pose_controls, t));
+      data.omega_body.push_back(R_b_i * sample.gyro_rad_s);
+    }
+    for (const Vec3& value : data.omega_camera) {
+      data.mean_camera += value;
+    }
+    for (const Vec3& value : data.omega_body) {
+      data.mean_body += value;
+    }
+    if (!data.omega_camera.empty()) {
+      const double inv_n =
+          1.0 / static_cast<double>(data.omega_camera.size());
+      data.mean_camera *= inv_n;
+      data.mean_body *= inv_n;
+      total_samples += static_cast<int>(data.omega_camera.size());
+    }
+  }
+
+  if (total_samples < options.min_samples) {
+    throw std::runtime_error(
+        "not enough overlapping samples for multi-IMU orientation/gravity initialization");
+  }
+
+  Mat3 correlation = Mat3::Zero();
+  for (const ImuAngularData& data : angular_data) {
+    for (std::size_t i = 0; i < data.omega_camera.size(); ++i) {
+      correlation += (data.omega_camera[i] - data.mean_camera) *
+                     (data.omega_body[i] - data.mean_body).transpose();
+    }
+  }
+
+  Eigen::JacobiSVD<Mat3> svd(
+      correlation, Eigen::ComputeFullU | Eigen::ComputeFullV);
+  Mat3 fix = Mat3::Identity();
+  if ((svd.matrixV() * svd.matrixU().transpose()).determinant() < 0.0) {
+    fix(2, 2) = -1.0;
+  }
+  const Vec3 singular_values = svd.singularValues();
+  if (singular_values.sum() <= options.min_rotation_excitation) {
+    throw std::runtime_error(
+        "multi-IMU gyro motion is too weak for orientation prior initialization");
+  }
+  const Mat3 R_b_c = svd.matrixV() * fix * svd.matrixU().transpose();
+  const Mat3 R_c_b = R_b_c.transpose();
+
+  Vec3 gyro_bias_ref = Vec3::Zero();
+  double gyro_sum_sq = 0.0;
+  int gyro_samples = 0;
+  for (std::size_t imu_index = 0; imu_index < angular_data.size();
+       ++imu_index) {
+    const ImuAngularData& data = angular_data[imu_index];
+    if (data.omega_camera.empty()) {
+      continue;
+    }
+    const Vec3 bias_body = data.mean_body - R_b_c * data.mean_camera;
+    if (imu_index == 0) {
+      gyro_bias_ref = bias_body;
+    }
+    for (std::size_t i = 0; i < data.omega_camera.size(); ++i) {
+      gyro_sum_sq +=
+          (R_b_c * data.omega_camera[i] + bias_body - data.omega_body[i])
+              .squaredNorm();
+      ++gyro_samples;
+    }
+  }
+
+  Vec3 gravity_sum = Vec3::Zero();
+  int gravity_samples = 0;
+  for (std::size_t imu_index = 0; imu_index < imus.size(); ++imu_index) {
+    const ImuExtrinsicBlock& extrinsic = initial_imu_extrinsics[imu_index];
+    const Vec3 r_i_b(extrinsic.values[3], extrinsic.values[4],
+                     extrinsic.values[5]);
+    const Mat3 R_i_b = rotationVectorToMatrix(r_i_b);
+    const Mat3 R_b_i = R_i_b.transpose();
+    const Mat3 R_c_i = R_c_b * R_b_i;
+    const double imu_time_offset_s =
+        imu_index < imu_time_offsets_s.size() ? imu_time_offsets_s[imu_index]
+                                              : 0.0;
+    for (const ImuSample& sample : imus[imu_index].samples) {
+      const double t = sample.timestamp_s + imu_time_offset_s;
+      if (t <= camera_pose_spline.tMin() || t >= camera_pose_spline.tMax()) {
+        continue;
+      }
+      const Vec6 pose = poseCurveAt(camera_pose_spline, camera_pose_controls,
+                                    t, 0);
+      const Mat3 R_w_c = rotationVectorToMatrix(pose.tail<3>());
+      gravity_sum += R_w_c * R_c_i * (-sample.accel_m_s2);
+      ++gravity_samples;
+    }
+  }
+  if (gravity_samples == 0) {
+    throw std::runtime_error(
+        "no accelerometer samples overlap the multi-IMU orientation initializer spline");
+  }
+  const Vec3 gravity_mean =
+      gravity_sum / static_cast<double>(gravity_samples);
+  if (gravity_mean.norm() <= 0.0) {
+    throw std::runtime_error(
+        "multi-IMU gravity prior initialization produced zero norm");
+  }
+
+  OrientationGravityInitializerResult result;
+  result.T_c_b = initial_T_c_b;
+  const Vec3 r_c_b = rotationMatrixToVector(R_c_b);
+  for (int i = 0; i < 3; ++i) {
+    result.T_c_b.values[static_cast<std::size_t>(3 + i)] = r_c_b(i);
+  }
+  result.gyro_bias_rad_s = gyro_bias_ref;
+  result.gravity_mean_norm_m_s2 = gravity_mean.norm();
+  result.gravity_m_s2 =
+      gravity_mean / gravity_mean.norm() * options.gravity_norm_m_s2;
+  result.singular_values = singular_values;
+  result.num_samples = total_samples;
+  result.gyro_rms_rad_s =
+      gyro_samples > 0
+          ? std::sqrt(gyro_sum_sq / static_cast<double>(gyro_samples))
+          : 0.0;
+  result.pose_fit_rms_translation_m = fit_summary.rms_translation_m;
+  result.pose_fit_rms_rotation_rad = fit_summary.rms_rotation_rad;
+  result.pose_fit_boundary_anchor_observations =
+      fit_summary.boundary_anchor_observations;
+  result.refine_iterations = 0;
+  result.refine_final_cost = 0.0;
+  return result;
+}
+
 }  // namespace ceres_cam_imu
