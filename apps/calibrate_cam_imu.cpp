@@ -128,6 +128,39 @@ std::string robustLossTypeName(const ceres_cam_imu::RobustLossType type) {
   return "unknown";
 }
 
+enum class CameraTimeShiftInitializationSource {
+  kDefaultZero,
+  kCeresResult,
+  kKalibrResult,
+  kCamchain,
+  kEstimator,
+  kExplicit,
+};
+
+const char *cameraTimeShiftInitializationSourceName(
+    const CameraTimeShiftInitializationSource source) {
+  switch (source) {
+  case CameraTimeShiftInitializationSource::kDefaultZero:
+    return "default-zero";
+  case CameraTimeShiftInitializationSource::kCeresResult:
+    return "ceres-result";
+  case CameraTimeShiftInitializationSource::kKalibrResult:
+    return "kalibr-result";
+  case CameraTimeShiftInitializationSource::kCamchain:
+    return "camchain";
+  case CameraTimeShiftInitializationSource::kEstimator:
+    return "gyro-correlation-estimator";
+  case CameraTimeShiftInitializationSource::kExplicit:
+    return "explicit";
+  }
+  return "unknown";
+}
+
+bool hasValidCameraTimeShiftInitialization(
+    const CameraTimeShiftInitializationSource source) {
+  return source != CameraTimeShiftInitializationSource::kDefaultZero;
+}
+
 enum class CornerDefaultTopology {
   kOneCameraOneImu,
   kOneCameraMultiImu,
@@ -633,11 +666,17 @@ void usage() {
       << "  --estimate-time-shift-prior uses the Kalibr-style gyro-norm "
          "cross-correlation initializer: time-shift pose kps defaults to 100 "
          "time-shift fit lambda defaults to 1e-4, and "
-         "--time-shift-max-search-s defaults to 0.05.\n";
+         "--time-shift-max-search-s defaults to 0.2. An accepted estimate "
+         "overrides result/Kalibr/camchain time shifts; a boundary-rejected "
+         "estimate keeps an existing valid source instead of replacing it "
+         "with zero. Without a valid fallback, combining a rejected estimate "
+         "with a positive time-shift prior or --fix-time-shift is an error.\n";
   std::cout
       << "  --initial-time-shift-s sets an explicit cold-start camera-to-IMU "
          "time shift before orientation/gravity initialization; it overrides "
-         "the gyro-norm initializer when both are provided.\n";
+         "every other source, including the gyro-norm initializer. Source "
+         "precedence is result < Kalibr < requested camchain < accepted "
+         "estimator < explicit.\n";
   std::cout
       << "  --init-from-camchain reads T_cam_imu and timeshift_cam_imu from "
          "the --cam YAML when those keys are present. If a later camera has "
@@ -2227,6 +2266,8 @@ int main(int argc, char **argv) {
       cameras.size());
   std::vector<double> initial_camera_time_shifts(cameras.size(),
                                                  options.initial_camera_time_shift_s);
+  CameraTimeShiftInitializationSource initial_camera_time_shift_source =
+      CameraTimeShiftInitializationSource::kDefaultZero;
   std::vector<ceres_cam_imu::Mat4> initial_camera_chain_T_ci_c0(
       cameras.size(), ceres_cam_imu::Mat4::Identity());
   bool have_initial_camera_blocks = false;
@@ -2237,6 +2278,8 @@ int main(int argc, char **argv) {
   if (init_from_result) {
     options.initial_camera_time_shift_s = init_result.time_shift_s;
     initial_camera_time_shifts[0] = init_result.time_shift_s;
+    initial_camera_time_shift_source =
+        CameraTimeShiftInitializationSource::kCeresResult;
     const ceres_cam_imu::Vec6 T_c_b =
         ceres_cam_imu::matrixToPose6(init_result.T_c_b);
     for (int i = 0; i < 6; ++i) {
@@ -2298,6 +2341,8 @@ int main(int argc, char **argv) {
     }
     initial_T_c_b = initial_camera_extrinsics[0];
     options.initial_camera_time_shift_s = initial_camera_time_shifts[0];
+    initial_camera_time_shift_source =
+        CameraTimeShiftInitializationSource::kKalibrResult;
     have_initial_camera_blocks = true;
     if (multi_camera) {
       initial_camera_chain_T_ci_c0 =
@@ -2392,6 +2437,10 @@ int main(int argc, char **argv) {
       initial_T_c_b = matrixToExtrinsicBlock(camera_T_c_b[0]);
       initial_camera_extrinsics[0] = initial_T_c_b;
       options.initial_camera_time_shift_s = initial_camera_time_shifts[0];
+      if (camchain_priors[0].has_timeshift_cam_imu) {
+        initial_camera_time_shift_source =
+            CameraTimeShiftInitializationSource::kCamchain;
+      }
     }
     if (have_complete_camera_chain) {
       for (std::size_t camera_index = 0; camera_index < cameras.size();
@@ -2454,6 +2503,7 @@ int main(int argc, char **argv) {
     }
   }
 
+  bool time_shift_estimator_boundary_peak_rejected = false;
   if (hasFlag(argc, argv, "--estimate-time-shift-prior")) {
     if (poses.empty()) {
       std::cerr
@@ -2473,9 +2523,48 @@ int main(int argc, char **argv) {
     const ceres_cam_imu::TimeShiftPriorEstimate time_shift =
         ceres_cam_imu::estimateCameraImuTimeShiftPrior(
             poses, imu_samples, initial_T_c_b, time_shift_options);
-    options.initial_camera_time_shift_s = time_shift.shift_s;
+    const CameraTimeShiftInitializationSource source_before_estimator =
+        initial_camera_time_shift_source;
+    const ceres_cam_imu::TimeShiftInitializationResolution resolution =
+        ceres_cam_imu::resolveCameraImuTimeShiftInitialization(
+            time_shift, options.initial_camera_time_shift_s,
+            hasValidCameraTimeShiftInitialization(source_before_estimator));
+    time_shift_estimator_boundary_peak_rejected =
+        time_shift.boundary_peak_rejected;
+    options.initial_camera_time_shift_s = resolution.shift_s;
     if (!initial_camera_time_shifts.empty()) {
-      initial_camera_time_shifts[0] = time_shift.shift_s;
+      initial_camera_time_shifts[0] = resolution.shift_s;
+    }
+    if (resolution.used_estimate) {
+      initial_camera_time_shift_source =
+          CameraTimeShiftInitializationSource::kEstimator;
+      if (hasValidCameraTimeShiftInitialization(source_before_estimator) &&
+          !have_explicit_initial_time_shift) {
+        printYellowWarning(
+            std::string("accepted gyro-correlation time shift overrides ") +
+            cameraTimeShiftInitializationSourceName(source_before_estimator) +
+            "; --initial-time-shift-s would still take final precedence");
+      }
+      double tightest_positive_prior_sigma_s =
+          options.add_time_shift_prior
+              ? options.time_shift_prior_sigma_s
+              : std::numeric_limits<double>::infinity();
+      for (const double sigma : stage_time_shift_prior_sigmas) {
+        if (sigma > 0.0) {
+          tightest_positive_prior_sigma_s =
+              std::min(tightest_positive_prior_sigma_s, sigma);
+        }
+      }
+      if (!have_explicit_initial_time_shift &&
+          tightest_positive_prior_sigma_s < time_shift.sample_dt_s) {
+        printYellowWarning(
+            "time-shift prior sigma " +
+            std::to_string(tightest_positive_prior_sigma_s) +
+            " s is tighter than the gyro-correlation sample period " +
+            std::to_string(time_shift.sample_dt_s) +
+            " s; the initializer has no sub-sample refinement, so this may "
+            "over-constrain its quantization error");
+      }
     }
     const std::streamsize old_precision = std::cout.precision();
     std::cout << std::setprecision(17)
@@ -2494,6 +2583,15 @@ int main(int argc, char **argv) {
               << " zero_lag_correlation=" << time_shift.zero_lag_correlation
               << " boundary_peak_rejected="
               << time_shift.boundary_peak_rejected
+              << " post_estimator_shift_s=" << resolution.shift_s
+              << " post_estimator_source="
+              << cameraTimeShiftInitializationSourceName(
+                     initial_camera_time_shift_source)
+              << " estimator_action="
+              << (resolution.used_estimate
+                      ? "used-estimate"
+                      : (resolution.kept_fallback ? "kept-fallback"
+                                                  : "rejected-no-fallback"))
               << " predicted_norm_rms=" << time_shift.predicted_norm_rms
               << " measured_norm_rms=" << time_shift.measured_norm_rms;
     if (have_kalibr_result) {
@@ -2508,11 +2606,55 @@ int main(int argc, char **argv) {
     if (!initial_camera_time_shifts.empty()) {
       initial_camera_time_shifts[0] = explicit_initial_time_shift_s;
     }
+    initial_camera_time_shift_source =
+        CameraTimeShiftInitializationSource::kExplicit;
     const std::streamsize old_precision = std::cout.precision();
     std::cout << std::setprecision(17)
               << "using explicit initial time shift: shift_s="
               << explicit_initial_time_shift_s << "\n";
     std::cout.precision(old_precision);
+  }
+
+  {
+    const std::streamsize old_precision = std::cout.precision();
+    std::cout << std::setprecision(17)
+              << "camera time-shift initialization: shift_s="
+              << options.initial_camera_time_shift_s << " source="
+              << cameraTimeShiftInitializationSourceName(
+                     initial_camera_time_shift_source)
+              << "\n";
+    std::cout.precision(old_precision);
+  }
+
+  const bool has_positive_stage_time_shift_prior =
+      std::any_of(stage_time_shift_prior_sigmas.begin(),
+                  stage_time_shift_prior_sigmas.end(),
+                  [](const double sigma) { return sigma > 0.0; });
+  if (time_shift_estimator_boundary_peak_rejected) {
+    if (hasValidCameraTimeShiftInitialization(
+            initial_camera_time_shift_source)) {
+      printYellowWarning(
+          std::string("gyro-correlation time-shift peak hit the search ") +
+          "boundary; retaining " +
+          cameraTimeShiftInitializationSourceName(
+              initial_camera_time_shift_source) +
+          " initialization at " +
+          std::to_string(options.initial_camera_time_shift_s) + " s");
+    } else if (options.fix_time_shift || options.add_time_shift_prior ||
+               has_positive_stage_time_shift_prior) {
+      std::cerr
+          << "gyro-correlation time-shift peak hit the search boundary, so "
+             "the returned zero is not a valid estimate; refusing to anchor "
+             "it with --fix-time-shift or a positive time-shift prior. "
+             "Provide --initial-time-shift-s, a valid result/Kalibr/camchain "
+             "time shift, or remove the anchoring option.\n";
+      return 2;
+    } else {
+      printYellowWarning(
+          "gyro-correlation time-shift peak hit the search boundary and no "
+          "valid fallback exists; continuing with an ordinary zero initial "
+          "value and no time-shift anchor");
+    }
   }
 
   ceres_cam_imu::Vec3 initial_reference_accel_bias =
@@ -2722,10 +2864,17 @@ int main(int argc, char **argv) {
   if (options.add_time_shift_prior) {
     std::cout << "time shift prior residual: prior_s="
               << options.time_shift_prior_s
-              << " sigma_s=" << options.time_shift_prior_sigma_s << "\n";
+              << " sigma_s=" << options.time_shift_prior_sigma_s
+              << " source="
+              << cameraTimeShiftInitializationSourceName(
+                     initial_camera_time_shift_source)
+              << "\n";
   } else if (!stage_time_shift_prior_sigmas.empty()) {
     std::cout << "stage time shift prior center: prior_s="
-              << options.time_shift_prior_s << "\n";
+              << options.time_shift_prior_s << " source="
+              << cameraTimeShiftInitializationSourceName(
+                     initial_camera_time_shift_source)
+              << "\n";
   }
   if (corner_defaults) {
     std::ostringstream imu_chain_prior_offset_search;

@@ -16,9 +16,10 @@ struct TimeShiftPriorOptions {
   double pose_fit_regularization = 1e-4;
   // Prevent normalized correlation from selecting tiny-overlap edge lags.
   double min_overlap_fraction = 0.5;
-  // Camera/IMU time shift is expected to be small; keep IMU/IMU full-overlap
-  // search separate from this camera prior.
-  double max_search_s = 0.05;
+  // Keep the camera/IMU search bounded, but allow the roughly 0.09--0.12 s
+  // offsets seen in the production data. The boundary gate below still turns
+  // a clipped optimum into "unknown" instead of accepting it as an estimate.
+  double max_search_s = 0.2;
 };
 
 // Sign convention, once, for every field below.
@@ -65,6 +66,20 @@ struct TimeShiftPriorEstimate {
   double measured_norm_rms = 0.0;
   bool boundary_peak_rejected = false;
 };
+
+// Resolves a correlation estimate against an already available initialization.
+// A boundary peak means that the estimator does not know the shift: it must not
+// replace a valid fallback with the estimator's sentinel zero.
+struct TimeShiftInitializationResolution {
+  double shift_s = 0.0;
+  bool used_estimate = false;
+  bool kept_fallback = false;
+  bool rejected_without_fallback = false;
+};
+
+TimeShiftInitializationResolution resolveCameraImuTimeShiftInitialization(
+    const TimeShiftPriorEstimate& estimate, double fallback_shift_s,
+    bool have_fallback);
 
 TimeShiftPriorEstimate estimateCameraImuTimeShiftPrior(
     const std::vector<PoseObservation>& pose_observations,

@@ -44,8 +44,12 @@ ctest --test-dir build --output-on-failure
 ## 跑一次独立标定
 
 ```bash
-build/calibrate_cam_imu --corner-defaults --cam /ABS/cam_imu/cam0-camchain-640x400.yaml --imu /ABS/cam_imu/imu.yaml --target /ABS/cam_imu/aprilgrid.yaml --imu-data /ABS/cam_imu/data1.csv --corners /ABS/cam_imu/cam0_640x400_corners.csv --corner-poses /ABS/cam_imu/cam0_640x400_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --time-shift-prior-sigma 0.0001 --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_independent.yaml
+build/calibrate_cam_imu --corner-defaults --cam /ABS/cam_imu/cam0-camchain-640x400.yaml --imu /ABS/cam_imu/imu.yaml --target /ABS/cam_imu/aprilgrid.yaml --imu-data /ABS/cam_imu/data1.csv --corners /ABS/cam_imu/cam0_640x400_corners.csv --corner-poses /ABS/cam_imu/cam0_640x400_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_independent.yaml
 ```
+
+相机—IMU 互相关默认在 `±0.2 s` 内搜索。如果最优峰落在 `--time-shift-max-search-s` 边界，程序会把它视为“未知”而不是零偏移：已有 result、Kalibr、camchain 或显式初值时保留该值；没有有效兜底时，可以不加时间偏移锚点继续优化，但不能同时使用正的 `--time-shift-prior-sigma`、正的 staged prior 或 `--fix-time-shift`。此时应提供可信的 `--initial-time-shift-s`，或先检查数据和搜索范围。
+
+互相关初值只有 IMU 采样周期量级的离散分辨率，默认示例不再额外添加 `0.1 ms` 的紧先验。2025-04-19 19:03:03 数据上，紧先验把最终 time shift 从无先验的 `17.206 ms`（Kalibr single 为 `16.983 ms`）拉到 `14.174 ms`。如实验确实需要固定或正则化 time shift，应显式给出 sigma，并留意程序在 sigma 小于相关采样周期时的警告。
 
 对比 Kalibr result：
 

@@ -952,10 +952,9 @@ int main() {
              static_cast<double>(negative_shift_estimate.discrete_shift_samples) *
                  negative_shift_estimate.sample_dt_s) < 1e-12);
 
-  // Boundary rejection. Neither case above reaches it: the IMU is sampled at
-  // 0.01 s and max_search_s defaults to 0.05, so max_lag is 5 while the true
-  // lags are only 4 and 3. Squeeze the search window down to exactly the true
-  // lag (0.04 s / 0.01 s = 4 samples) so the peak lands on +-max_lag, which is
+  // Boundary rejection. Neither accepted case above reaches it. Squeeze the
+  // search window down to exactly the true lag (0.04 s / 0.01 s = 4 samples)
+  // so the peak lands on +-max_lag, which is
   // the signature of "the real peak is probably outside the window" -- the
   // estimator must then refuse to report it rather than return a clipped
   // value. Reuses shifted_imu, whose true shift is +0.04 s.
@@ -973,6 +972,27 @@ int main() {
   assert(std::abs(boundary_estimate.shift_s -
                   static_cast<double>(boundary_estimate.discrete_shift_samples) *
                       boundary_estimate.sample_dt_s) < 1e-12);
+  const auto accepted_resolution =
+      ceres_cam_imu::resolveCameraImuTimeShiftInitialization(
+          shift_estimate, -0.117, true);
+  assert(accepted_resolution.used_estimate);
+  assert(!accepted_resolution.kept_fallback);
+  assert(!accepted_resolution.rejected_without_fallback);
+  assert(accepted_resolution.shift_s == shift_estimate.shift_s);
+  const auto fallback_resolution =
+      ceres_cam_imu::resolveCameraImuTimeShiftInitialization(
+          boundary_estimate, -0.117, true);
+  assert(!fallback_resolution.used_estimate);
+  assert(fallback_resolution.kept_fallback);
+  assert(!fallback_resolution.rejected_without_fallback);
+  assert(fallback_resolution.shift_s == -0.117);
+  const auto missing_fallback_resolution =
+      ceres_cam_imu::resolveCameraImuTimeShiftInitialization(
+          boundary_estimate, 123.0, false);
+  assert(!missing_fallback_resolution.used_estimate);
+  assert(!missing_fallback_resolution.kept_fallback);
+  assert(missing_fallback_resolution.rejected_without_fallback);
+  assert(missing_fallback_resolution.shift_s == 0.0);
   // Widening the window past the true lag must accept the same peak again --
   // otherwise the assertions above would also pass for an estimator that
   // rejects unconditionally.

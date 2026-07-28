@@ -74,6 +74,24 @@ double rms(const std::vector<double>& values) {
 
 }  // namespace
 
+TimeShiftInitializationResolution resolveCameraImuTimeShiftInitialization(
+    const TimeShiftPriorEstimate& estimate, const double fallback_shift_s,
+    const bool have_fallback) {
+  TimeShiftInitializationResolution resolution;
+  if (!estimate.boundary_peak_rejected) {
+    resolution.shift_s = estimate.shift_s;
+    resolution.used_estimate = true;
+    return resolution;
+  }
+  if (have_fallback) {
+    resolution.shift_s = fallback_shift_s;
+    resolution.kept_fallback = true;
+    return resolution;
+  }
+  resolution.rejected_without_fallback = true;
+  return resolution;
+}
+
 TimeShiftPriorEstimate estimateCameraImuTimeShiftPrior(
     const std::vector<PoseObservation>& pose_observations,
     const std::vector<ImuSample>& imu_samples, const CameraExtrinsicBlock& T_c_b,

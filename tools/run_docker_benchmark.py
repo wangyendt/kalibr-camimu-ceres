@@ -791,14 +791,17 @@ def ceres_corner_command(args, dataset: pathlib.Path, run_dir: pathlib.Path,
         command.extend([
             "--estimate-time-shift-prior",
             "--estimate-orientation-gravity-prior",
-            "--time-shift-prior-sigma",
-            "0.0001",
             "--pose-motion-prior",
             "--pose-motion-translation-variance",
             "10",
             "--pose-motion-rotation-variance",
             "1",
         ])
+        if args.ceres_single_time_shift_prior_sigma > 0.0:
+            command.extend([
+                "--time-shift-prior-sigma",
+                str(args.ceres_single_time_shift_prior_sigma),
+            ])
     if args.ceres_max_iterations is not None:
         command.extend(["--max-iterations", str(args.ceres_max_iterations)])
     command.extend(["--output-result", result_path])
@@ -979,8 +982,6 @@ def ceres_tum_command(args, input_dir: pathlib.Path, run_dir: pathlib.Path,
         "--pose-fit-motion-lambda",
         "0.0001",
         "--pose-fit-boundary-anchors",
-        "--time-shift-prior-sigma",
-        "0.0001",
         "--pose-motion-prior",
         "--pose-motion-translation-variance",
         "10",
@@ -995,6 +996,11 @@ def ceres_tum_command(args, input_dir: pathlib.Path, run_dir: pathlib.Path,
         command.extend([
             "--max-iterations",
             str(args.ceres_tum_max_iterations),
+        ])
+    if args.ceres_tum_time_shift_prior_sigma > 0.0:
+        command.extend([
+            "--time-shift-prior-sigma",
+            str(args.ceres_tum_time_shift_prior_sigma),
         ])
     command.extend(args.ceres_extra_arg)
     return command
@@ -2899,6 +2905,9 @@ def parse_args():
                         help=hidden)
     parser.add_argument("--ceres-max-iterations", type=int,
                         help=hidden)
+    parser.add_argument("--ceres-single-time-shift-prior-sigma",
+                        type=float, default=0.0,
+                        help=hidden)
     parser.add_argument("--ceres-multi-imu-stage-iterations", type=int,
                         default=30, help=hidden)
     parser.add_argument("--ceres-multi-imu-init",
@@ -2982,6 +2991,9 @@ def parse_args():
                         type=float, default=0.005,
                         help=hidden)
     parser.add_argument("--ceres-tum-max-iterations", type=int,
+                        help=hidden)
+    parser.add_argument("--ceres-tum-time-shift-prior-sigma",
+                        type=float, default=0.0,
                         help=hidden)
     parser.add_argument("--timeoffset-padding", type=float, default=0.04,
                         help=hidden)
