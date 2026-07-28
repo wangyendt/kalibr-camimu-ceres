@@ -213,7 +213,81 @@ $$
 }
 $$
 
-验证这些 $6\times6$ Jacobian 时，需要一个 `boxminus_K` 把两个很接近的 transform 差值转成 Kalibr expression tangent。最小实现可以复用第 0 章的 $\mathbf S(\mathbf T)$ 桥接矩阵，把 Micro $\mathrm{Log}(\mathbf T_2\mathbf T_1^{-1})$ 的结果转换到 Kalibr tangent。
+验证这些 $6\times6$ Jacobian 时，需要一个 `boxminus_K`：给定两个很接近的 transform $\mathbf T_1,\mathbf T_2$，求出满足 $\mathbf T_2=\mathbf T_1\boxplus_K\delta\boldsymbol\xi_K$ 的那个 $\delta\boldsymbol\xi_K$。
+
+好消息是这个逆运算有**闭式且精确**的写法，根本不需要 $\mathrm{Log}_{SE(3)}$。按 0.8.1 的定义，$\boxplus_K$ 就是左乘一个分离参数化的小变换：
+
+$$
+\mathbf T_2
+=
+\begin{bmatrix}
+\mathrm{Exp}(-\delta\boldsymbol\phi_K) & \delta\boldsymbol\rho_K\\
+\mathbf 0^\top & 1
+\end{bmatrix}
+\mathbf T_1
+\quad\Longrightarrow\quad
+\boldsymbol\Delta
+\triangleq
+\mathbf T_2\mathbf T_1^{-1}
+=
+\begin{bmatrix}
+\mathrm{Exp}(-\delta\boldsymbol\phi_K) & \delta\boldsymbol\rho_K\\
+\mathbf 0^\top & 1
+\end{bmatrix}.
+$$
+
+两个分块可以**直接读出来**：
+
+$$
+\boxed{
+\mathrm{boxminus}_K(\mathbf T_2,\mathbf T_1)
+=
+\begin{bmatrix}
+\mathbf t_{\boldsymbol\Delta}\\
+-\mathrm{Log}_{SO(3)}(\mathbf R_{\boldsymbol\Delta})
+\end{bmatrix},
+\qquad
+\boldsymbol\Delta=\mathbf T_2\mathbf T_1^{-1}.
+}
+$$
+
+平移块就是 $\boldsymbol\Delta$ 的平移列本身，旋转块是 $SO(3)$ 的 $\mathrm{Log}$ 取负。注意这里**没有任何 left Jacobian**，因为 Kalibr 的平移参数本来就是裸的。
+
+```python
+def boxminus_K(T2, T1):
+    D = T2 @ np.linalg.inv(T1)
+    return np.concatenate([D[:3, 3], -log_SO3(D[:3, :3])])
+```
+
+对比之下，先前一版把它写成 $\mathbf D_K\mathrm{Log}_{SE(3)}(\mathbf T_2\mathbf T_1^{-1})$ 是**只有一阶精度**的：$\mathrm{Log}_{SE(3)}$ 的平移块带一个 $\mathbf J_l(\boldsymbol\phi)^{-1}$，而 $\boxplus_K$ 里没有。以 $\|\delta\boldsymbol\xi_K\|$ 为尺度做数值实验，两种写法的误差如下：
+
+| $\|\delta\boldsymbol\xi_K\|$ 量级 | 上式（分离形式） | $\mathbf D_K\mathrm{Log}_{SE(3)}$ |
+|---|---|---|
+| $10^{-2}$ | $8\times10^{-17}$ | $4\times10^{-5}$ |
+| $10^{-4}$ | $7\times10^{-17}$ | $6\times10^{-9}$ |
+| $10^{-6}$ | $5\times10^{-17}$ | $8\times10^{-13}$ |
+
+这里要把"精确"的含义说准，否则很容易读成一句更强的话。上式是 $\boxplus_K$ 在**所选 $\mathrm{Log}$ 分支上**的严格逆运算：只要旋转分量满足
+
+$$
+\|\delta\boldsymbol\phi_K\|<\pi,
+$$
+
+就有 $\mathrm{boxminus}_K(\mathbf T_1\boxplus_K\delta\boldsymbol\xi_K,\ \mathbf T_1)=\delta\boldsymbol\xi_K$，表中三行的 $10^{-17}$ 就是在验证这一条，机器精度是它应得的结果——注意上表扫的幅度只到 $10^{-2}$，整段都在这个界的深处。这个界来自 `log_SO3` 取的是**主值分支**：$\mathrm{Exp}$ 把 $\delta\boldsymbol\phi_K$ 和它沿同一轴加减 $2\pi$ 的所有版本映到同一个 $\mathbf R_{\boldsymbol\Delta}$，主值 $\mathrm{Log}$ 只会在其中挑模长最小的那一个，因此 $\|\delta\boldsymbol\phi_K\|>\pi$ 时往返一圈会被折回 $2\pi$，取出来的旋转向量根本不是放进去的那个；恰好 $\|\delta\boldsymbol\phi_K\|=\pi$ 时轴的符号还是二义的，也要避开。平移分量没有这个限制，它在任意幅度下都严格互反。这条性质**不**意味着分离参数化本身等于 $SE(3)$ 的严格指数映射——0.8.1 已经说明二者只在一阶意义下等价，要严格换算还得给平移分量补一个 $\mathbf J_l(-\delta\boldsymbol\phi_K)^{-1}$。这两件事不要混：分离形式与它自己的逆是精确互反的，分离形式与 $\mathrm{Exp}_{SE(3)}$ 之间则相差二阶量。
+
+$\mathbf D_K\mathrm{Log}_{SE(3)}$ 的误差正是后一种二阶量，即 $O(\|\delta\boldsymbol\xi_K\|^2)$。做中心差分时步长本来就取 $10^{-5}\sim10^{-6}$，二阶残差恰好和差分本身的截断误差同量级——用错版本会得到"Jacobian 差了 $10^{-6}$，说不清是实现 bug 还是数值噪声"的结果。所以在验证 $\boxplus_K$ 语义的 Jacobian 时请用分离形式。
+
+最后区分两套坐标。上式给出的是 **expression tangent** $\delta\boldsymbol\xi_K$，也就是 `boxTimes` 这些 $6\times6$ Jacobian 所用的坐标。如果要验证的是最底层 `Transformation::oplus(dt)` 的 **raw update**，还要按 0.8.1 末尾的关系换一次：
+
+$$
+\delta\mathbf u_{\mathrm{raw}}
+=
+\mathbf S(\mathbf T_1)^{-1}
+\,
+\mathrm{boxminus}_K(\mathbf T_2,\mathbf T_1).
+$$
+
+搞混这两者会让 Jacobian 整体差一个 $\mathbf S(\mathbf T)$，且旋转越大偏差越明显——这是本节最常见的一类假阳性。
 
 ## B.6 Camera reprojection residual
 

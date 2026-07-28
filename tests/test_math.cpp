@@ -1,3 +1,11 @@
+// This test suite states all of its expectations with assert(). A Release build
+// defines NDEBUG, which would compile every one of them away and turn ctest
+// into a vacuous "1/1 passed". Drop NDEBUG for this translation unit, before the
+// first <cassert>, so the assertions execute in every build type.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -10,6 +18,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include <ceres/loss_function.h>
 
 #include "ceres_cam_imu/camera/camera_model.h"
 #include "ceres_cam_imu/camera/pinhole_radtan.h"
@@ -62,7 +72,8 @@ int main() {
     const std::array<double, 3> cauchy_rho =
         ceres_cam_imu::kalibrMEstimatorRho(
             ceres_cam_imu::RobustLossType::kCauchy, 10.0, 30.0);
-    assert(std::abs(cauchy_rho[0] - 7.5) < 1e-15);
+    // rho is the antiderivative of w: c2 * log(1 + s / c2) = 10 * log(4).
+    assert(std::abs(cauchy_rho[0] - 10.0 * std::log(4.0)) < 1e-12);
     assert(std::abs(cauchy_rho[1] - cauchy_w) < 1e-15);
     assert(cauchy_rho[2] == 0.0);
 
@@ -75,9 +86,97 @@ int main() {
     const std::array<double, 3> huber_rho =
         ceres_cam_imu::kalibrMEstimatorRho(
             ceres_cam_imu::RobustLossType::kHuber, 2.0, 9.0);
-    assert(std::abs(huber_rho[0] - 6.0) < 1e-15);
+    // rho(s) = 2k sqrt(s) - k^2 = 2*2*3 - 4 = 8.
+    assert(std::abs(huber_rho[0] - 8.0) < 1e-12);
     assert(std::abs(huber_rho[1] - huber_outside) < 1e-15);
     assert(huber_rho[2] == 0.0);
+
+    // rho' must equal d(rho)/ds numerically (this is what the old
+    // rho = w(s)*s form violated).
+    auto check_rho_derivative = [](const ceres_cam_imu::RobustLossType type,
+                                   const double width, const double s_probe) {
+      const double h = 1e-6 * std::max(1.0, s_probe);
+      const auto rp = ceres_cam_imu::kalibrMEstimatorRho(type, width,
+                                                         s_probe + h);
+      const auto rm = ceres_cam_imu::kalibrMEstimatorRho(type, width,
+                                                         s_probe - h);
+      const auto r0 = ceres_cam_imu::kalibrMEstimatorRho(type, width, s_probe);
+      assert(std::abs((rp[0] - rm[0]) / (2.0 * h) - r0[1]) < 1e-7);
+    };
+    for (const double s_probe : {0.5, 3.0, 30.0}) {
+      check_rho_derivative(ceres_cam_imu::RobustLossType::kCauchy, 10.0,
+                           s_probe);
+    }
+    // Huber, width k = 2 so the kink sits at s = k^2 = 4. Probe strictly
+    // inside the quadratic branch and strictly inside the linear branch;
+    // the kink itself is checked separately below because the central
+    // difference straddles a second-derivative jump there.
+    for (const double s_probe : {0.25, 1.0, 2.5}) {
+      check_rho_derivative(ceres_cam_imu::RobustLossType::kHuber, 2.0,
+                           s_probe);
+    }
+    for (const double s_probe : {6.0, 20.0, 100.0}) {
+      check_rho_derivative(ceres_cam_imu::RobustLossType::kHuber, 2.0,
+                           s_probe);
+    }
+    {
+      // Both rho and rho' are continuous across the Huber threshold.
+      const double k = 2.0;
+      const double s_kink = k * k;
+      const double eps = 1e-9;
+      const auto below = ceres_cam_imu::kalibrMEstimatorRho(
+          ceres_cam_imu::RobustLossType::kHuber, k, s_kink - eps);
+      const auto above = ceres_cam_imu::kalibrMEstimatorRho(
+          ceres_cam_imu::RobustLossType::kHuber, k, s_kink + eps);
+      assert(std::abs(below[0] - above[0]) < 1e-7);
+      assert(std::abs(below[1] - above[1]) < 1e-7);
+      // At the kink rho = k^2 and rho' = 1, matching the quadratic branch.
+      assert(std::abs(below[0] - s_kink) < 1e-7);
+      assert(std::abs(below[1] - 1.0) < 1e-7);
+    }
+    {
+      // Be precise about what this block does and does not establish.
+      //
+      // It checks TWO things, both purely analytic: that our rho[0] and
+      // rho[1] agree pointwise with the stock Ceres losses, and that the
+      // stock rho[2] is <= 0 (Cauchy strictly, Huber exactly 0 below the
+      // kink, where rho is affine).
+      //
+      // It does NOT establish that our loss and the stock loss produce
+      // identical solver behaviour. That extra step needs the fact that
+      // ceres::internal::Corrector short-circuits the Triggs term whenever
+      // rho'' <= 0, so the differing rho[2] never reaches the normal
+      // equations. That short-circuit is a Ceres implementation detail --
+      // not part of the documented LossFunction contract -- and the build
+      // does not pin a Ceres version, so it is verified (Ceres 2.1, see
+      // docs/knowhow/20260619_Kalibr_IRLS鲁棒核对齐.md) rather than
+      // guaranteed. This test cannot and does not lock it.
+      //
+      // What it is for: if someone edits rho[0] or rho[1] again, the
+      // analytic half breaks here instead of silently in a benchmark.
+      const double width = 10.0;
+      const ceres::CauchyLoss stock_cauchy(std::sqrt(width));
+      for (const double s_probe : {0.0, 0.5, 3.0, 30.0, 500.0}) {
+        double stock[3] = {0.0, 0.0, 0.0};
+        stock_cauchy.Evaluate(s_probe, stock);
+        const auto ours = ceres_cam_imu::kalibrMEstimatorRho(
+            ceres_cam_imu::RobustLossType::kCauchy, width, s_probe);
+        assert(std::abs(stock[0] - ours[0]) < 1e-12);
+        assert(std::abs(stock[1] - ours[1]) < 1e-12);
+        assert(stock[2] <= 0.0); // concave => Triggs is skipped either way
+      }
+      const double k = 2.0;
+      const ceres::HuberLoss stock_huber(k);
+      for (const double s_probe : {0.0, 1.0, 4.0, 9.0, 100.0}) {
+        double stock[3] = {0.0, 0.0, 0.0};
+        stock_huber.Evaluate(s_probe, stock);
+        const auto ours = ceres_cam_imu::kalibrMEstimatorRho(
+            ceres_cam_imu::RobustLossType::kHuber, k, s_probe);
+        assert(std::abs(stock[0] - ours[0]) < 1e-12);
+        assert(std::abs(stock[1] - ours[1]) < 1e-12);
+        assert(stock[2] <= 0.0);
+      }
+    }
 
     assert(ceres_cam_imu::kalibrMEstimatorWeight(
                ceres_cam_imu::RobustLossType::kNone, 10.0, 30.0) == 1.0);
@@ -444,8 +543,15 @@ int main() {
   assert(gravity_problem.HasManifold(gravity_state.imu_extrinsic.data()));
   assert(gravity_problem.ParameterBlockTangentSize(
              gravity_state.T_c_b.data()) == 6);
+  // The reference IMU extrinsic is held fixed, but Ceres reports the tangent
+  // size of the attached manifold regardless of constancy -- constancy is
+  // tracked separately. The "0 degrees of freedom" intent has to be asserted
+  // through IsParameterBlockConstant, and through the build summary's own
+  // tangent_parameters accounting, which does exclude constant blocks.
   assert(gravity_problem.ParameterBlockTangentSize(
-             gravity_state.imu_extrinsic.data()) == 0);
+             gravity_state.imu_extrinsic.data()) == 6);
+  assert(gravity_problem.IsParameterBlockConstant(
+      gravity_state.imu_extrinsic.data()));
   assert(gravity_problem.HasManifold(gravity_state.gravity.data()));
   assert(gravity_problem.ParameterBlockTangentSize(
              gravity_state.gravity.data()) == 2);
@@ -674,6 +780,10 @@ int main() {
   chain_options.min_samples = 50;
   chain_options.sample_stride = 2;
   chain_options.max_time_offset_search_s = 0.0;
+  // Lever-arm estimation is opt-in (ImuChainInitializerOptions defaults it to
+  // false), and the assertions below check r_b / accel bias delta, so it has to
+  // be switched on explicitly.
+  chain_options.estimate_lever_arms = true;
   const ceres_cam_imu::ImuChainInitializerPairResult chain_prior =
       ceres_cam_imu::estimateImuChainPairPrior(chain_ref, chain_target, 1,
                                                chain_options);
@@ -806,6 +916,75 @@ int main() {
   assert(shift_estimate.num_samples == static_cast<int>(shifted_imu.size()));
   assert(std::abs(shift_estimate.shift_s - true_shift_s) <=
          shift_estimate.sample_dt_s + 1e-12);
+  assert(std::abs(shift_estimate.shift_s -
+                  static_cast<double>(shift_estimate.discrete_shift_samples) *
+                      shift_estimate.sample_dt_s) < 1e-12);
+
+  // Now the mirrored case. Note what it is and is not for: the positive case
+  // above already catches a global sign flip on its own, because it compares
+  // against a signed ground truth. What a single side cannot catch is
+  // asymmetric handling of the negation itself -- a path that only misbehaves
+  // for negative lags. So run both sides, and assert the same invariants on
+  // both. (Neither of these two cases exercises the boundary-rejection branch;
+  // that is covered separately below.)
+  //
+  // Convention under test: Kalibr defines t_imu = t_cam + shift
+  // (IccSensors.py:300) and derives it with an explicit minus sign,
+  // "shift = -discrete_shift*dT" (IccSensors.py:283), because the raw
+  // correlation lag runs opposite to the applied shift.
+  constexpr double true_negative_shift_s = -0.03;
+  std::vector<ceres_cam_imu::ImuSample> negatively_shifted_imu;
+  for (int i = 0; i <= 160; ++i) {
+    const double t_imu = 0.2 + 0.01 * static_cast<double>(i);
+    ceres_cam_imu::ImuSample sample;
+    sample.timestamp_s = t_imu;
+    sample.gyro_rad_s = angular_velocity_at(t_imu - true_negative_shift_s);
+    negatively_shifted_imu.push_back(sample);
+  }
+  const ceres_cam_imu::TimeShiftPriorEstimate negative_shift_estimate =
+      ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+          shift_pose_observations, negatively_shifted_imu, identity_extrinsic,
+          shift_options);
+  assert(std::abs(negative_shift_estimate.shift_s - true_negative_shift_s) <=
+         negative_shift_estimate.sample_dt_s + 1e-12);
+  assert(std::abs(
+             negative_shift_estimate.shift_s -
+             static_cast<double>(negative_shift_estimate.discrete_shift_samples) *
+                 negative_shift_estimate.sample_dt_s) < 1e-12);
+
+  // Boundary rejection. Neither case above reaches it: the IMU is sampled at
+  // 0.01 s and max_search_s defaults to 0.05, so max_lag is 5 while the true
+  // lags are only 4 and 3. Squeeze the search window down to exactly the true
+  // lag (0.04 s / 0.01 s = 4 samples) so the peak lands on +-max_lag, which is
+  // the signature of "the real peak is probably outside the window" -- the
+  // estimator must then refuse to report it rather than return a clipped
+  // value. Reuses shifted_imu, whose true shift is +0.04 s.
+  ceres_cam_imu::TimeShiftPriorOptions boundary_options = shift_options;
+  boundary_options.max_search_s = 0.04;
+  const ceres_cam_imu::TimeShiftPriorEstimate boundary_estimate =
+      ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+          shift_pose_observations, shifted_imu, identity_extrinsic,
+          boundary_options);
+  assert(boundary_estimate.boundary_peak_rejected);
+  assert(boundary_estimate.discrete_shift_samples == 0);
+  assert(boundary_estimate.shift_s == 0.0);
+  // The invariant has to survive the rejection path too, not just the two
+  // accepted ones.
+  assert(std::abs(boundary_estimate.shift_s -
+                  static_cast<double>(boundary_estimate.discrete_shift_samples) *
+                      boundary_estimate.sample_dt_s) < 1e-12);
+  // Widening the window past the true lag must accept the same peak again --
+  // otherwise the assertions above would also pass for an estimator that
+  // rejects unconditionally.
+  ceres_cam_imu::TimeShiftPriorOptions widened_options = shift_options;
+  widened_options.max_search_s = 0.06;
+  const ceres_cam_imu::TimeShiftPriorEstimate widened_estimate =
+      ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+          shift_pose_observations, shifted_imu, identity_extrinsic,
+          widened_options);
+  assert(!widened_estimate.boundary_peak_rejected);
+  assert(std::abs(widened_estimate.shift_s - true_shift_s) <=
+         widened_estimate.sample_dt_s + 1e-12);
 
   const ceres_cam_imu::Vec3 true_r_c_i(0.12, -0.07, 0.09);
   const ceres_cam_imu::Mat3 true_R_c_i =

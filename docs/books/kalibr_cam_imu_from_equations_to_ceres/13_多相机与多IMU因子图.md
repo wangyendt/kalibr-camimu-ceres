@@ -621,13 +621,27 @@ $$
 
 关键点：**$\rho''$ 完全不参与**。Kalibr 只用 $\rho'$ 对残差和 Jacobian 同开方缩放，做标准 Gauss-Newton，即 iteratively reweighted least squares。
 
-**与 Ceres 标准 loss 的差别。** Ceres `LossFunction` 把 $\rho',\rho''$ 都喂给求解器：除了 $\rho'$ 缩放，还有 $\rho''$ 带来的 rescaling / Triggs 修正项，改变正规方程的曲率。所以直接套 Ceres `CauchyLoss`/`HuberLoss` 与 Kalibr 不是同一个线性化，冷启动全自由多 IMU 会漂。要对齐，必须自定义 loss，令
+**与 Ceres 标准 loss 的差别：对 Cauchy 和 Huber 而言没有差别。** Ceres 标准 loss 走的也是纯 IRLS，不做 Triggs 修正。关键在 `ceres::internal::Corrector` 构造函数开头的短路：
+
+```cpp
+if ((sq_norm == 0.0) || (rho[2] <= 0.0)) {
+  residual_scaling_ = sqrt_rho1_;
+  alpha_sq_norm_ = 0.0;
+  return;
+}
+```
+
+Triggs 修正只在 $\rho''>0$ 时才启用。Cauchy 和 Huber 都是凹函数，$\rho''\le0$ 恒成立——Cauchy 严格小于零，Huber 在阈值内 $\rho_0(s)=s$ 是仿射的、$\rho''=0$，阈值外才严格小于零——两种情形都落进 `rho[2] <= 0.0` 这条短路，于是它每次都命中，Ceres 实际做的就是"$\sqrt{\rho'}$ 同时缩放残差和 Jacobian"——**和 Kalibr 的 IRLS 逐字相同**。所以把 $\rho''$ 显式置零并不改变任何数值：
 
 $$
-\rho(s)=\text{(数值无关)},\quad \rho'(s)=w(s),\quad \rho''(s)=0,
+\rho'(s)=w(s),\qquad \rho''(s)=0 \quad(\text{与真实 }\rho''\le0\text{ 等效}),
 $$
 
-即 `Evaluate` 输出 `rho[1]=w(s)`、`rho[2]=0`。这与实验文档定位、`docs/knowhow/20260619_Kalibr_IRLS鲁棒核对齐.md` 的结论一致，也解释了为什么“Cauchy 宽度一致但仍发散”——差的不是宽度而是 $\rho''$ 这一项。
+它表达的是意图，不是修正。真正需要认真对待的是 $\rho_0$：Ceres 用 $\rho_0$ 算 cost 和 trust-region 的 actual reduction，用 $\rho_1$ 算模型的 predicted reduction，两者必须自洽，即 $\rho_0'=\rho_1$。取 $\rho_0(s)=\int_0^s w(u)\,\mathrm du$ 就自动满足，Cauchy 是 $c^2\ln(1+s/c^2)$，Huber 是 $s$ / $2k\sqrt s-k^2$——这恰好又与 Ceres 内置的 `CauchyLoss`、`HuberLoss` 解析相同。
+
+结论因此是反直觉的：**在 Ceres 当前的求解路径上，自定义的 Kalibr-style loss 与 `ceres::CauchyLoss(\sqrt{\text{width}})`、`ceres::HuberLoss(\text{width})` 数值等价。** `2025_03_14_00_10_18` 热启动 `pbg,pbegt` 口径下三者实测 reprojection 均值同为 `0.309145562193544 px`。
+
+这个等价性依赖两件本身并不由我们控制的事，引用时要连着说清楚：一是 $\rho_0,\rho_1$ 解析相同——这一条 `tests/test_math.cpp` 已经逐点比对锁住；二是 `Corrector` 对 $\rho''\le0$ 短路——这是 Ceres 的实现细节，我们只在本机的 Ceres 2.1 上验证过，构建系统也没有把 Ceres 版本钉死。若将来换用一个**凸**的 $\rho$，或 Ceres 改掉这条短路，$\rho_2$ 的取值就会重新变得重要。保留自定义 loss 的价值也正在这里：显式表达 IRLS 语义，以及为接入 Ceres 没有内置的权重函数（Geman-McClure、Blake-Zisserman）留出位置。宽度换算见 `MEstimatorPolicies.cpp:46`，Kalibr 的 `_sigma2` 已是平方误差的分母，对应 `CauchyLoss` 的 $a=\sqrt{\sigma^2}$。
 
 ## 13.12 与 Ceres 实现的逐项对照与当前对齐缺口
 
@@ -644,7 +658,7 @@ $$
 | 缺口 | 现状 | 需要的工作 |
 |---|---|---|
 | 非参考 IMU 冷启动初值 | 仅支持从 Kalibr 结果热启动 imu_chain | 实现 13.10 的陀螺互相关 time offset + 相对旋转先验 |
-| 鲁棒核线性化 | 标准 Ceres loss 与 Kalibr IRLS 不等价 | 用 13.11 的 Kalibr-style M-estimator（$\rho'=w,\rho''=0$），并按 model 分配 Cauchy/Huber |
+| 鲁棒核线性化 | 无缺口：对 Cauchy/Huber，标准 Ceres loss 与 Kalibr IRLS 等价（13.11） | 保持 13.11 的 Kalibr-style M-estimator（$\rho_0=\int_0^s w,\ \rho'=w,\ \rho''=0$），按 model 分配 Cauchy/Huber；若将来引入 Ceres 无内置的权重函数，此处才有实质工作 |
 | per-IMU time offset | 两边都不是 bundle 变量；Ceres 直接按 CSV 时间戳查 spline | 至少要把 13.10 的常量 $\Delta t^i_m$ 接进查询，避免多 IMU 间未对齐 |
 | 杠杆臂可观性 | 弱可观，毫米级漂移 | 接受为固有量，报告时按 per-IMU 输出，不平均 |
 

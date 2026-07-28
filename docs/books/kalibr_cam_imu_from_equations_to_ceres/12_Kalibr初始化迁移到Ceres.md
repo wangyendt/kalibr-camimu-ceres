@@ -157,11 +157,17 @@ src/initialization/time_shift_initializer.cpp
 build/calibrate_cam_imu --kalibr-corner-defaults --cam /ABS/cam_imu/cam0-camchain-640x400.yaml --imu /ABS/cam_imu/imu.yaml --target /ABS/cam_imu/aprilgrid.yaml --imu-data /ABS/cam_imu/data1.csv --corners /ABS/cam_imu/cam0_640x400_corners.csv --corner-poses /ABS/cam_imu/cam0_640x400_corner_poses.csv --kalibr-result /ABS/cam_imu/cam0_640x400_corners-1-results-imucam.txt --init-from-kalibr --estimate-time-shift-prior --dry-run --max-frames 20 --imu-stride 1000 --max-imu-residuals 5
 ```
 
-关键输出：
+关键输出（只摘录与本节相关的字段，实际命令还会打印 `max_search_s`、`peak_correlation`、`second_best_*` 等）：
 
 ```text
-estimated time shift prior: shift_s=-0.55052438939288217 pose_kps=100 fit_lambda=0.0001 discrete_shift_samples=278 sample_dt_s=0.001980303558967202 samples=22929
+estimated time shift prior: shift_s=-0.55052438939288217 pose_kps=100 fit_lambda=0.0001 discrete_shift_samples=-278 sample_dt_s=0.001980303558967202 samples=22929
 ```
+
+> **这里的 `discrete_shift_samples` 是"施加的离散 shift"，不是原始 correlation lag。** 两者差一个负号：`best_lag` 是使 $\sum_i \text{predicted}[i]\cdot\text{measured}[i-\text{lag}]$ 最大的原始滞后，而对外报告的 `discrete_shift_samples = -best_lag`，与 `shift_s` 同号，恒满足
+>
+> $$\texttt{shift\_s} = \texttt{discrete\_shift\_samples}\times\texttt{sample\_dt\_s}.$$
+>
+> 上面这行确实对得上：$-278\times 0.0019803 = -0.55052$。早期版本的日志曾把这个字段按 `best_lag`（即 `+278`）打印，和同一行的 `shift_s` 反号；若在旧日志或旧 issue 里看到 `+278`，那是同一个量的另一种符号约定，不是另一个结果。符号约定的完整说明见 `include/ceres_cam_imu/initialization/time_shift_initializer.h` 中 `TimeShiftPriorEstimate` 的注释，以及第 13 章 13.9 的「符号陷阱」。
 
 Docker Kalibr 零迭代基线的 time shift 是：
 

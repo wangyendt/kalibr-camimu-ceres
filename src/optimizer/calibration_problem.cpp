@@ -173,8 +173,32 @@ public:
     // Kalibr's aslam_backend treats M-estimators as an iteratively reweighted
     // least-squares factor: both residuals and Jacobians are scaled by
     // sqrt(weight). It does not use the derivative of the weight function in
-    // the Hessian. Setting rho' to weight and rho'' to zero matches that
-    // linearization in Ceres while keeping the reported cost weighted.
+    // the Hessian. We therefore force rho'' to zero, and pick rho as the
+    // antiderivative of the weight so that rho' == weight holds exactly.
+    // The resulting cost is NOT numerically equal to Kalibr's reported cost,
+    // but the per-iteration linear system is identical, and Ceres' own
+    // trust-region accounting stays self-consistent.
+    //
+    // Forcing rho'' to zero has no numerical effect for the loss types we
+    // currently use: ceres::internal::Corrector short-circuits the Triggs
+    // correction whenever rho[2] <= 0, and both Cauchy and Huber satisfy
+    // rho'' <= 0 everywhere (Cauchy strictly negative; Huber is affine below
+    // the threshold, where rho'' is exactly zero). On Ceres 2.1 that makes
+    // this class numerically identical to ceres::CauchyLoss(sqrt(width)) /
+    // ceres::HuberLoss(width), which was confirmed end-to-end -- see
+    // docs/knowhow/20260619_Kalibr_IRLS robust kernel alignment.
+    //
+    // Scope of that guarantee: tests/test_math.cpp pins the analytic half of
+    // it, asserting rho0/rho1 agree with the stock losses pointwise. The other
+    // half is the Corrector short-circuit, which is a Ceres implementation
+    // detail rather than a documented LossFunction contract, and the build
+    // does not pin a Ceres version -- so the equivalence is verified, not
+    // guaranteed across upgrades.
+    //
+    // This class is kept because it states the IRLS intent explicitly, and
+    // because it is where the weight functions Ceres does not ship
+    // (Geman-McClure, Blake-Zisserman) belong; for a convex rho the choice
+    // would start to matter.
     const std::array<double, 3> value =
         kalibrMEstimatorRho(type_, width_, s);
     rho[0] = value[0];
@@ -1152,9 +1176,22 @@ double kalibrMEstimatorWeight(const RobustLossType type, const double width,
 std::array<double, 3> kalibrMEstimatorRho(
     const RobustLossType type, const double width,
     const double squared_residual_norm) {
-  const double weight =
-      kalibrMEstimatorWeight(type, width, squared_residual_norm);
-  return {weight * squared_residual_norm, weight, 0.0};
+  const double s = squared_residual_norm;
+  const double weight = kalibrMEstimatorWeight(type, width, s);
+  // rho is the antiderivative of the weight, rho(s) = \int_0^s w(u) du, so
+  // that rho'(s) == w(s) exactly. rho'' is forced to zero to reproduce
+  // Kalibr's IRLS linearization (no Triggs correction).
+  double rho0 = s;
+  if (width > 0.0 && type == RobustLossType::kCauchy) {
+    // w(u) = 1 / (1 + u / c2)  ->  rho(s) = c2 * log(1 + s / c2)
+    rho0 = width * std::log1p(s / width);
+  } else if (width > 0.0 && type == RobustLossType::kHuber) {
+    // w(u) = min(1, k / sqrt(u))  ->  rho(s) = s        (s <= k^2)
+    //                                       = 2k sqrt(s) - k^2  (s > k^2)
+    const double threshold_s = width * width;
+    rho0 = s < threshold_s ? s : 2.0 * width * std::sqrt(s) - threshold_s;
+  }
+  return {rho0, weight, 0.0};
 }
 
 CalibrationState
@@ -1308,8 +1345,15 @@ buildCalibrationProblem(const CameraIntrinsics &intrinsics,
   if (options.fix_gravity) {
     problem->SetParameterBlockConstant(dataPtr(state->gravity));
   }
+  // ParameterBlockTangentSize reports the manifold's tangent size whether or
+  // not the block is constant, so a fixed gravity would still be counted as 2
+  // (or 3) free directions and inflate kalibr_style_error_terms. Report the
+  // number of directions actually being solved for, matching the convention
+  // fillProblemSizeSummary uses for tangent_parameters.
   summary.gravity_tangent_size =
-      problem->ParameterBlockTangentSize(dataPtr(state->gravity));
+      problem->IsParameterBlockConstant(dataPtr(state->gravity))
+          ? 0
+          : problem->ParameterBlockTangentSize(dataPtr(state->gravity));
   if (options.add_time_shift_prior && options.time_shift_prior_sigma_s > 0.0) {
     problem->AddResidualBlock(
         createTimeShiftPrior(options.time_shift_prior_s,

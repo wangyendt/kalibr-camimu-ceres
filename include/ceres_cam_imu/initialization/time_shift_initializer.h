@@ -21,12 +21,43 @@ struct TimeShiftPriorOptions {
   double max_search_s = 0.05;
 };
 
+// Sign convention, once, for every field below.
+//
+// The estimator maximizes the raw cross-correlation
+//   sum_i predicted[i] * measured[i - lag]
+// over lag. That raw argmax ("best_lag") is NOT what this struct reports.
+// Kalibr's findTimeshiftCameraImuPrior() negates it -- "shift = -discrete_shift
+// * dT", IccSensors.py:283 -- to reach the t_imu = t_cam + shift convention
+// (IccSensors.py:300) that camera_reprojection_residual.cpp consumes as
+// query_time_s = timestamp_s_ + camera_time_shift_s. We report in that same
+// applied-shift sign.
+//
+// So: every *_discrete_shift_samples field is the APPLIED discrete shift
+// (-best_lag), not the raw correlation lag. The upshot is the invariant
+//   shift_s == discrete_shift_samples * sample_dt_s
+// which holds exactly for shift_s / discrete_shift_samples. tests/test_math.cpp
+// asserts it on a positive shift, a negative shift, and on the
+// boundary_peak_rejected path (where both are forced to zero). The mirrored
+// case is there to catch sign-asymmetric handling of the negation, not to
+// disambiguate the convention -- either signed case alone would already catch
+// a global flip.
+//
+// Not covered by that invariant: second_best_discrete_shift_samples has no
+// paired seconds-valued field, so nothing cross-checks its sign at runtime.
+//
+// Do not copy this negation into the IMU-to-IMU path: Kalibr's
+// findOrientationPrior() (IccSensors.py:920-925) uses the OPPOSITE convention,
+// which is why estimateTimeOffsetByGyroNorm() in multi_imu_initializer.cpp
+// correctly has no minus sign.
 struct TimeShiftPriorEstimate {
+  // Applied shift, seconds, in the t_imu = t_cam + shift_s convention.
   double shift_s = 0.0;
+  // Applied shift in samples (= -best_lag). Same sign as shift_s.
   int discrete_shift_samples = 0;
   double sample_dt_s = 0.0;
   int num_samples = 0;
   double peak_correlation = 0.0;
+  // Also an applied shift, not a raw lag. Same sign convention as above.
   int second_best_discrete_shift_samples = 0;
   double second_best_correlation = 0.0;
   double zero_lag_correlation = 0.0;

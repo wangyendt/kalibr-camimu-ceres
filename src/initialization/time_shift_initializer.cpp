@@ -200,6 +200,23 @@ TimeShiftPriorEstimate estimateCameraImuTimeShiftPrior(
         "not enough overlapping samples for time shift norm correlation");
   }
 
+  // best_lag is the raw correlation lag: it maximizes
+  //   sum_i predicted[i] * measured[i - lag],
+  // i.e. it satisfies measured[n] ~ predicted[n + best_lag]. The reported
+  // shift uses the opposite sign, matching Kalibr's
+  // findTimeshiftCameraImuPrior() ("shift = -discrete_shift*dT",
+  // IccSensors.py:283) and the t_imu = t_cam + shift convention that
+  // camera_reprojection_residual.cpp applies as
+  // query_time_s = timestamp_s_ + camera_time_shift_s. The *_discrete_shift_samples
+  // fields are reported in the same (shift) sign, so that
+  // shift_s == discrete_shift_samples * sample_dt_s always holds.
+  //
+  // Kalibr's two cross-correlation paths use OPPOSITE conventions and must not
+  // be copied from one another: the cam-IMU path negates, the IMU-IMU path
+  // (findOrientationPrior, IccSensors.py:920-925) does not -- which is why
+  // estimateTimeOffsetByGyroNorm() in multi_imu_initializer.cpp correctly has
+  // no minus sign. See docs/books/kalibr_cam_imu_from_equations_to_ceres/
+  // 13_多相机与多IMU因子图.md, the "符号陷阱" callout in 13.9.
   TimeShiftPriorEstimate estimate;
   estimate.sample_dt_s = meanImuDt(imu_samples);
   if (max_lag > 0 && std::abs(best_lag) == max_lag) {
@@ -207,12 +224,13 @@ TimeShiftPriorEstimate estimateCameraImuTimeShiftPrior(
     estimate.discrete_shift_samples = 0;
     estimate.shift_s = 0.0;
   } else {
-    estimate.discrete_shift_samples = best_lag;
-    estimate.shift_s = static_cast<double>(best_lag) * estimate.sample_dt_s;
+    estimate.discrete_shift_samples = -best_lag;
+    estimate.shift_s =
+        static_cast<double>(-best_lag) * estimate.sample_dt_s;
   }
   estimate.num_samples = n;
   estimate.peak_correlation = best_correlation;
-  estimate.second_best_discrete_shift_samples = second_best_lag;
+  estimate.second_best_discrete_shift_samples = -second_best_lag;
   estimate.second_best_correlation =
       std::isfinite(second_best_correlation) ? second_best_correlation : 0.0;
   estimate.zero_lag_correlation =

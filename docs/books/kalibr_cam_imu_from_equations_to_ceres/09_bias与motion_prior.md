@@ -29,7 +29,9 @@ $$
 | 3 | 9.4 | quadratic integral | 从 $\int\mathbf x^{(r)\top}\mathbf W\mathbf x^{(r)}dt$ 推到 $\mathbf c^\top\mathbf Q\mathbf c$ |
 | 4 | 9.5 | bias motion prior | 推导 gyro / accel bias prior 的 $\mathbf Q$、Hessian 和 RHS |
 | 5 | 9.6 | pose motion prior | 说明它约束的是 pose spline 内部 $6$ 维曲线值 |
-| 6 | 9.7-9.9 | 源码桥和速查表 | 对齐 `BSplineMotionError` 和 Kalibr 调用路径 |
+| 6 | 9.7-9.8 | 源码桥 | 对齐 `BSplineMotionError` 和 Kalibr 调用路径 |
+| 7 | 9.8.1-9.8.2 | 三种等价装配 | 说明为什么 Ceres 要逐 segment 开方，以及 $\mathbf G_s^{(r)}$ 的闭式 |
+| 8 | 9.9 | 速查表 | 汇总 bias Jacobian、prior 权重和三种装配形态 |
 
 本章的重点不是重新推 projection、gyro 或 accelerometer 的 measurement Jacobian。那些已经在第 4、6、7 章完成。本章只处理额外的平滑 residual。
 
@@ -705,6 +707,244 @@ $$
 
 `BSplineMotionError::evaluateJacobiansImplementation(...)` 在源码中直接抛异常，原因不是这个 prior 没有 Jacobian，而是它没有走普通 residual-Jacobian 评价路径。它的等价 Jacobian 已经通过 $\mathbf Q=\mathbf S^\top\mathbf S$ 被折叠进 Hessian。
 
+### 9.8.1 三种等价装配：全局 sqrt / Kalibr 装 Hessian / Ceres 逐 segment residual
+
+同一个代价 $E=\mathbf c^\top\mathbf Q\mathbf c$ 有三种装配方式。它们在数学上完全等价，但工程上适用的场合完全不同。要把这一章迁移到 Ceres，必须先分清这三者。
+
+**装配 A：全局平方根。** 取 $\mathbf Q=\mathbf S^\top\mathbf S$，令 $\mathbf e=\mathbf S\mathbf c$、$\mathbf J=\mathbf S$。这就是 9.5.1 的虚拟 residual 视角，形式最干净，也是理解“二次型就是 residual 的平方和”最直接的桥。
+
+它的问题不在数学而在工程。$\mathbf Q$ 是全局矩阵，维度是 $DN\times DN$：$N$ 是整条 spline 的控制点总数。一条 $200\ \mathrm s$、knot 间隔 $0.05\ \mathrm s$ 的 bias spline 就有 $N\approx4000$，$DN\approx12000$。
+
+先澄清两个容易想当然、但都站不住的理由。
+
+**其一，全局开方并不会毁掉 9.7 的稀疏结构。** 9.7 说明的是 $\mathbf Q$ 呈 **带状**，带宽由 spline 阶数决定——每个 segment 只连接 $q$ 个 active 控制点，所以半带宽约 $qD$。而带状矩阵的 Cholesky 因子仍然是带状的，带宽与原矩阵完全相同，带外一个 fill-in 都不会产生。稠密 fill-in 是一般稀疏矩阵在消元顺序不好时才会发生的事；带状矩阵的自然顺序本身就已经是最优顺序之一。
+
+**其二，秩亏也不会逼着人放弃稀疏。** 全局 $\mathbf Q$ 确实只是半正定（本节稍后给出每个 segment 上 $\operatorname{rank}\mathbf G_s^{(r)}=q-r$），无 pivot 的 Cholesky 会在某些主元上遇到 $0$。但处理奇异只需要换成能容忍零主元的带状变体——带状 $\mathbf L\mathbf D\mathbf L^\top$，或在主元低于阈值时把该行整行置零——它们同样保持带宽。半正定与稀疏并不冲突。
+
+结论是：$\mathbf S$ 本身就是带状的，它的每一行只碰到某个带内的 $O(q)$ 个控制点。按行分组之后，$\mathbf e=\mathbf S\mathbf c$ 完全可以拆成许多只挂少数控制点的局部 residual block 喂给 Ceres；分解代价也不是 $O((DN)^3)$，带状 Cholesky 是 $O\!\left(DN(qD)^2\right)$，对 $N$ 线性。**装配 A 是一条可行路线，不是一条数学上被堵死的路线。**
+
+它的缺点是工程上的：
+
+**第一，它需要一趟全局装配加一趟全局分解。** 必须先把整条 spline 的 $\mathbf Q$ 显式拼出来，整体分解一次拿到 $\mathbf S$，再把 $\mathbf S$ 的行切回局部 block。三步都是全局操作，而下面装配 C 从头到尾只在单个 segment 内部进行。
+
+**第二，$\mathbf S$ 绑死在 knot 布局上。** knot 间隔、spline 阶数、时间区间任何一处改动，$\mathbf Q$ 的维度和带宽都跟着变，整个 $\mathbf S$ 必须从头重算。标定流程里 knot 布局是要随数据长度和 IMU 频率调整的，把一趟全局分解放进这个循环并不划算。
+
+**第三，如果偷懒不做行分组，直接把 $\mathbf e=\mathbf S\mathbf c$ 当成一个 residual block 交给 Ceres，那才真正出事。** Ceres 的 `CostFunction` 接口是 per-residual-block 的：一个 block 必须在 `AddResidualBlock` 时显式列出它依赖的所有 parameter block，并在 `Evaluate` 里逐个填对应的 Jacobian 块。把 $4000$ 个控制点挂进同一个 block，意味着 $4000$ 个 parameter block 和一个名义上 $12000\times12000$ 的 Jacobian——即使 $\mathbf S$ 数值上是带状的，接口层面也没有地方声明这个带状性。带状性必须靠“按行拆 block”显式表达出来才能被 Ceres 利用。
+
+换句话说，全局平方根是一条合法但绕远的路：绕完一圈得到的仍然是一组局部 residual block，而这组 block 本来就可以不经过任何全局分解直接构造——那就是装配 C。
+
+**装配 B：直接装 Hessian。** 这是 Kalibr 的选择：不开方，把稀疏的 $\mathbf Q$ 原样加到 $\mathbf H$、把 $-\mathbf Q\mathbf c$ 加到 RHS。它避开了分解，也完整保留稀疏性。代价是它绕过了框架的 residual/Jacobian 接口，所以 `evaluateJacobiansImplementation` 只能抛异常。这条路要求优化器允许 error term 直接写线性系统——`aslam_backend` 允许，Ceres 不允许。
+
+**装配 C：逐 segment residual。** Ceres 的 `CostFunction` 接口只接受“给我 residual 和 Jacobian”，所以必须回到 residual 形式。最省事的做法是干脆不在全局层面开方，而是在 **单个 segment** 上开方——同样得到一组局部 block，但整个过程是纯局部的，不需要装配全局 $\mathbf Q$，也不需要任何全局分解。
+
+关键观察来自 9.4 的 block 形式：局部矩阵 $\mathbf Q_s^{(r)}$ 的第 $(a,b)$ 个 $D\times D$ block 是一个标量乘 $\mathbf W$。把那个标量单独拎出来，定义一个 $q\times q$ 的 **标量基函数积分矩阵**：
+
+$$
+\boxed{
+\left[\mathbf G_s^{(r)}\right]_{ab}
+\triangleq
+\int_{\tau_s}^{\tau_{s+1}}
+\mu_a^{(r)}(t)\mu_b^{(r)}(t)\,dt,
+\qquad
+a,b=0,\ldots,q-1.
+}
+$$
+
+于是 9.4 的局部二次型就是一个 Kronecker 积：
+
+$$
+\boxed{
+\mathbf Q_s^{(r)}
+=
+\mathbf G_s^{(r)}\otimes\mathbf W.
+}
+$$
+
+$\mathbf G_s^{(r)}$ 只有 $q\times q$，$q=6$ 时就是一个 $6\times6$ 矩阵。对它做对称特征分解 $\mathbf G_s^{(r)}=\mathbf V\boldsymbol\Lambda\mathbf V^\top$，取
+
+$$
+\boxed{
+\mathbf S_{\mathrm{seg}}
+=
+\boldsymbol\Lambda^{1/2}\mathbf V^\top
+\in\mathbb R^{q\times q},
+\qquad
+\mathbf S_{\mathrm{seg}}^\top\mathbf S_{\mathrm{seg}}
+=
+\mathbf G_s^{(r)}.
+}
+$$
+
+这是一次 $6\times6$ 的分解，离线算一次就够，完全不涉及全局规模。再配上 $\mathbf W=\mathbf W^{1/2\top}\mathbf W^{1/2}$（Kalibr 的 $\mathbf W$ 都是对角，所以 $\mathbf W^{1/2}$ 就是逐元素开方），这个 segment 的 residual 是：
+
+$$
+\boxed{
+\mathbf e^{(s)}
+=
+\left(
+\mathbf S_{\mathrm{seg}}\otimes\mathbf W^{1/2}
+\right)
+\mathbf c^{(s)}
+\in\mathbb R^{qD}.
+}
+$$
+
+Kronecker 的左右顺序由 $\mathbf c^{(s)}$ 的堆叠约定决定：9.4 把 $\mathbf c^{(s)}$ 按控制点分块、每块 $D$ 维，所以 **控制点索引在外、维度索引在内**，$\mathbf S_{\mathrm{seg}}$ 必须写在左边。写反了会得到一个维度相同但数值全错的矩阵，而且 residual 范数依然“看起来合理”，很难在调试时发现。
+
+验证它确实等价，只要把范数展开：
+
+$$
+\left\|\mathbf e^{(s)}\right\|^2
+=
+\mathbf c^{(s)\top}
+\left(
+\mathbf S_{\mathrm{seg}}^\top\mathbf S_{\mathrm{seg}}
+\otimes
+\mathbf W
+\right)
+\mathbf c^{(s)}
+=
+\mathbf c^{(s)\top}
+\left(
+\mathbf G_s^{(r)}\otimes\mathbf W
+\right)
+\mathbf c^{(s)}
+=
+E_s.
+$$
+
+Jacobian 更省事：$\mathbf e^{(s)}$ 对 $\mathbf c^{(s)}$ 是线性的，所以
+
+$$
+\boxed{
+\frac{\partial\mathbf e^{(s)}}
+{\partial\mathbf c_{s+\ell}}
+=
+\left[\mathbf S_{\mathrm{seg}}\right]_{:,\ell}
+\otimes
+\mathbf W^{1/2}
+\in\mathbb R^{qD\times D},
+}
+$$
+
+是一个 **常数矩阵**，不依赖控制点当前值，也不需要在每次迭代重算。
+
+本仓库 `include/ceres_cam_imu/residuals/spline_motion_prior.h` 的 `EuclideanSplineMotionPriorCost<Dimension>` 就是这个模板：它是一个 `SizedCostFunction<6*Dimension, Dimension, ..., Dimension>`，$6$ 个参数块正好是该 segment 的 $q=6$ 个 active 控制点。`src/residuals/bias_motion_prior.cpp` 用 `Dimension=3`、$r=1$、$\mathbf W^{1/2}=\mathbf I_3/\sigma_w$，得到 **$18$ 维 residual**；`src/residuals/pose_motion_prior.cpp` 用 `Dimension=6`，得到 $36$ 维 residual。`optimizer/calibration_problem.cpp` 对 spline 的每个 segment 各添加一个这样的 residual block，于是全局 $\mathbf Q$ 从来没有被显式构造过，稀疏性天然由“每个 block 只挂 $6$ 个参数块”保证。
+
+| | 是否需要分解 | 分解规模 | 是否保稀疏 | 适用 |
+|---|---|---|---|---|
+| A 全局 sqrt | 是 | $DN\times DN$（带状） | 是（因子仍带状） | 讲数学；可行但需全局分解 |
+| B 装 Hessian | 否 | — | 是 | Kalibr `aslam_backend` |
+| C 逐 segment residual | 是 | $q\times q$ | 是 | Ceres |
+
+**一个必须知道的秩亏细节。** $\mathbf G_s^{(r)}$ 不是满秩的。$r$ 阶导数会把次数小于 $r$ 的多项式打成零，而一个 segment 上的曲线恰好张成次数不超过 $q-1$ 的多项式空间，所以
+
+$$
+\boxed{
+\operatorname{rank}\mathbf G_s^{(r)}
+=
+q-r.
+}
+$$
+
+$q=6$、$r=1$ 时秩是 $5$，$r=2$ 时是 $4$。这正是“常值 bias 不被一阶 motion prior 惩罚”这句直觉的矩阵版本。后果有两个：第一，$\boldsymbol\Lambda$ 里会出现精确的零，以及浮点意义下的极小负数，开方前必须截断；第二，$18$ 维 bias residual 里只有 $15$ 个分量线性无关，$\mathbf S_{\mathrm{seg}}$ 有一整行是零。这不影响 Ceres——它只要求 $\mathbf J^\top\mathbf J$ 半正定——但做秩检查时看到亏秩不要当成 bug。
+
+源码里的截断是相对阈值而不是绝对阈值：
+
+```cpp
+const double max_eigenvalue = std::max(0.0, eig.eigenvalues().maxCoeff());
+const double threshold = std::max(1e-18, 1e-12 * max_eigenvalue);
+```
+
+之所以要用相对阈值，是因为 $\mathbf G_s^{(r)}$ 的条件数很大。以 $q=6$、$r=1$、$\Delta t=1$ 为例，六个特征值大致是 $0,\ 4.3\times10^{-7},\ 1.1\times10^{-5},\ 3.3\times10^{-3},\ 5.8\times10^{-2},\ 3.1\times10^{-1}$：$4.3\times10^{-7}$ 是真实的非零特征值，如果用一个绝对阈值（比如 $10^{-6}$）去截断，就会把一个真实约束方向误杀掉。
+
+### 9.8.2 $\mathbf G_s^{(r)}$ 的闭式与 $\Delta t$ 缩放
+
+$\mathbf G_s^{(r)}$ 有闭式，不需要数值积分。第 5 章已经给出 segment 的 **basis matrix** $\mathbf B$：把归一化局部时间记为
+
+$$
+\bar u=\frac{t-\tau_s}{\Delta t}\in[0,1],
+\qquad
+\Delta t=\tau_{s+1}-\tau_s,
+$$
+
+则第 $a$ 个 active 基函数在这一段上是一个多项式，$\mathbf B$ 的第 $i$ 行第 $a$ 列就是它的 $\bar u^i$ 次项系数：
+
+$$
+\mu_a^{(0)}(t)
+=
+\sum_{i=0}^{q-1}
+B_{ia}\,\bar u^{\,i}.
+$$
+
+对时间求 $r$ 阶导数时，每求一次导都要多出一个 $1/\Delta t$，同时次数低于 $r$ 的项被打掉：
+
+$$
+\mu_a^{(r)}(t)
+=
+\Delta t^{-r}
+\sum_{i\ge r}
+B_{ia}
+\frac{i!}{(i-r)!}
+\bar u^{\,i-r}.
+$$
+
+代进积分，并用 $dt=\Delta t\,d\bar u$ 换元、$\int_0^1\bar u^{\,i+j-2r}d\bar u=\frac{1}{i+j-2r+1}$，就得到：
+
+$$
+\boxed{
+\int_{\tau_s}^{\tau_{s+1}}
+\mu_a^{(r)}\mu_b^{(r)}\,dt
+=
+\Delta t^{\,1-2r}
+\sum_{i,j\ge r}
+B_{ia}B_{jb}
+\frac{i!}{(i-r)!}
+\frac{j!}{(j-r)!}
+\frac{1}{i+j-2r+1}.
+}
+$$
+
+**最容易写错的就是那个指数 $1-2r$。** 记法是把它拆成 $\Delta t^{-r}\cdot\Delta t^{-r}\cdot\Delta t$：两个 $r$ 阶导数各贡献一个 $\Delta t^{-r}$，换元的 $dt$ 贡献一个 $\Delta t$。写成 $\Delta t^{-2r}$（漏掉换元）或 $\Delta t^{1-r}$（只算一次求导）都会让 prior 的强度随 knot 密度错误缩放，而且因为整体只是一个正的比例因子，优化仍然会收敛，只是 bias 的平滑程度和 `gyroRandomWalk` 对不上——这类错误极难通过“跑通了”发现。
+
+对 $r=1$，指数是 $-1$：knot 越密，$\Delta t$ 越小，同一个 segment 的 prior 权重越大。这是对的——一阶 motion prior 近似的是 random walk，segment 变短意味着允许的 bias 变化量也应该变小。
+
+`src/residuals/spline_motion_prior.cpp` 的 `segmentWeightDerivativeIntegral` 就是这个公式的逐字翻译：`dt_scale = pow(segment.dt_s, 1 - 2*derivative_order)`，两重循环从 `derivative_order` 起跳，`derivativeMultiplier(i, r)` 返回 $i!/(i-r)!$，分母是 `i_power + j_power + 1`。最后的 `0.5 * (integral + integral.transpose())` 只是对称化，抵消浮点求和顺序带来的不对称。
+
+读者可以用十几行 numpy 自查这个闭式。取任意 $q\times q$ 的 $\mathbf B$（用真实 basis matrix 或随机矩阵都行），一边按闭式算，一边把 $\mu_a^{(r)}$ 采样后做数值积分，两者的相对误差应该落在数值积分精度内：
+
+```python
+import numpy as np
+from math import factorial
+
+def closed_form(B, r, dt):
+    q = B.shape[0]
+    Q = np.zeros((q, q))
+    for a in range(q):
+        for b in range(q):
+            s = sum(B[i, a] * B[j, b]
+                    * (factorial(i) // factorial(i - r))
+                    * (factorial(j) // factorial(j - r))
+                    / (i + j - 2 * r + 1)
+                    for i in range(r, q) for j in range(r, q))
+            Q[a, b] = dt ** (1 - 2 * r) * s
+    return Q
+
+# NumPy 2.0 把 np.trapz 改名为 np.trapezoid；np.trapz 在 2.x 里仍可用但已废弃，
+# 而 NumPy 1.x（本书环境是 1.26.4）里只有 np.trapz。取到哪个用哪个，两边都能跑。
+_trapz = getattr(np, "trapezoid", None) or np.trapz
+
+def quadrature(B, r, dt, n=800001):
+    q = B.shape[0]
+    u = np.linspace(0, 1, n)
+    mu = np.array([sum(B[i, a] * (factorial(i) // factorial(i - r)) * u ** (i - r)
+                       for i in range(r, q)) * dt ** (-r) for a in range(q)])
+    return np.array([[_trapz(mu[a] * mu[b], u) * dt for b in range(q)]
+                     for a in range(q)])
+```
+
+对 $q=6$、$r\in\{1,2\}$、$\Delta t\in\{0.05,0.37,1.0\}$，两者的最大相对误差约 $10^{-12}$，即完全由梯形积分的离散误差主导。顺手把 `np.linalg.matrix_rank(closed_form(B, r, dt))` 打出来，会看到 $q-r$，正好复现上一节的秩亏结论。
+
 ## 9.9 速查表
 
 ### 9.9.1 Measurement residual 里的 bias Jacobian
@@ -748,7 +988,17 @@ $$
 \mathbf J=\mathbf S.
 $$
 
-Kalibr 实现选择直接使用 $\mathbf Q$，因为这样避免显式构造一个可能很大的平方根 residual。
+Kalibr 实现选择直接使用 $\mathbf Q$，因为这样避免显式构造一个可能很大的平方根 residual。要把这一项落到 Ceres 上，最省事的做法不是在全局层面开方（那条路可行但要多一趟全局分解，见 9.8.1），而是按 9.8.1 的装配 C 逐 segment 开方：
+
+### 9.9.3 三种装配的落地形态
+
+| 装配 | residual | Jacobian | 分解规模 |
+|---|---|---|---|
+| 全局 sqrt | $\mathbf e=\mathbf S\mathbf c\in\mathbb R^{DN}$ | $\mathbf S$（带状，半带宽约 $qD$） | $DN\times DN$（带状） |
+| Kalibr 装 Hessian | 无 | 无（直接 $\mathbf H+\!\!=\mathbf Q$） | 不需要 |
+| Ceres 逐 segment | $\mathbf e^{(s)}=(\mathbf S_{\mathrm{seg}}\otimes\mathbf W^{1/2})\mathbf c^{(s)}\in\mathbb R^{qD}$ | $[\mathbf S_{\mathrm{seg}}]_{:,\ell}\otimes\mathbf W^{1/2}$（常数） | $q\times q$ |
+
+其中 $\mathbf S_{\mathrm{seg}}^\top\mathbf S_{\mathrm{seg}}=\mathbf G_s^{(r)}$，$\left[\mathbf G_s^{(r)}\right]_{ab}=\int_{\tau_s}^{\tau_{s+1}}\mu_a^{(r)}\mu_b^{(r)}dt$，闭式见 9.8.2。bias prior 取 $D=3$、$q=6$，residual 是 $18$ 维；pose prior 取 $D=6$，residual 是 $36$ 维。
 
 ## 9.10 常见混淆
 
@@ -771,5 +1021,7 @@ $$
 $$
 
 对任意 Euclidean B-spline，导数积分都可以折成控制点二次型 $\mathbf c^\top\mathbf Q\mathbf c$。Kalibr 的 `BSplineMotionError` 直接把 $\mathbf Q$ 加到 Hessian，把 $-\mathbf Q\mathbf c$ 加到 RHS；等价地，它可以被看成一个虚拟 residual $\mathbf e=\mathbf S\mathbf c$，其中 $\mathbf Q=\mathbf S^\top\mathbf S$。
+
+Ceres 走的是第三条路：不对全局 $\mathbf Q$ 开方，而是把 $\mathbf Q_s^{(r)}$ 拆成 $\mathbf G_s^{(r)}\otimes\mathbf W$，只对 $q\times q$ 的标量矩阵 $\mathbf G_s^{(r)}$ 做特征值分解，得到常数 residual $\mathbf e^{(s)}=(\mathbf S_{\mathrm{seg}}\otimes\mathbf W^{1/2})\mathbf c^{(s)}$ 和常数 Jacobian。$\mathbf G_s^{(r)}$ 本身有闭式，$\Delta t$ 的指数是 $1-2r$；它的秩是 $q-r$，所以 residual 天然亏秩，开方前需要按相对阈值截断特征值。
 
 第 10 章会转向扩展 IMU 模型：scale、misalignment、size-effect 和 acceleration sensitivity。那些参数不是平滑 prior，而是真正进入 gyro / accelerometer 前向预测的传感器模型参数。
