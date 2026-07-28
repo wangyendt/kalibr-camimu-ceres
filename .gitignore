@@ -12,3 +12,4 @@
 # the build file tracked explicitly.
 !/CMakeLists.txt
 __pycache__/
+/.claude/settings.local.json
