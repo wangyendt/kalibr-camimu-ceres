@@ -562,7 +562,7 @@ $$
 [\mathbf R_{ib}\boldsymbol\omega_b]_\times.
 $$
 
-### 10.4.4 对 pose、lever arm 和 gyro bias
+### 10.4.4 对 pose、gravity、lever arm 和 gyro bias
 
 对 pose 控制点，扩展 gyro residual 同时通过角速度和 acceleration sensitivity 两条路径依赖轨迹：
 
@@ -577,6 +577,34 @@ $$
 \mathbf J_{\mathbf u_b,\mathbf c_j}.
 }
 $$
+
+**对 gravity——这一项容易整块漏掉。** 普通 gyro residual 完全不含重力，所以读者很容易默认扩展版也不含。
+但 acceleration sensitivity 分支里的 $\mathbf u_b$ 按 10.1 的定义**显式含 $\mathbf g_w$**：
+
+$$
+\mathbf u_b=\mathbf R_{bw}(\mathbf a_w-\mathbf g_w)+\boldsymbol\alpha_b\times\mathbf r_b+\boldsymbol\omega_b\times(\boldsymbol\omega_b\times\mathbf r_b)
+\ \Longrightarrow\
+\frac{\partial\mathbf u_b}{\partial\mathbf g_w}=-\mathbf R_{bw}.
+$$
+
+沿 $\hat{\boldsymbol\omega}\ni\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf u_b$ 这条链左乘回去：
+
+$$
+\boxed{
+\mathbf J_{\mathbf e^\omega,\mathbf g_w}
+=
+-\,\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf R_{bw}.
+}
+$$
+
+只要 $\mathbf A_g\ne\mathbf 0$，**gyro residual 就参与约束重力方向**——这也是为什么 $\mathbf A_g$ 需要带明显线加速度的运动才能被激发：
+静止时 $\mathbf u_b\approx-\mathbf R_{bw}\mathbf g_w$，量级约 $9.81\ \mathrm{m/s^2}$，正是这一项让 $\mathbf A_g$ 可观测。
+（源码印证：`IccSensors.py:1100` 的 gyro 分支写的是 `a_b = C_b_w * (a_w - g_w) + ...`；
+本仓库 Ceres 实现 `src/residuals/gyroscope_residual.cpp:533-535` 对应
+`-inv_sigma * A_gyro_accel * R_gyro_b * R_b_w`。）
+
+若按 7.9 用 2 自由度的 `EuclideanDirection` 参数化重力，再右乘一次 $\mathbf J_g\in\mathbb R^{3\times2}$ 即可：
+$\mathbf J_{\mathbf e^\omega,\delta\mathbf u}=-\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf R_{bw}\mathbf J_g$。
 
 对 lever arm，普通 gyro 没有依赖，但 acceleration sensitivity 分支通过 $\mathbf u_b$ 依赖 $\mathbf r_b$：
 
@@ -939,6 +967,9 @@ m_{20}&m_{21}&m_{22}
 \end{bmatrix}.
 $$
 
+（这里是 0-based 下标；换成第 6、7 章的 1-based 写法就是 $[m_{11},m_{21},m_{22},m_{31},m_{32},m_{33}]$，
+即 `MatrixBasic.cpp:17-27` **行优先**扫描 mask 得到的切空间顺序，与 7.15.5、6.13.4 完全一致。）
+
 $\mathbf A_g$ 用完整 9 维 row-major 块存储。$\mathbf R_{gi}$ 用 3 维旋转向量存储，预测时通过 $\operatorname{Exp}$ 变成旋转矩阵。Size-effect 的 $\mathbf r_x^i,\mathbf r_y^i,\mathbf r_z^i$ 是三个 3 维向量；默认固定 $\mathbf r_x^i$，只释放后两根轴，避免 size-effect gauge 过早污染普通外参平移。
 
 前向预测集中在 `residuals/imu_model.*`：
@@ -999,6 +1030,7 @@ $$
 | 变量块 | Jacobian |
 |---|---|
 | pose 控制点 $\mathbf c_j$ | $\mathbf M_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\boldsymbol\omega_b,\mathbf c_j}+\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\mathbf u_b,\mathbf c_j}$ |
+| gravity $\mathbf g_w$ | $-\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf R_{bw}$（$\mathbf A_g=\mathbf 0$ 时为 $\mathbf 0$，见 10.4.4） |
 | IMU 外参旋转 $\mathbf R_{ib}$ | $\mathbf M_g\mathbf R_{gi}[\mathbf R_{ib}\boldsymbol\omega_b]_\times+\mathbf A_g\mathbf R_{gi}[\mathbf R_{ib}\mathbf u_b]_\times$ |
 | gyro sensing rotation $\mathbf R_{gi}$ | $\mathbf M_g[\boldsymbol\omega_g]_\times+\mathbf A_g[\mathbf a_g]_\times$ |
 | lever arm $\mathbf r_b$ | $\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf A_r$ |

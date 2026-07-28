@@ -369,6 +369,7 @@ $$
 | design variable | Jacobian | 维度 |
 |---|---|---:|
 | active pose control point $\mathbf c_j$ | $\mathbf M_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\boldsymbol\omega_b,\mathbf c_j}+\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\mathbf u_b,\mathbf c_j}$ | $3\times6$ |
+| gravity $\mathbf g_w$ | $-\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf R_{bw}$ | $3\times3$（2-DOF 参数化时右乘 $\mathbf J_g$ 得 $3\times2$） |
 | IMU 外参旋转 $\mathbf R_{ib}$ | $\mathbf M_g\mathbf R_{gi}[\mathbf R_{ib}\boldsymbol\omega_b]_\times+\mathbf A_g\mathbf R_{gi}[\mathbf R_{ib}\mathbf u_b]_\times$ | $3\times3$ |
 | gyro sensing rotation $\mathbf R_{gi}$ | $\mathbf M_g[\boldsymbol\omega_g]_\times+\mathbf A_g[\mathbf a_g]_\times$ | $3\times3$ |
 | IMU lever arm $\mathbf r_b$ | $\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf A_r$ | $3\times3$ |
@@ -376,7 +377,7 @@ $$
 | gyro matrix $\operatorname{vec}(\mathbf M_g)$ | $[\omega_{g,1}\mathbf I_3\ \omega_{g,2}\mathbf I_3\ \omega_{g,3}\mathbf I_3]$ | $3\times9$ before mask |
 | accel sensitivity $\operatorname{vec}(\mathbf A_g)$ | $[a_{g,1}\mathbf I_3\ a_{g,2}\mathbf I_3\ a_{g,3}\mathbf I_3]$ | $3\times9$ |
 
-两条退化检查：$\mathbf M_g=\mathbf I$、$\mathbf R_{gi}=\mathbf I$、$\mathbf A_g=\mathbf 0$ 时外参旋转行退回 $[\mathbf R_{ib}\boldsymbol\omega_b]_\times$（10.4.3 节）；lever arm 行只来自 acceleration sensitivity 分支——普通 gyro 对 $\mathbf r_b$ 仍是零（10.4.4 节）。
+三条退化检查：$\mathbf M_g=\mathbf I$、$\mathbf R_{gi}=\mathbf I$、$\mathbf A_g=\mathbf 0$ 时外参旋转行退回 $[\mathbf R_{ib}\boldsymbol\omega_b]_\times$（10.4.3 节）；lever arm 行只来自 acceleration sensitivity 分支——普通 gyro 对 $\mathbf r_b$ 仍是零（10.4.4 节）；**gravity 行同理**，$\mathbf A_g=\mathbf 0$ 时为零，但只要 $\mathbf A_g\ne\mathbf 0$，gyro residual 就参与约束重力方向，这一行最容易整块漏掉（10.4.4 节；代码对照 `gyroscope_residual.cpp:533-535`）。
 
 推导出处：10.4 节全部小节。
 

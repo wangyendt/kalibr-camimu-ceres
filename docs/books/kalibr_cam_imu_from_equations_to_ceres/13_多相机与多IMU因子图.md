@@ -553,8 +553,29 @@ reference IMU 的这个 block 存在但不 active，装配时不进 Hessian—�
 **第一阶段——时间对齐。** 先用 reference IMU 的陀螺拟合一条自由 body 角速度 spline $\boldsymbol\omega_{\mathrm{ref}}(t)$（同时估一个常值 ref gyro bias）。然后对两路陀螺模长做互相关：
 
 $$
-\Delta t^i_m=\arg\max_{\tau}\ \mathrm{xcorr}\big(\|\boldsymbol\omega_{\mathrm{ref}}(t)\|,\ \|\mathbf z^\omega_m(t+\tau)\|\big),
+\boxed{
+\Delta t^i_m=\arg\max_{\tau}\ \mathrm{xcorr}\big(\|\boldsymbol\omega_{\mathrm{ref}}(t+\tau)\|,\ \|\mathbf z^\omega_m(t)\|\big),
+}
 $$
+
+即 **$\tau$ 加在参考 IMU 的 spline 上，不是加在被对齐 IMU 的测量上**。
+
+> **符号陷阱：Kalibr 两条互相关路径的约定是相反的，不能互相照抄。**
+>
+> | 路径 | 源码 | 位移写法 |
+> |---|---|---|
+> | cam-IMU（`findTimeshiftCameraImuPrior`） | `IccSensors.py:277-283` | `shift = -discrete_shift*dT`（**有**负号） |
+> | IMU-IMU（`findOrientationPrior`） | `IccSensors.py:920-925` | `shift =  discrete_shift*dT`（**无**负号） |
+>
+> 两处的 `np.correlate(...)` 与 `argmax - (len-1)` 完全同构，唯一差别就是这个负号。
+> IMU-IMU 路径取的滞后 $L$ 满足 $\boldsymbol\omega_{\mathrm{ref}}[n+L]\approx\mathbf z^\omega_m[n]$，
+> 所以 $\Delta t^i_m=L\cdot dT$ 直接就是"往参考侧前移"的量，与上式一致。
+>
+> **自洽性自查**：下面的查询式是 $t_{\text{query}}=t^{\mathrm{imu}}_{m,k}+\Delta t^i_m$，
+> 代入得 $\boldsymbol\omega_{\mathrm{ref}}(t_{m,k}+\Delta t^i_m)\approx\mathbf z^\omega_m(t_{m,k})$——
+> 和互相关式的方向一致。若把 cam-IMU 那条的负号套过来，会得到反号的 $\Delta t$，
+> 即初值偏离真值 $2\Delta t$，多 IMU 初始化质量明显变差（是否收敛还取决于真实延迟大小、
+> 搜索范围、运动激励和其它先验）。
 
 离散峰值再用 `scipy.optimize.fmin` 在连续域细化（仅当 `estimateTimedelay` 且非 reference 时）。这个 $\Delta t^i_m$ **不是** bundle 设计变量，而是查询共享 spline 时的常量偏移：$t_{\text{query}}=t^{\mathrm{imu}}_{m,k}+\Delta t^i_m$（对照 `addAccelerometer/GyroscopeErrorTerms` 里 `tk = im.stamp.toSec() + self.timeOffset`）。
 
