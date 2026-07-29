@@ -4,17 +4,64 @@
 
 一句话：这是 **Kalibr cam-IMU 的可解释 Ceres 版本**。它不把 Kalibr result 当默认求解输入；Kalibr 只作为基线、热启动诊断和部分格式转换环境。
 
-## 为什么值得看
+## 实测性能与精度
 
-| 证据 | 当前结果 |
+截至 2026-07-29，当前版本已经在 `1cam+1imu`、`1cam+4imu` joint 和
+`2cam+1imu` 三类真实数据上完成全量复核。所有 Ceres case 都不读 Kalibr
+`results-imucam.txt`、不运行 Kalibr optimizer，也不靠多候选选择最终解；其中
+`1cam+1imu` 与 `1cam+4imu` 使用独立时间/旋转初始化，TUM `2cam+1imu` 只从
+camchain 保留相机间相对几何。Kalibr 优化结果只在 Ceres 完成后用于评估。
+
+### 测试背景
+
+| 项目 | 口径 |
 |---|---|
-| 匿名基准数据集独立标定 | 全部收敛；外参平移差 `1.3-4.7 mm`，旋转多数 `<0.02 deg` |
-| 墙钟 | Ceres 原生平均约 `103 s`，Kalibr Docker 基线平均约 `203 s` |
-| 热启动诊断 | 从 Kalibr 解出发仍会漂 `0.19-2.63 mm`，说明两套优化问题不是逐位相同 |
-| TUM 双目 | Ceres single-stage residual 达到 Kalibr 同量级，time shift 误差约 `0.155-0.174 ms` |
-| 文档 | `docs/books/kalibr_cam_imu_from_equations_to_ceres` 从坐标系、残差、Jacobian 写到源码对应 |
+| 生产数据 | 12 个匿名采集 session；基础组每个 session 跑 `data1.csv`，多 IMU 组包含 4 路独立时间戳 IMU |
+| 多相机数据 | 2 个 TUM `2cam+1imu` case |
+| Ceres | 本机 native Release，`num_threads=4`，所有 case 串行、每例只跑一次 |
+| Kalibr | Docker `linux/arm64` 基线；本轮复用已有结果，没有与 Ceres 同时重跑 |
+| 初始化 | `1cam+4imu` 为一次 deterministic Kalibr-style no-Kalibr initializer + 一次 joint solve；single 使用同源的时间/旋转初始化；TUM 保留 camchain 相机基线 |
+| 精度口径 | `C/K` 表示 Ceres 与 Kalibr 两套结果之差，**不是机械真值误差** |
+| 墙钟口径 | runner 端到端 wall time；native Ceres 与 Docker Kalibr 的启动、I/O 环境并不完全相同 |
 
-速度数字来自本机 arm64 Ceres 原生二进制对比 amd64 Kalibr Docker；严格算法倍率需要在同一 native Linux 环境复测。
+### 精度
+
+平移、旋转和时间列均为 Ceres 相对 Kalibr 的绝对差 `平均值 / 最大值`。
+`1cam+4imu` 按 48 条 camera-to-each-IMU effective chain 统计，不能只看
+camera0/IMU0 一条链。
+
+| 真实数据拓扑 | 数量 | 完成情况 | C/K 平移 | C/K 旋转 | C/K time shift |
+|---|---:|---|---:|---:|---:|
+| `1cam+1imu` 基础组 | 12 | `12/12` | `2.27 / 3.12 mm` | `0.0028 / 0.0067 deg` | `0.109 / 0.227 ms` |
+| `1cam+1imu`，四路 IMU 分别独立标定 | 48 | `48/48` | `3.48 / 16.07 mm` | `0.0365 / 0.8816 deg` | `0.186 / 0.561 ms` |
+| `1cam+4imu` joint | 12 joint / 48 chain | `12/12` 流程完成 | `5.91 / 26.35 mm` | `0.011 / 0.066 deg` | `0.388 / 1.210 ms` |
+| `2cam+1imu` TUM | 2 | `2/2` | `0.70 / 1.06 mm` | `0.0323 / 0.0402 deg` | `0.048 / 0.075 ms` |
+
+48 路独立 `1cam+1imu` 的 reprojection mean 全部小于 `1 px`，最大值为
+`0.1977 px`。TUM 两例的相机链闭环误差最大为 `0.0346 deg / 0.245 mm`，且
+Ceres 的 reprojection、gyro、accel mean residual 均略低于对应 Kalibr 结果。
+
+### 墙钟
+
+| 路径 | Ceres native wall mean | Kalibr arm64 Docker wall mean | 本机读数 |
+|---|---:|---:|---|
+| `1cam+1imu` 基础组 | `87.8 s` | `127.5 s` | Ceres 低约 `31%` |
+| 四路 IMU 分别跑 `1cam+1imu`，每次标定均值 | `94.5 s` | `123.7 s` | Ceres 低约 `24%` |
+| 一次 `1cam+4imu` joint | `548.7 s` | `325.2 s` | Ceres 高约 `69%` |
+| `2cam+1imu` TUM | `71.3 s` | `64.7 s` | Ceres 高约 `10%` |
+
+多 IMU joint 是当前最明确的性能短板：同一 session 的四次 Ceres single 串行和平均
+`377.9 s`，一次 joint 反而需要 `548.7 s`，慢 `45.2%`。初始化器外围开销只有约
+`3 s`，主要时间耗在 joint solver；其中 6 个 case 正常触发停止条件，另外 6 个用完
+150 次迭代预算后结束。相对地，Kalibr joint 平均 `325.2 s`，比四次 Kalibr single
+串行和 `494.8 s` 快 `34.3%`。因此当前优化重点是 joint 收敛和停止策略，不是恢复
+多候选初始化。
+
+**多相机 + 多 IMU 的证据边界：**真实数据目前分别覆盖了 `1cam+4imu` 和
+`2cam+1imu`，还没有一组真实 `Mcam+Nimu` 复合拓扑。合成 `2cam+2imu` 已在
+Release/Debug 下通过功能、独立时间原点和 Jacobian 回归，但没有可对外报告的真实
+精度或墙钟数字。完整逐 case 数据、指标定义和复现命令见
+[20260729 全量复核](docs/experiment/20260729_Ceres%E4%B8%8EKalibrDocker%E5%A4%9A%E6%95%B0%E6%8D%AE%E9%9B%86%E9%80%9F%E5%BA%A6%E7%B2%BE%E5%BA%A6%E5%85%A8%E9%87%8F%E5%A4%8D%E6%A0%B8.md)。
 
 ## 目录
 
@@ -93,7 +140,7 @@ docker build -f docker/Dockerfile -t kalibr-camimu-ceres-solver:20.04 .
 - 常用命令：[docs/常用命令.txt](docs/%E5%B8%B8%E7%94%A8%E5%91%BD%E4%BB%A4.txt)
 - 参数速查：[docs/knowhow/20260618_CeresCamIMU参数速查表.md](docs/knowhow/20260618_CeresCamIMU%E5%8F%82%E6%95%B0%E9%80%9F%E6%9F%A5%E8%A1%A8.md)
 - 推导书：[docs/books/kalibr_cam_imu_from_equations_to_ceres/README.md](docs/books/kalibr_cam_imu_from_equations_to_ceres/README.md)
-- 速度精度实验：[docs/experiment/20260616_Ceres与KalibrDocker多数据集速度精度对比.md](docs/experiment/20260616_Ceres%E4%B8%8EKalibrDocker%E5%A4%9A%E6%95%B0%E6%8D%AE%E9%9B%86%E9%80%9F%E5%BA%A6%E7%B2%BE%E5%BA%A6%E5%AF%B9%E6%AF%94.md)
+- 最新速度精度实验：[docs/experiment/20260729_Ceres与KalibrDocker多数据集速度精度全量复核.md](docs/experiment/20260729_Ceres%E4%B8%8EKalibrDocker%E5%A4%9A%E6%95%B0%E6%8D%AE%E9%9B%86%E9%80%9F%E5%BA%A6%E7%B2%BE%E5%BA%A6%E5%85%A8%E9%87%8F%E5%A4%8D%E6%A0%B8.md)
 - 重构计划：[docs/plan/20260615_Ceres_Cam-IMU标定重构计划.md](docs/plan/20260615_Ceres_Cam-IMU%E6%A0%87%E5%AE%9A%E9%87%8D%E6%9E%84%E8%AE%A1%E5%88%92.md)
 
 ## English
@@ -107,7 +154,7 @@ It contains:
 - Tools for converting Kalibr pkl, ROS bag, and EuRoC/TUM-style inputs into Ceres CSV files.
 - A Kalibr Docker baseline runner for controlled comparisons.
 
-On the anonymized benchmark set, standalone Ceres converges on every run and averages about `103 s` wall clock versus about `203 s` for the Kalibr Docker baseline on this machine. Treat that as an engineering benchmark, not a universal algorithmic speedup claim, because the Kalibr baseline is Docker/amd64 while Ceres is native arm64.
+In the 2026-07-29 standalone benchmark, all 12 production `1cam+1imu` cases completed with a mean/max Ceres-to-Kalibr translation difference of `2.27 / 3.12 mm` and mean wall time of `87.8 s` versus `127.5 s` for Kalibr Docker arm64. All 12 `1cam+4imu` joint cases also completed; their 48 effective camera-to-IMU chains differ from Kalibr by `5.91 / 26.35 mm` in mean/max translation, while Ceres joint wall time is still slower (`548.7 s` versus `325.2 s`). Two TUM `2cam+1imu` cases differ by at most `1.06 mm` and `0.0402 deg`. These are native-Ceres versus Docker-Kalibr engineering measurements, not ground-truth errors or universal speedup claims. Real `Mcam+Nimu` performance remains unmeasured; synthetic `2cam+2imu` is used only for functional regression.
 
 ## License
 
