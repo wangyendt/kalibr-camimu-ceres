@@ -1,5 +1,12 @@
 # SuiteB no-Kalibr 1cam+Nimu Ablation
 
+> **历史实验状态（2026-07-30）：** 本文记录的是 2026-06-24 至 06-27
+> 用于定位优化 basin 的 adaptive / single-seed / 多候选 ablation，文中的“当前
+> 默认”和复现命令只对当时 revision 成立。当前生产 runner 已收敛为
+> `--ceres-multi-imu-init kalibr-style`：一次确定性初始化加一次 joint solve，旧
+> selector 参数已经删除。本文的数值仍作为历史对照保留，当前结果见
+> `20260729_Ceres与KalibrDocker多数据集速度精度全量复核.md`。
+
 ## 结论先行
 
 这轮先定位 `b09 / 2025_04_19_19_20_46`，再补跑 12 组 full adaptive joint，并用 `simulation/generated/one_cam_four_imus` 做 ground-truth sanity check。结论是：当前还没有找到可以在不使用 Kalibr result 的情况下，把 benchmark 后半组的 1cam+4imu joint 拉到现有 Kalibr-init tight joint 同量级的配置。
@@ -66,7 +73,7 @@ chain_long_single_time_t_wide_tight
 - 仿真 `1cam+4imu` 的 no-Kalibr Ceres 仍能贴近真值：默认 joint camera 约 `0.70 mm / 0.031 deg`，非参考 IMU lever 为 `8.4/10.3/11.3 mm`；Ceres single-seed joint camera 约 `0.77 mm / 0.084 deg`，lever 为 `7.0/9.8/11.8 mm`。这说明 Ceres 多 IMU 实现不是整体错误，b09 更像实测数据/初始化/可观性特例。
 - 仿真上显式 multi-IMU translation prior 会把默认 camera 平移从 `0.70 mm` 推到 `6.53 mm`，强正则会到 `10.06 mm`；因此它目前只能作为消融/诊断开关，不能进入 `--corner-defaults` 默认。
 - 已补一个防坏初值的代码门限：`--imu-chain-prior-max-lever-accel-rms`，并把 multi-IMU `--corner-defaults` 默认改为尝试 lever prior + `0.5 m/s^2` RMS gate。仿真 lever 候选 RMS 为 `0.056-0.117 m/s^2`，可接受；b09 候选 RMS 为 `0.703/0.863/0.717 m/s^2`，会被拒绝并保持 `r_b=0`。该补丁只防止坏 lever prior 被使用，不会单独解决 b09。
-- 新增 camera-IMU time-shift prior 修复：旧实现对正值 gyro norm 做未去均值、未归一化 full-lag 点积，天然偏向 0 lag。改为去均值归一化相关后，当时的符号实现令 b09 的 chain-prior 初值从 `0 ms` 改成 `+4.007 ms`，与 Kalibr joint `+3.842 ms` 只差 `0.166 ms`。**2026-07-28 更正：**该 `+4.007 ms` 使用了与 `np.correlate`/Kalibr 不一致的 `shift=+lag\,dT`；修正为 Kalibr 的 `shift=-lag\,dT` 后，同一平坦峰报告 `-4.007 ms`。因此 b09 只能证明边界 gate 没触发，不能作为符号正确性的证据。同一符号错误也把 b01 的 full-search 结果记成了 `+122 ms`“假峰”；修正后是 `-122.074 ms`，与当前 Kalibr single `-117.531 ms` 同号且只差 `4.543 ms`。本轮 12 组复核表明，旧 `0.05 s` 窗口会误拒绝前 6 组约 `-0.09~-0.12 s` 的有效峰，因此默认窗改为经该矩阵验证的 `0.2 s`，同时保留 `boundary_peak_rejected` 防止接受真正的裁剪峰。
+- 新增 camera-IMU time-shift prior 修复：旧实现对正值 gyro norm 做未去均值、未归一化 full-lag 点积，天然偏向 0 lag。改为去均值归一化相关后，当时的符号实现令 b09 的 chain-prior 初值从 `0 ms` 改成 `+4.007 ms`，与 Kalibr joint `+3.842 ms` 只差 `0.166 ms`。**2026-07-28 更正：**该 `+4.007 ms` 使用了与 `np.correlate`/Kalibr 不一致的 `shift=+lag\,dT`；修正为 Kalibr 的 `shift=-lag\,dT` 后，同一平坦峰报告 `-4.007 ms`。因此 b09 只能证明边界 gate 没触发，不能作为符号正确性的证据。同一符号错误也把 b01 的 full-search 结果记成了 `+122 ms`“假峰”；修正后是 `-122.074 ms`，与当前 Kalibr single `-117.531 ms` 同号且只差 `4.543 ms`。本轮 12 组复核表明，旧 `0.05 s` 窗口会误拒绝前 6 组约 `-0.09~-0.12 s` 的有效峰，因此当时默认窗先改为经该矩阵验证的 `0.2 s`，同时保留 `boundary_peak_rejected` 防止接受真正的裁剪峰。**2026-07-29 更新：**后续四 session 复跑证明 `0.2 s` 仍会误拒绝 9 路有效峰；当前默认已改为最小 `50%` 重叠限定的全范围搜索，详见 [20260729_相机IMU全范围时间偏移初始化复核.md](20260729_相机IMU全范围时间偏移初始化复核.md)。
 - 在 time-shift 修复基础上，b09 的 no-Kalibr `chain-prior + multi-IMU translation prior + 0.01m/0.05m/s^2 正则 + wide/wide/tight stage` 从旧 `35.7 mm / 1.055 deg / -3.84 ms` 改到 `28.7 mm / 1.060 deg / -0.002 ms`，accel mean 从 `0.432` 降到 `0.326 m/s^2`。这是当前 b09 chain-prior 方向的最好结果，但 rotation 和 non-reference effective chain 仍明显落后 Kalibr-init tight，不满足完成条件。
 - 新增 fixture-median translation seed 反例：从其它 11 个 Ceres single case 取 IMU 间 `r_b` 中位数是物理上比平均 `T_c_b` 更合理的尝试，但 b09 两阶段结果为 `106.5 mm / 1.77 deg / accel 0.833`，三阶段结果仍为 `105.2 mm / 2.64 deg / accel 0.817`。它会和目标数据自身的 rotation/time/pose basin 冲突，不作为默认或 accuracy preset。
 - 新增 runner 级 `--ceres-multi-imu-candidate-preset no-kalibr-accuracy`：显式跑 `single_short`、`single_long`、`chain_multi_t_wide_tight`、`chain_multi_ograv_t_wide_tight`、`chain_accel_refine_t_wide_tight`、`chain_multi_single_time_t_wide_tight`、`chain_multi_ograv_single_time_t_wide_tight`、`chain_long_t_wide_tight`、`chain_long_single_time_t_wide_tight` 九个不使用 Kalibr 初始化/选择的候选。selector 只看 Ceres residual health、camera time-shift boundary gate、chain accel max 绝对门限和候选 residual score；Kalibr 只在候选选完后作为 benchmark compare。当前代码另有 `no-kalibr-accuracy-trimmed` 六候选入口，用于下一轮 12 组验证。
@@ -178,7 +185,7 @@ Kalibr 自身 single-joint 最大也约 `96 mm`，所以 b09 的 single vs joint
 - residual-weighted camera translation 是一个明确反例：b09 上 `single_imu1` 与 Kalibr single 几乎一致，但 Kalibr joint 把 `cam0-imu0` 拉向四路 single translation 的中心附近，所以加权平均会“看起来”接近 Kalibr joint；b01 四路 single 也都健康，但它们代表 camera 到四个不同 IMU 的物理外参，平均后落到夹具中心，导致 camera0 从正确的 imu0 外参退化到 `79.5 mm`。因此不能用 single residual 直接选择或平均 reference body translation。
 - 对 Ceres-single seed 路径加 `0.01m/0.05m/s^2` 正则没有复现 chain-prior 路径的 camera translation 改善，camera0 反而变成 `90.0 mm`。这说明正则的作用依赖 seed basin，不能作为通用修复。
 - normalized camera time-shift 修复解决了 b09 的 base time offset，但不解决 rotation basin。默认 staged 下 b09 time offset 从 `-3.84 ms` 改到 `+0.095 ms`，translation 仍约 `77 mm`；叠加 multi-IMU translation prior 后 translation 到 `28.7 mm`，但 rotation 仍约 `1.06 deg`，non-reference effective chain 仍有 `65-80 mm` 级平移差。后续不能只围绕 time shift 调参。
-- **2026-07-28 更正：**b01 不是 normalized time-shift 的反例。`+122 ms` 来自后来确认的整体符号回归；正确的 applied shift 是 `-122.074 ms`，与 Kalibr/Ceres single/joint 的 `-117 ms` 附近一致。旧 `0.05 s` 窗口卡边界只是搜索范围不足。当前默认扩大为 `0.2 s`，`boundary_peak_rejected` 继续作为真正裁剪峰的防坏门限。
+- **2026-07-28 更正：**b01 不是 normalized time-shift 的反例。`+122 ms` 来自后来确认的整体符号回归；正确的 applied shift 是 `-122.074 ms`，与 Kalibr/Ceres single/joint 的 `-117 ms` 附近一致。旧 `0.05 s` 窗口卡边界只是搜索范围不足。该阶段默认扩大为 `0.2 s`，`boundary_peak_rejected` 继续作为真正裁剪峰的防坏门限。**2026-07-29 更新：**当前默认为最小 `50%` 重叠限定的全范围粗到细搜索；`0.2 s` 只保留为用户显式可选的上限。
 - 固定 IMU extrinsics 和换 reference IMU 都没有把 b09 拉到 Kalibr-init 同量级。固定外参会让 stage1 继续通过 pose/control 降 cost，但 accel tail 到 `22.05 m/s^2`；换到 imu3 body 后，转回原始 imu0 仍有 `93.1 mm`。这两条路线都不能单独作为 production 默认。
 - 对 no-Kalibr seed，`step_norm < 0.02` 的 stage stop 确实过早：sign-fix 默认 stage0 在 iter 5 停止时 `cost_change=4312`。但禁用 step stop 后只是把 stage0 跑满 30 次、cost 从 `4.12e5` 降到 `2.86e5`，最终 camera0 仍是 `95.7 mm`，且 accel max 从 `5.92` 恶化到 `26.84 m/s^2`。开启 `--solver-restore-best-state` 后结果不变，说明需要 residual-health gate，而不是 cost best-state。
 - 当前 Ceres Kalibr-init tight joint 的 b09 accel mean 也约 `0.865 m/s^2`，sign-fix Ceres-single seed 默认为 `0.844 m/s^2`。这里说的是 Ceres hot-start residual，不是 Kalibr Docker 自身 residual。因此 b09 的 no-Kalibr 风险不是 residual 数量级更差，而是 benchmark 无金标时 single basin 与 Kalibr joint basin 的外参差异不可直接判定。
