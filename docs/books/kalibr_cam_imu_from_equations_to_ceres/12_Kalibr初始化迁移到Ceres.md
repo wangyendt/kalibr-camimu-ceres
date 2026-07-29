@@ -4,39 +4,36 @@
 
 当 `ceres_cam_imu` 和 Docker Kalibr 的最终精度还有差距时，第一步不能直接怀疑优化器。Kalibr 在正式构建 cam-IMU 优化问题前会先做一组初始化：time shift prior、camera-to-IMU 旋转先验、重力方向、pose spline、bias spline。只要其中一个初值不同，后续残差和 staged optimizer 即使一致，也可能进入不同的局部路径。
 
-本章记录当前需要迁移的初始化链路、已经对齐的部分、仍未迁移的部分，以及验证命令。
+本章说明当前初始化链路的结构、不同入口的证据边界，以及它们怎样接到同一个 Ceres 联合问题。
 
-## 三种初始化入口：暖启动 vs 独立
+## 四种初始化入口：暖启动 vs 独立
 
-读这一章前必须先分清 `ceres_cam_imu` 的三种初值来源，否则会把“暖启动一致性”误当成“从零独立标定”。
+读这一章前必须先分清 `ceres_cam_imu` 的四种初值来源，否则会把“暖启动一致性”误当成“从零独立标定”。
 
-**`--init-from-kalibr`（暖启动）只从 Kalibr 结果文件 seed 三个量。** 源码 `apps/calibrate_cam_imu.cpp` 的处理就三行（`KalibrResult` 结构体见 `core/types.h`）：
+**`--init-from-kalibr`（暖启动）读取的量取决于结果文件和传感器拓扑。** 单 camera + 基础 IMU 的最小集合是 camera—IMU 外参、camera time shift 和重力；多 camera / 多 IMU 结果还会提供每个 camera 的外参与 shift、IMU chain 外参和 per-IMU time offset，以及结果中确实存在的 IMU intrinsic blocks。`KalibrResult` 的完整字段见 `core/types.h`，状态写入见 `initializeImuIntrinsicsFromKalibr(...)` 和 `initializeImuExtrinsicsFromKalibr(...)`。
 
-```cpp
-options.initial_camera_time_shift_s = kalibr.timeshift_cam_to_imu_s;  // ① camera→IMU time shift
-initial_T_c_b = matrixToPose6(kalibr.T_ci);                            // ② camera-IMU 外参
-initial_gravity = kalibr.gravity;                                      // ③ 重力
-```
+它仍然**不读** Kalibr 的 pose spline、bias spline 或优化器中间状态。`--init-from-result` 读取本程序之前输出的 Ceres 标定状态；`--init-from-camchain` 从 `*-camchain-imucam.yaml` 读 camera—IMU 位姿和 time shift，但没有 gravity。完全独立入口不读 Kalibr cam-IMU 联合优化结果。
 
-它**不读** Kalibr 的 pose spline、bias spline 或任何中间状态。`--init-from-camchain` 类似，但只从 `*-camchain-imucam.yaml` 读 `T_cam_imu` 和 `timeshift_cam_imu`（2 个量，没有 gravity）。完全独立（两个开关都不给）则一个 Kalibr 标定产物都不读。
+四种入口下各变量的初值来源：
 
-三种入口下各变量的初值来源：
+| 变量 | `--init-from-kalibr` | `--init-from-result` | `--init-from-camchain` | 完全独立 |
+|---|---|---|---|---|
+| camera 外参 | Kalibr 结果中每个 camera 的 `T_ci` | Ceres 结果中的 camera chain | camchain `T_cam_imu` / camera chain | cam0 零平移，旋转由 Wahba/Kabsch + 小 Ceres 问题估计；其他 camera 保留相对基线 |
+| camera→IMU time shift | Kalibr 结果中每个 camera 的 shift | Ceres 结果 | camchain `timeshift` | 每个 camera 独立做 gyro-norm 互相关；生产路径不继承 camchain time shift |
+| 重力 `g_w` | Kalibr 结果 | Ceres 结果 | （无，需另给） | orientation/gravity prior |
+| IMU chain 外参 | 多 IMU 结果中的 `T_i_b` | Ceres 结果 | （无） | 每个非参考 IMU 对 IMU0 做时间对齐与相对旋转估计，平移置零 |
+| per-IMU time offset | Kalibr 结果 | Ceres 结果 | （无） | 每个非参考 IMU 独立做 gyro-norm 互相关 |
+| IMU intrinsics | 结果中可解析的 blocks | Ceres 结果 | （无） | 当前模型默认值 / 命令行配置 |
+| pose spline 控制点 | **独立**：对 camera target pose 做 B 样条最小二乘 | 同左 | 同左 | 同左 |
+| gyro / accel bias spline | **独立**：常值初值 | 同左 | 同左 | 参考 gyro bias 可由 orientation prior 注入，其余从零开始 |
 
-| 变量 | `--init-from-kalibr` | `--init-from-camchain` | 完全独立 |
-|---|---|---|---|
-| camera-IMU 外参 `T_c_b` | Kalibr 结果 `T_ci` | camchain `T_cam_imu` | 零平移 + 单位旋转，旋转由 Wahba/Kabsch 闭式估计 |
-| camera→IMU time shift | Kalibr 结果 | camchain `timeshift` | gyro-norm 互相关（`--estimate-time-shift-prior`） |
-| 重力 `g_w` | Kalibr 结果 | （无，需另给） | `--estimate-orientation-gravity-prior` 均值方向 |
-| pose spline 控制点 | **独立**：对导出的 camera target pose 做 B 样条最小二乘 | 同左 | 同左 |
-| gyro / accel bias | **独立**：常值零（gyro 可由 orientation prior 注入） | 同左 | 同左 |
-
-这里有一个容易混的点：pose spline 的初值来自 `corner_poses.csv`，那是 Kalibr 在**角点提取阶段**算的单帧 PnP 几何（相机单独算的），**不是** Kalibr cam-imu 联合优化的输出。所以即使用 `--init-from-kalibr`，真正“从 Kalibr 标定结果暖启动”的也只有外参、time-shift、gravity 这三个标定产物。
+这里有一个容易混的点：pose spline 的初值来自 `corner_poses.csv`，那是角点预处理阶段算的单帧 PnP 几何（相机单独算的），**不是** Kalibr cam-IMU 联合优化的输出。所以即使用 `--init-from-kalibr`，Ceres 也不会继承 Kalibr 的轨迹与 bias spline；多传感器时继承的标定产物则不止基础的三个量。
 
 由此引出三条必须分清的边界：
 
-1. **暖启动一致性 ≠ 从零独立。** `--init-from-kalibr` 把 Kalibr 的三个标定产物当初值，再放开外参 + pose + bias（time-shift 被紧软先验钉住、gravity 常配 `--fix-gravity` 固定）。它验证的命题是“在 Kalibr 解附近，Ceres 会不会稳稳停住并复现残差”——多数据集实测外参只动亚毫米，说明 Ceres 的前向模型 / 残差方向 / 手写 Jacobian / 权重口径在 Kalibr 解处正确自洽。它不回答“不给 Kalibr 任何标定产物能否独立收敛到同一点”。
-2. **完全独立尚未等价。** 去掉 `--init-from-kalibr` 后，外参平移差仍约 `3.29 cm`，靠 `independent-capped-pe-full`（只给最后 pose+extrinsic 阶段限 trust-region 半径 + staged 解冻）能压到约 `2.4 mm`，但未达 Kalibr。瓶颈是外参平移可观性 + 动态段 pose 二阶导 + 主优化调度，不是缺某个初始化公式。
-3. **time-shift 仍靠紧软先验锚定。** 暖启动里 time-shift 初值 = Kalibr 值，再加 `--time-shift-prior-sigma 0.0001`（0.1 ms）把它钉在附近，所以实测 time-shift delta < 1 ms 是“被先验锚住”的结果，不是自由 refine 出来的。完全放开会漂（曾记录到几十毫秒级），尚未复刻 Kalibr Optimizer2 的最终 time-shift refinement。
+1. **暖启动一致性 ≠ 从零独立。** `--init-from-kalibr` 把 Kalibr 输出中与当前拓扑对应的标定量当初值，再进入 Ceres 的独立 spline 初始化和联合优化。它验证的命题是“在 Kalibr 解附近，Ceres 会不会稳定下降并复现残差”——多数据集实测外参只动亚毫米，说明 Ceres 的前向模型 / 残差方向 / 手写 Jacobian / 权重口径在 Kalibr 解处正确自洽。它不回答“不给 Kalibr 任何联合标定产物能否独立收敛到同一点”。
+2. **完全独立已经有生产单路径，但不能宣称与 Kalibr 最终解等价。** 2026-07-29 起，`--corner-defaults` 的冷启动会调用 `kalibr_style_multi_imu_initializer`：自行估计每个 camera—IMU 时间偏移、camera0 旋转/重力/参考 gyro bias，以及非参考 IMU 的相对时间和旋转；运行时不读 Kalibr 优化结果，也不跑六候选。全量实验中 48 个独立 `1cam+1imu` 的 C/K 平移差均/最大为 `3.48 / 16.07 mm`，12 个 `1cam+4imu` 的 48 条 effective chain 为 `5.91 / 26.35 mm`。这证明独立路径已可用，也同时保留了 joint 平移 tail 尚未完全收口的边界。
+3. **紧 time-shift 先验是可选策略，不再是独立生产路径的依赖。** 新 joint 全量日志中 `time_priors=0`；camera time shift 从互相关值开始自由优化，非参考 IMU time offset 按 Kalibr 默认作为固定 correction，只在显式传 `--optimize-imu-time-offsets` 时才进入 problem。全量 48 个 single 的 abs C/K time-shift 平均/最大为 `0.186 / 0.561 ms`，所以当前亚毫秒对齐不能再解读为“被 0.1 ms 先验焊住”。
 
 ## 强激励数据中的诊断边界
 
@@ -84,7 +81,7 @@ $$
 
 `IccSensors.py::IccImu.addGyroscopeErrorTerms()` 和 `addAccelerometerErrorTerms()` 对这两类 residual 都挂 `CauchyMEstimator(mSigma)`；`IccScaledMisalignedImu` 才把模型扩展为 $\mathbf M_g,\mathbf A_g,\mathbf C_{g i},\mathbf M_a$ 并改用 `HuberMEstimator(mSigma)`。
 
-在这个对齐设置下，`--init-from-kalibr` 的结果具有一个明确解释：它只说明 Ceres residual 和手写 Jacobian 在 Kalibr 外参、time shift、gravity 附近是可工作的。由于 Kalibr txt 不包含最终 pose spline 和 bias spline，Ceres 仍会独立拟合 pose 控制点并以自己的 bias spline 初值进入优化；所以零迭代 IMU residual 不应被拿来和 Kalibr 最终 residual 直接比较。
+在这个对齐设置下，`--init-from-kalibr` 的结果具有一个明确解释：它只说明 Ceres residual 和手写 Jacobian 在 Kalibr 提供的标定状态附近是可工作的。由于 Kalibr txt 不包含最终 pose spline 和 bias spline，Ceres 仍会独立拟合 pose 控制点并以自己的 bias spline 初值进入优化；所以零迭代 IMU residual 不应被拿来和 Kalibr 最终 residual 直接比较。
 
 更有判别力的实验是让 Ceres 从 Kalibr 外参启动并迭代 30 次。该实验可把 reprojection 降到约 `0.27 px` RMS，gyro 降到约 `0.019 rad/s` RMS，camera rotation error 降到约 `0.026 deg`。这说明生产 residual 的前向模型、残差方向和解析 Jacobian 不是当前强激励失败的主因。
 
@@ -163,11 +160,11 @@ build/calibrate_cam_imu --kalibr-corner-defaults --cam /ABS/cam_imu/cam0-camchai
 estimated time shift prior: shift_s=-0.55052438939288217 pose_kps=100 fit_lambda=0.0001 discrete_shift_samples=-278 sample_dt_s=0.001980303558967202 samples=22929
 ```
 
-> **这里的 `discrete_shift_samples` 是"施加的离散 shift"，不是原始 correlation lag。** 两者差一个负号：`best_lag` 是使 $\sum_i \text{predicted}[i]\cdot\text{measured}[i-\text{lag}]$ 最大的原始滞后，而对外报告的 `discrete_shift_samples = -best_lag`，与 `shift_s` 同号，恒满足
+> **这里的 `discrete_shift_samples` 是最接近实际施加 shift 的离散表示，不是原始 correlation lag。** 两路时间原点相同时，它与使 $\sum_i \text{predicted}[i]\cdot\text{measured}[i-\text{lag}]$ 最大的 `best_lag` 差一个负号。时间原点不同时，实际秒值还包含精确的原点差，并满足
 >
-> $$\texttt{shift\_s} = \texttt{discrete\_shift\_samples}\times\texttt{sample\_dt\_s}.$$
+> $$\texttt{shift\_s} = \texttt{discrete\_shift\_samples}\times\texttt{sample\_dt\_s}+\texttt{discrete\_shift\_residual\_s}.$$
 >
-> 上面这行确实对得上：$-278\times 0.0019803 = -0.55052$。早期版本的日志曾把这个字段按 `best_lag`（即 `+278`）打印，和同一行的 `shift_s` 反号；若在旧日志或旧 issue 里看到 `+278`，那是同一个量的另一种符号约定，不是另一个结果。符号约定的完整说明见 `include/ceres_cam_imu/initialization/time_shift_initializer.h` 中 `TimeShiftPriorEstimate` 的注释，以及第 13 章 13.9 的「符号陷阱」。
+> 上面的同原点样例余量为零，因此仍有 $-278\times 0.0019803=-0.55052$。若原点差不是采样周期的整数倍，`shift_s` 保留未量化的秒值，避免紧先验平白损失半个采样周期。符号约定的完整说明见 `include/ceres_cam_imu/initialization/time_shift_initializer.h` 中 `TimeShiftPriorEstimate` 的注释，以及第 13 章 13.9 的「符号陷阱」。
 
 Docker Kalibr 零迭代基线的 time shift 是：
 
@@ -236,9 +233,9 @@ return UniformBSpline(dimension, order, t_min, t_max, segments);
 | camera-to-IMU 旋转先验 | 用 camera pose spline 预测角速度，优化 `R_i_c` 和常值 gyro bias，最多 50 次 | 已新增 `initialization/orientation_gravity_initializer.*` 和 CLI `--estimate-orientation-gravity-prior`；先用 Wahba/Kabsch 闭式解求 `gyro_imu ~= R_i_c * omega_camera + bias`，再用只含 `r_i_c` 和 `b_g` 的小 Ceres problem 手写 Jacobian refine | 结构已迁移到 Kalibr 的“小优化器”形式；当前数据上闭式解已最优，refine 只执行 1 次且数值不变 |
 | 重力初始化 | 用旋转先验把 `-accel` 转到 world，取均值并归一到 `9.80655` | 新 initializer 同时输出 gravity；优化时默认用固定范数球面流形 | 独立 gravity 初值已迁移 |
 | camera-to-IMU 平移初值 | cam0 使用 `sm.Transformation()` 的零平移；没有单独平移初始化公式 | `CameraExtrinsicBlock` 默认平移已改为 `[0, 0, 0]`；旧默认 `z=0.1m` 会让独立初始化卡入错误盆地 | 初值已按 Kalibr 对齐；剩余平移差属于主优化路径问题 |
-| camchain 结果复用 | Kalibr 输出 `*-camchain-imucam.yaml`，包含 `T_cam_imu` 和 `timeshift_cam_imu` | 已新增 `readCamchainImuPrior(...)` 和 CLI `--init-from-camchain`，从 `--cam` YAML 读取外参和时间偏移 | 这是数据读取层能力，不是独立估计算法；camchain 不含 gravity |
-| 多 IMU 初值 | 对非参考 IMU 估计 temporal offset 和相对旋转 | 当前范围是单 camera + 单 IMU | 不在当前实现范围内 |
-| camera chain 基线 | 多 camera 时用 chain 外参和主 camera 初始化 pose spline | 当前范围是单 camera | 不在当前实现范围内 |
+| camchain 结果复用 | Kalibr 输出 `*-camchain-imucam.yaml`，包含 `T_cam_imu` 和 `timeshift_cam_imu` | 普通 `--init-from-camchain` 可读取两者；no-Kalibr 多 IMU 路径只保留相机间相对基线，忽略其中的 time shift 和绝对 camera-IMU 共同位姿 | 区分“读取已有标定”与“只使用 camera chain 几何” |
+| 多 IMU 初值 | 对非参考 IMU 估计 temporal offset 和相对旋转 | `kalibr_style_multi_imu_initializer.*` 按参考 IMU 依次估计；默认全 lag 粗到细搜索并要求至少 `50%` 重叠，可处理独立时间原点；平移和非参考 gyro bias 从零开始 | 已接入单次联合求解；IMU offset 先对齐样条时间域，再进入 residual |
+| camera chain 基线 | 每个 camera 独立估时，主 camera 决定 body pose，其他 camera 保持 chain 外参 | 每个相机要求一条 `corner_poses` 流；各自估计 shift，并保留相对 cam0 基线；逐相机 prior center 独立 | 多相机初始化已接入，不能用 cam0 的时间中心代替其他相机 |
 
 ## 判断方法
 
@@ -249,7 +246,8 @@ return UniformBSpline(dimension, order, t_min, t_max, segments);
 3. pose spline 初始化层：`independent-full` 现在启用 Kalibr 风格 `--pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors`。相对旧 pose-fit，accelerometer mean 从 `0.898892 m/s^2` 降到 `0.880795 m/s^2`，translation delta 从 `0.032903 m` 微降到 `0.0328967 m`，reprojection mean 从 `0.197435 px` 升到 `0.201851 px`。这说明 pose spline 初始化差异已经补齐，但不是 3 cm 级平移差的主因。
 4. 外参平移初值层：Kalibr 的 cam0 平移初值是零。`ceres_cam_imu` 已把 `CameraExtrinsicBlock` 默认平移从旧的 `[0, 0, 0.1]` 改为 `[0, 0, 0]`。同一独立初始化 staged 全量命令下，translation delta 从约 `0.101754 m` 降到约 `0.032903 m`，证明旧默认值确实是一个初始化差异。
 5. camchain 读取层：`--init-from-camchain` 能从 `cam0_640x400_corners-1-camchain-imucam.yaml` 读取 `T_cam_imu` 和 `timeshift_cam_imu`。dry-run 验证输出 `kalibr_translation_delta_m=6.84e-09`、`kalibr_time_delta_s=0`。这个入口方便直接复用 Docker/camchain YAML，但它不提供 gravity。
-6. 最终优化层：`--init-from-kalibr` 的当前全量基线仍约有 `0.846 ms` 的最终 time-shift delta，残差均值约为 `0.196977 px / 0.167393 rad/s / 0.863287 m/s^2`，外参平移差约 `0.052 mm`。这不是 time-shift 初值算法差异；完全替代 `--init-from-kalibr` 后的剩余平移差，主要来自主优化路径和外参平移可观性。
+6. 历史暖启动层：2026-06-16 的 `--init-from-kalibr` 全量基线约有 `0.846 ms` 的最终 time-shift delta，残差均值约为 `0.196977 px / 0.167393 rad/s / 0.863287 m/s^2`，外参平移差约 `0.052 mm`。它证明 Ceres 在 Kalibr 最终解附近自洽，但不能代表独立初始化能力。
+7. 当前独立生产层：2026-07-29 全量矩阵不读 Kalibr 优化值，12 个 `1cam+1imu`、48 个独立 single、12 个 `1cam+4imu` joint 和 2 个 TUM `2cam+1imu` 全部完成。single 的 time-shift 已进入亚毫秒对齐；joint effective-chain 平移差均/最大 `5.91 / 26.35 mm`，且一次 joint wall 平均 `548.7 s` 高于四次 single 串行和 `377.9 s`。因此当前剩余问题是 joint 平移 tail 与优化速度，不是缺少一条可部署的冷启动路径。
 
 ## Sweep preset
 
@@ -315,9 +313,9 @@ $$
 
 ## 下一步
 
-下一阶段若要继续减少对 Kalibr 结果文件的依赖，应把新初始化模块接入全量 staged 评测，而不是只看 dry-run：
+独立初始化已接入全量评测，后续不应恢复 Kalibr 热启动或六候选，而应收口同一条生产路径：
 
-1. 继续保留 `--estimate-time-shift-prior --estimate-orientation-gravity-prior` 作为独立初始化入口，但不要引入 accelerometer-only 平移初值。实测数据验证表明这种平移拟合容易被 accel bias、pose 二阶导和动态段噪声混淆。
-2. 针对零平移起点设计更接近 Kalibr 的主优化调度。当前 conservative staged 路径会让 pose 先吸收相机约束，最后释放外参时平移仍停在零附近；`independent-final-pe-full` 和 `independent-capped-pe-full` 证明 pose+extrinsic 联合释放与 trust-region 上限能显著改善平移，但迭代数过多仍会漂移。
-3. 利用 `optimizer/state_snapshot`、`--solver-restore-best-state` 和完整的 stage active set 继续靠近 Optimizer2 的状态更新语义。当前已经有阶段失败/非有限 cost/cost 上升回滚，也有单次 solve 内部 best accepted state 恢复保护；`stage-free` 的 `t` 已覆盖 camera time shift，并在显式 `--optimize-imu-time-offsets` 时覆盖非参考 IMU time offset。后续若要继续改进接受策略，应只使用当前 stage 内部 cost、鲁棒 residual 统计或稳定性指标，避免把 Kalibr 结果当成默认路径 oracle。
-4. Kalibr 的 orientation prior 小优化器结构和 pose spline 初始化正则已经迁移；当前证据显示它们不是剩余平移差的主因。下一轮优先做非参考 IMU extrinsic 的可观性评分、弱先验/正则化实验，并继续比较 Kalibr 主优化的 Optimizer2 线性求解细节和 pose/extrinsic 联合释放阶段的停止策略。
+1. 优先分析 joint solver 的迭代效率。b01-b06 的 effective-chain 平移差已小于 `4.85 mm`，却全部跑满 150 次；这是“结果已进入正确区域，但停止条件未识别”的直接线索。
+2. 对 b12 的 `26.35 mm` 平移 tail 分解到每路 effective chain，结合机械/CAD 真值或可控仿真判断哪个 joint basin 更合理。不应把“更贴近 Kalibr”或“residual 更低”单独当成真值。
+3. 保留 `optimizer/state_snapshot`、`--solver-restore-best-state` 和完整 stage active set 作为安全机制。若改进接受/停止策略，只使用当前 problem 的 cost、parameter delta、residual 和可观性指标，不把 Kalibr 结果当作运行时 oracle。
+4. 补一组真实 `Mcam+Nimu` 数据。当前真实数据只分别覆盖 `1cam+4imu` 和 `2cam+1imu`；`2cam+4imu` 只有 CLI/单元 fixture，还不足以验证复合 topology 在实际时钟和激励下的稳定性。

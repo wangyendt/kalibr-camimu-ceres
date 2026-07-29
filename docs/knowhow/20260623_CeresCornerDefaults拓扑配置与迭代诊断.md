@@ -73,7 +73,7 @@ Topology 专用补充：
 | 场景 | Topology | runner 额外参数 |
 |---|---|---|
 | `benchmark-single` | `1cam+1imu` | time-shift/orientation 初始化、pose fit boundary anchors、time-shift prior、pose motion prior；topology preset 使用 `absolute_cost_change_tolerance=0.005` |
-| `benchmark-multi-imu joint_4imu` | `1cam+Nimu` | 默认跑 no-Kalibr trimmed 六候选 selector；候选统一按 topology 触发，不按 benchmark 编号分支。候选内部使用 staged `pbg,pbegti` 或 `pbg,pbegti,pbegti`、wide/wide/tight 非参考 IMU extrinsic bound、Ceres single time seed 和 residual-health gate |
+| `benchmark-multi-imu joint_4imu` | `1cam+Nimu` | 默认只跑一次 deterministic Kalibr-style no-Kalibr 初始化和一次 Ceres joint solve；不读取四次 single result，也不运行候选 selector |
 | `benchmark-multi-imu single_imu1..4` | `1cam+1imu` | 同单 IMU 初始化/先验 |
 | `tum` | `Mcam+1imu` | `--init-from-camchain`、time-shift/orientation 初始化、pose motion prior、`--imu-model scale-misalignment` |
 
@@ -92,14 +92,13 @@ GT 上它会把默认 camera 平移从 `0.70mm` 拉到 `6-10mm`，因此继续�
 开关或 selector 候选，不单独作为最终输出。
 
 `tools/run_docker_benchmark.py` 当前把
-`--ceres-multi-imu-candidate-preset no-kalibr-accuracy-trimmed` 作为
-`1cam+Nimu` runner 默认。这个默认不使用 Kalibr 初始化或候选选择；Kalibr
-只用于最终 compare。若要复现历史 Kalibr-init tight joint，必须显式传
-`--ceres-multi-imu-candidate-preset none --ceres-multi-imu-init kalibr`。
+`--ceres-multi-imu-init kalibr-style` 作为 `1cam+Nimu` runner 默认。它不使用
+Kalibr 初始化或候选选择；Kalibr 只用于最终 compare。显式传
+`--ceres-multi-imu-init kalibr` 才进入读取 Kalibr result 的暖启动诊断。
 
-`--ceres-multi-imu-adaptive-long-solve` 仍保留为旧 stop policy ablation 入口，
-但不再是收尾默认。当前默认由六候选 selector 同时覆盖 short/long single
-和 health-gated chain 候选。
+2026-06-24 的 adaptive、single-seed 和六候选 selector 是定位优化 basin 的历史
+实验工具，已经从当前 runner 删除。要复现那些数据必须使用对应历史 revision；
+它们不再构成生产路径，也不能作为当前 CLI 行为说明。
 
 ## 修改非单调步上限的影响
 

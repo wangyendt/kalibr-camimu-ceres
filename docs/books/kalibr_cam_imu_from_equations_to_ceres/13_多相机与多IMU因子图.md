@@ -583,11 +583,11 @@ $$
 
 **杠杆臂先验** 取 $\mathbf r_{b,m}=\mathbf 0$：纯陀螺信息看不到平移杠杆臂，它只能在 joint 阶段由加速度计的输运项约束，因此天然弱可观、毫米级漂移属正常。
 
-> 对齐缺口（Ceres 侧）：当前 Ceres 复现的多 IMU joint 走的是“从 Kalibr 结果热启动 imu_chain”的 benchmark 口径，**还没有实现这套陀螺互相关 + 相对旋转先验的冷启动初始化**。要在产线数据上做冷启动 1cam+多imu，这是必须补的第一块代码（见 13.12 节缺口表）。
+> **Ceres 现状：这套初始化已经进入独立生产路径。** `estimateImuChainPairPrior(...)` 复现了“先时间、后旋转”的两阶段结构；`kalibr_style_multi_imu_initializer` 再把每个 camera 对 IMU0 的 shift、cam0 的旋转/重力/参考 gyro bias，以及每个非参考 IMU 的 offset/相对旋转按 Kalibr 的顺序组装起来。C++ 实现为了支持独立时间原点，把搜索扩展为归一化全范围粗到细互相关，并要求候选至少保留较短序列 `50%` 的共同运动。非参考 IMU 的全局边界峰不能解释为零，生产路径会明确拒绝继续。
 
 ## 13.11 鲁棒核与 IRLS：Kalibr M-estimator 的精确语义
 
-多 IMU joint 冷启动失败的第二个根因不是几何，而是鲁棒核线性化。Kalibr 在 `corner_file` 路径（产线角点输入）对不同 residual 指定不同 M-estimator：
+历史冷启动诊断曾把鲁棒核线性化列为几何初值之外的另一项嫌疑；后续对照证明，对本章使用的 Cauchy/Huber，它并不是当前差异根因。要理解这个排除结论，先看 Kalibr 在 `corner_file` 路径（产线角点输入）怎样给不同 residual 指定 M-estimator：
 
 | residual | M-estimator | 源码 | 形参 |
 |---|---|---|---|
@@ -643,7 +643,7 @@ $$
 
 这个等价性依赖两件本身并不由我们控制的事，引用时要连着说清楚：一是 $\rho_0,\rho_1$ 解析相同——这一条 `tests/test_math.cpp` 已经逐点比对锁住；二是 `Corrector` 对 $\rho''\le0$ 短路——这是 Ceres 的实现细节，我们只在本机的 Ceres 2.1 上验证过，构建系统也没有把 Ceres 版本钉死。若将来换用一个**凸**的 $\rho$，或 Ceres 改掉这条短路，$\rho_2$ 的取值就会重新变得重要。保留自定义 loss 的价值也正在这里：显式表达 IRLS 语义，以及为接入 Ceres 没有内置的权重函数（Geman-McClure、Blake-Zisserman）留出位置。宽度换算见 `MEstimatorPolicies.cpp:46`，Kalibr 的 `_sigma2` 已是平方误差的分母，对应 `CauchyLoss` 的 $a=\sqrt{\sigma^2}$。
 
-## 13.12 与 Ceres 实现的逐项对照与当前对齐缺口
+## 13.12 与 Ceres 实现的逐项对照与证据边界
 
 **已验证一致（前向 + Jacobian）。** 在 $\mathbf C=\exp(-[\cdot]_\times)$ 约定 + 欧式更新下，下面三项与 `gyroscope_residual.cpp` / `accelerometer_residual.cpp` 逐项吻合，并已被中心差分单测覆盖：
 
@@ -653,16 +653,16 @@ $$
 | $\partial\mathbf e^a/\partial\mathbf r_{b,m}$ | $\tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}([\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times^2)$ | `M_accel*R_i_b*(skew(alpha)+skew(omega)^2)` |
 | $\partial\mathbf e^a/\partial\boldsymbol\varphi_m$ | $\tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}[\mathbf u_{b,m}]_\times\mathbf J_l$ | `M_accel*R_i_b*skew(body_specific_force)*leftJacobianSO3` |
 
-**当前对齐缺口（要做 cam+多 IMU 冷启动产线验证必须补）。**
+**当前实现状态与仍需保留的证据边界。**
 
-| 缺口 | 现状 | 需要的工作 |
+| 项目 | 当前状态 | 边界 / 后续关注点 |
 |---|---|---|
-| 非参考 IMU 冷启动初值 | 仅支持从 Kalibr 结果热启动 imu_chain | 实现 13.10 的陀螺互相关 time offset + 相对旋转先验 |
+| 非参考 IMU 冷启动初值 | 已实现 13.10 的 gyro-norm 互相关 time offset + 相对旋转先验，生产默认走一次 Kalibr-style 初始化和一次 joint solve | 真实数据分别覆盖 1cam+4imu 和 2cam+1imu；完整 Mcam+Nimu 组合目前依靠合成 2cam+2imu 端到端回归 |
 | 鲁棒核线性化 | 无缺口：对 Cauchy/Huber，标准 Ceres loss 与 Kalibr IRLS 等价（13.11） | 保持 13.11 的 Kalibr-style M-estimator（$\rho_0=\int_0^s w,\ \rho'=w,\ \rho''=0$），按 model 分配 Cauchy/Huber；若将来引入 Ceres 无内置的权重函数，此处才有实质工作 |
-| per-IMU time offset | 两边都不是 bundle 变量；Ceres 直接按 CSV 时间戳查 spline | 至少要把 13.10 的常量 $\Delta t^i_m$ 接进查询，避免多 IMU 间未对齐 |
-| 杠杆臂可观性 | 弱可观，毫米级漂移 | 接受为固有量，报告时按 per-IMU 输出，不平均 |
+| per-IMU time offset | 初始化器估计 applied offset，先用它创建对齐后的 spline 时间域，再接入各路 IMU residual 查询；默认按 Kalibr 语义固定 | 只有显式 `--optimize-imu-time-offsets` 才作为优化变量；两种模式都必须保持同一 applied-offset 符号约定 |
+| 杠杆臂可观性 | 弱可观，joint 平移 tail 仍大于 single | 这不是初始化缺失；报告时应按 per-IMU 输出，不平均掩盖最差项 |
 
-这张表就是从“推导”过渡到“代码 + 实验”的接口：13.8-13.9 保证 Jacobian 正确，13.10-13.11 补冷启动初值和鲁棒核，三者齐了才能在产线数据上做 1cam→1cam+2imu→1cam+4imu 的逐级冷启动验证。
+这张表是从“推导”过渡到“代码 + 实验”的接口：13.8-13.9 给出 Jacobian，13.10-13.11 给出冷启动和鲁棒核语义，当前 Ceres 已经把三者连成一条独立 joint 路径。未收口的重点是更广的真实拓扑证据和杆臂弱可观性，不是再补一套初始化代码。
 
 ## 13.13 本章小结
 

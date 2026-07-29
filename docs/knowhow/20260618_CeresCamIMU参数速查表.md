@@ -95,7 +95,7 @@ production solver defaults：
 | 命令 | Ceres 输入规模 | Topology | runner 额外做什么 | Kalibr 平台 |
 |---|---|---|---|---|
 | `--suite benchmark-single` | 1 个 corners + `data1.csv` | `1cam+1imu` | 加 time-shift/orientation 初始化、pose fit boundary anchors、time-shift prior、pose motion prior；solver 默认来自 `--corner-defaults` | 不传 `--kalibr-platform` 时跑 amd64 + arm64 |
-| `--suite benchmark-multi-imu` | joint: 1 个 corners + `data1..4.csv`；single 子项: 1 个 corners + 单路 IMU CSV | joint 为 `1cam+Nimu`；single 子项为 `1cam+1imu` | joint 默认按 topology 触发 no-Kalibr trimmed 六候选 selector；候选内部仍使用 staged `pbg,pbegti` 或 `pbg,pbegti,pbegti`、wide/wide/tight 非参考 IMU extrinsic bound 和 residual-health gate。single 子项同 `1cam+1imu` 初始化/先验 | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
+| `--suite benchmark-multi-imu` | joint: 1 个 corners + `data1..4.csv`；single 子项: 1 个 corners + 单路 IMU CSV | joint 为 `1cam+Nimu`；single 子项为 `1cam+1imu` | joint 默认只跑一次 deterministic Kalibr-style no-Kalibr 初始化和一次 Ceres joint solve；single 子项同 `1cam+1imu` 初始化/先验 | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
 | `--suite tum` | 2 个 corners + 1 个 IMU CSV | `Mcam+1imu` | 加 `--init-from-camchain`、time-shift/orientation 初始化、pose motion prior、`--imu-model scale-misalignment`；solver 默认来自 `--corner-defaults` | 用户命令传 `--kalibr-platform linux/arm64` 时只跑 arm64 |
 
 只想验证当前 Ceres native 改动时，不要用 `benchmark-single` 默认双平台口径重跑 Kalibr。传 `--kalibr-platform linux/arm64 --reuse-kalibr-from <旧out-root>` 后，runner 会复用旧目录中的 Kalibr arm64 result/log/summary，只重新执行 Ceres 和 compare。
@@ -113,15 +113,14 @@ production solver defaults：
 | `--session` | 空 | benchmark-single 子集 | 临时只跑某几个 session |
 | `--multi-session` | 空 | benchmark-multi-imu 子集 | 临时只跑某个 4IMU session |
 | `--benchmark-multi-subset all|joint|single` | `all` | 控制 `benchmark-multi-imu` 跑 joint、single 或全部 | Ceres-only 验证 joint 配置时用 `joint`，避免重跑 48 路 single |
-| `--ceres-multi-imu-candidate-preset none\|no-kalibr-accuracy\|no-kalibr-accuracy-trimmed` | `no-kalibr-accuracy-trimmed` | runner 级 `1cam+Nimu` topology 默认多候选 preset，不用 Kalibr 初始化或选择 | full 跑 9 个候选；trimmed 保留 6 个候选：`single_short/single_long/chain_multi_t_wide_tight/chain_multi_ograv_t_wide_tight/chain_accel_refine_t_wide_tight/chain_long_single_time_t_wide_tight`。该默认只属于 runner orchestration；裸 `calibrate_cam_imu --corner-defaults` 仍是单次求解 |
-| `--ceres-multi-imu-init kalibr|chain-prior|ceres-single` | `chain-prior` | 单候选 multi-IMU Ceres 的初始化来源 | 只有复现历史 Kalibr-init tight joint 时需要：`--ceres-multi-imu-candidate-preset none --ceres-multi-imu-init kalibr` |
+| `--ceres-multi-imu-init kalibr-style\|kalibr` | `kalibr-style` | multi-IMU Ceres 的初始化来源 | `kalibr-style` 是一次确定性 no-Kalibr 初始化 + 一次 joint solve；`kalibr` 只用于显式的暖启动诊断 |
 | `--print-only` | 关闭 | 只打印命令，不执行 | 检查默认展开了哪些 Ceres/Kalibr 命令 |
 | `--ceres-extra-arg` | 空 | 原样追加给 Ceres | 少数临时实验的 escape hatch |
 | `--kalibr-extra-arg` | 空 | 原样追加给 Kalibr | 少数临时实验的 escape hatch |
 
-其余 runner 参数已经从 `--help` 隐藏，只保留兼容旧 ablation 命令。日常不要再通过
-`stage-free`、`stage-cost-tolerances`、`accuracy-chain-*`、`translation-prior-*`
-这类细粒度参数调默认策略；需要复现实验时查对应实验文档和旧命令即可。
+其余 runner 参数从 `--help` 隐藏，只用于单路径参数诊断或历史兼容。旧的
+candidate preset、adaptive selector 和 single-seed 编排已经删除；要原样复现旧
+六候选实验，应切到实验记录对应的历史 revision，不能把旧命令当作当前接口。
 
 ## 轨迹、数据裁剪与问题规模
 
