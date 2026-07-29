@@ -47,7 +47,9 @@ ctest --test-dir build --output-on-failure
 build/calibrate_cam_imu --corner-defaults --cam /ABS/cam_imu/cam0-camchain-640x400.yaml --imu /ABS/cam_imu/imu.yaml --target /ABS/cam_imu/aprilgrid.yaml --imu-data /ABS/cam_imu/data1.csv --corners /ABS/cam_imu/cam0_640x400_corners.csv --corner-poses /ABS/cam_imu/cam0_640x400_corner_poses.csv --estimate-time-shift-prior --estimate-orientation-gravity-prior --pose-fit-motion-lambda 0.0001 --pose-fit-boundary-anchors --pose-motion-prior --pose-motion-translation-variance 10 --pose-motion-rotation-variance 1 --max-iterations 150 --solver-max-trust-region-radius 10000000 --output-result /private/tmp/ceres_independent.yaml
 ```
 
-相机—IMU 互相关默认在 `±0.2 s` 内搜索。如果最优峰落在 `--time-shift-max-search-s` 边界，程序会把它视为“未知”而不是零偏移：已有 result、Kalibr、camchain 或显式初值时保留该值；没有有效兜底时，可以不加时间偏移锚点继续优化，但不能同时使用正的 `--time-shift-prior-sigma`、正的 staged prior 或 `--fix-time-shift`。此时应提供可信的 `--initial-time-shift-s`，或先检查数据和搜索范围。
+相机—IMU 互相关会保留两路数据各自的时间戳原点，默认在至少保留较短序列 `50%` 重叠的全部 lag 上做粗到细搜索，因此可以处理不同时间原点；重叠率可用 `--time-shift-min-overlap-fraction` 调整。`--time-shift-max-search-s` 可显式设置正的绝对 time-shift 上限，`0`（默认）表示仅由重叠率限定。若最优峰落在重叠域或显式上限的边界，程序会把它视为“未知”而不是零偏移：普通单相机入口会保留已有 result、Kalibr、camchain 或显式初值；没有有效兜底时，可以不加时间偏移锚点继续优化，但不能同时使用正的 `--time-shift-prior-sigma`、正的 staged prior 或 `--fix-time-shift`。此时应提供可信的 `--initial-time-shift-s`，或检查两路数据是否确实包含足够的共同运动。
+
+多相机 + 多 IMU 的 `--corner-defaults` 走一条确定性的 no-Kalibr 初始化路径：每个相机都用自己的 pose 流与参考 IMU 做上述互相关，非参考 IMU 也在至少 `50%` 重叠的全 lag 上与参考 IMU 对齐；camchain 只提供相机链几何，里面已有的 `timeshift_cam_imu` 不作为时间初值。各路得到的 shift/offset 会先用于统一样条时间域，再写入联合问题，因而相机和各 IMU 可以使用彼此无关的时间戳原点。非整数采样周期的原点差会保留为秒值，不会为了离散日志字段而被重新量化。
 
 互相关初值只有 IMU 采样周期量级的离散分辨率，默认示例不再额外添加 `0.1 ms` 的紧先验。2025-04-19 19:03:03 数据上，紧先验把最终 time shift 从无先验的 `17.206 ms`（Kalibr single 为 `16.983 ms`）拉到 `14.174 ms`。如实验确实需要固定或正则化 time shift，应显式给出 sigma，并留意程序在 sigma 小于相关采样周期时的警告。
 

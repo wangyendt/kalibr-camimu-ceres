@@ -117,6 +117,15 @@ struct CalibrationOptions {
   double trace_reference_time_shift_s = 0.0;
   Vec3 trace_reference_gravity = Vec3::Zero();
   int top_residuals = 5;
+  // Appended to preserve positional aggregate initialization of the older
+  // fields. These mappings size the shared splines and initialize the state.
+  // Empty vectors keep the scalar-camera / zero-IMU legacy behavior;
+  // otherwise they must match the input sensor counts exactly.
+  std::vector<double> initial_camera_time_shifts_s;
+  std::vector<double> initial_imu_time_offsets_s;
+  // Optional per-camera prior centers. Empty preserves the legacy scalar
+  // center; otherwise the vector must match the camera count exactly.
+  std::vector<double> camera_time_shift_priors_s;
 };
 
 struct CalibrationState {

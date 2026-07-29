@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "ceres_cam_imu/core/types.h"
@@ -26,19 +27,25 @@ struct ImuChainInitializerOptions {
   double refine_rotation_bound_rad = -1.0;
   double refine_lever_prior_sigma_m = -1.0;
   double refine_accel_bias_prior_sigma_m_s2 = -1.0;
+  // Appended to preserve positional aggregate initialization of the older
+  // fields above. Full search compares every lag retaining this fraction of
+  // the shorter stream, even when timestamp epochs are unrelated.
+  double min_overlap_fraction = 0.5;
+  double full_search_coarse_sample_dt_s = 0.01;
+  double full_search_fine_half_width_s = 0.05;
 };
 
 struct ImuChainInitializerPairResult {
   std::size_t imu_index = 0;
   double time_offset_s = 0.0;
-  int discrete_shift_samples = 0;
+  std::int64_t discrete_shift_samples = 0;
   double sample_dt_s = 0.0;
   double time_offset_search_radius_s = 0.0;
   int max_search_lag_samples = 0;
   int matched_samples = 0;
   double peak_correlation = 0.0;
   bool time_offset_boundary_peak_rejected = false;
-  int rejected_discrete_shift_samples = 0;
+  std::int64_t rejected_discrete_shift_samples = 0;
   int rejected_matched_samples = 0;
   double rejected_peak_correlation = 0.0;
   Mat3 R_i_b = Mat3::Identity();
@@ -55,6 +62,10 @@ struct ImuChainInitializerPairResult {
   double refine_final_cost = 0.0;
   bool accel_refined = false;
   double accel_refine_rms_m_s2 = 0.0;
+  // Exact offset = discrete_shift_samples * sample_dt_s + this residual.
+  // Appended so existing positional aggregate initializers retain their field
+  // mapping. It preserves non-grid-aligned epoch differences.
+  double discrete_shift_residual_s = 0.0;
 };
 
 struct ImuChainInitializerResult {

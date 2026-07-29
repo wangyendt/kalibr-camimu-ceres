@@ -33,7 +33,8 @@ namespace {
 
 std::pair<double, double> timeSpan(const std::vector<ImageObservation> &images,
                                    const std::vector<ImuSample> &imu_samples,
-                                   const double camera_time_shift_s) {
+                                   const double camera_time_shift_s,
+                                   const double imu_time_offset_s) {
   double first = std::numeric_limits<double>::infinity();
   double last = -std::numeric_limits<double>::infinity();
   for (const ImageObservation &image : images) {
@@ -41,8 +42,8 @@ std::pair<double, double> timeSpan(const std::vector<ImageObservation> &images,
     last = std::max(last, image.timestamp_s + camera_time_shift_s);
   }
   for (const ImuSample &sample : imu_samples) {
-    first = std::min(first, sample.timestamp_s);
-    last = std::max(last, sample.timestamp_s);
+    first = std::min(first, sample.timestamp_s + imu_time_offset_s);
+    last = std::max(last, sample.timestamp_s + imu_time_offset_s);
   }
   if (!std::isfinite(first) || !std::isfinite(last) || !(last > first)) {
     throw std::runtime_error(
@@ -52,6 +53,14 @@ std::pair<double, double> timeSpan(const std::vector<ImageObservation> &images,
 }
 
 template <typename Block> double *dataPtr(Block &block) { return block.data(); }
+
+double cameraTimeShiftPriorCenter(const CalibrationOptions &options,
+                                  const std::size_t camera_index) {
+  if (options.camera_time_shift_priors_s.empty()) {
+    return options.time_shift_prior_s;
+  }
+  return options.camera_time_shift_priors_s.at(camera_index);
+}
 
 template <typename Derived>
 void writeRowMajor(const Eigen::MatrixBase<Derived> &matrix,
@@ -1194,17 +1203,118 @@ std::array<double, 3> kalibrMEstimatorRho(
   return {rho0, weight, 0.0};
 }
 
-CalibrationState
-initializeCalibrationState(const std::vector<ImageObservation> &images,
+namespace {
+
+double initialCameraTimeShiftFor(const CalibrationOptions &options,
+                                 const std::size_t camera_index,
+                                 const std::size_t camera_count) {
+  if (options.initial_camera_time_shifts_s.empty()) {
+    if (!std::isfinite(options.initial_camera_time_shift_s)) {
+      throw std::invalid_argument("initial camera time shift must be finite");
+    }
+    return options.initial_camera_time_shift_s;
+  }
+  if (options.initial_camera_time_shifts_s.size() != camera_count) {
+    throw std::invalid_argument(
+        "initial camera time shifts must match camera count");
+  }
+  const double shift_s = options.initial_camera_time_shifts_s.at(camera_index);
+  if (!std::isfinite(shift_s)) {
+    throw std::invalid_argument("initial camera time shift must be finite");
+  }
+  return shift_s;
+}
+
+double initialImuTimeOffsetFor(const CalibrationOptions &options,
+                               const std::size_t imu_index,
+                               const std::size_t imu_count) {
+  if (options.initial_imu_time_offsets_s.empty()) {
+    return 0.0;
+  }
+  if (options.initial_imu_time_offsets_s.size() != imu_count) {
+    throw std::invalid_argument(
+        "initial IMU time offsets must match IMU count");
+  }
+  const double offset_s = options.initial_imu_time_offsets_s.at(imu_index);
+  if (!std::isfinite(offset_s)) {
+    throw std::invalid_argument("initial IMU time offset must be finite");
+  }
+  if (imu_index == 0 && offset_s != 0.0) {
+    throw std::invalid_argument(
+        "reference IMU time offset must be zero in the shared time domain");
+  }
+  return offset_s;
+}
+
+void extendTimeSpan(const double timestamp_s, double *first, double *last) {
+  if (!std::isfinite(timestamp_s)) {
+    throw std::invalid_argument("aligned sensor timestamp must be finite");
+  }
+  *first = std::min(*first, timestamp_s);
+  *last = std::max(*last, timestamp_s);
+}
+
+std::pair<double, double>
+alignedTimeSpan(const std::vector<CameraObservationDataset> &cameras,
+                const std::vector<ImuObservationDataset> &imus,
+                const CalibrationOptions &options) {
+  double first = std::numeric_limits<double>::infinity();
+  double last = -std::numeric_limits<double>::infinity();
+  for (std::size_t camera_index = 0; camera_index < cameras.size();
+       ++camera_index) {
+    const double shift_s =
+        initialCameraTimeShiftFor(options, camera_index, cameras.size());
+    for (const ImageObservation &image : cameras[camera_index].images) {
+      extendTimeSpan(image.timestamp_s + shift_s, &first, &last);
+    }
+  }
+  for (std::size_t imu_index = 0; imu_index < imus.size(); ++imu_index) {
+    const double offset_s =
+        initialImuTimeOffsetFor(options, imu_index, imus.size());
+    for (const ImuSample &sample : imus[imu_index].samples) {
+      extendTimeSpan(sample.timestamp_s + offset_s, &first, &last);
+    }
+  }
+  if (!std::isfinite(first) || !std::isfinite(last) || !(last > first)) {
+    throw std::runtime_error(
+        "cannot initialize splines from empty or degenerate aligned time span");
+  }
+  return {first, last};
+}
+
+std::pair<double, double>
+alignedTimeSpan(const std::vector<CameraObservationDataset> &cameras,
                            const std::vector<ImuSample> &imu_samples,
                            const CalibrationOptions &options) {
+  double first = std::numeric_limits<double>::infinity();
+  double last = -std::numeric_limits<double>::infinity();
+  for (std::size_t camera_index = 0; camera_index < cameras.size();
+       ++camera_index) {
+    const double shift_s =
+        initialCameraTimeShiftFor(options, camera_index, cameras.size());
+    for (const ImageObservation &image : cameras[camera_index].images) {
+      extendTimeSpan(image.timestamp_s + shift_s, &first, &last);
+    }
+  }
+  const double imu_offset_s = initialImuTimeOffsetFor(options, 0, 1);
+  for (const ImuSample &sample : imu_samples) {
+    extendTimeSpan(sample.timestamp_s + imu_offset_s, &first, &last);
+  }
+  if (!std::isfinite(first) || !std::isfinite(last) || !(last > first)) {
+    throw std::runtime_error(
+        "cannot initialize splines from empty or degenerate aligned time span");
+  }
+  return {first, last};
+}
+
+CalibrationState
+initializeCalibrationStateForTimeSpan(const double first, const double last,
+                                      const CalibrationOptions &options) {
   if (options.spline_order != 6) {
     throw std::runtime_error(
         "first Ceres implementation currently requires order-6 splines");
   }
 
-  const auto [first, last] =
-      timeSpan(images, imu_samples, options.initial_camera_time_shift_s);
   CalibrationState state;
   state.pose_spline =
       makeSplineForTimes(6, options.spline_order, first, last,
@@ -1238,8 +1348,25 @@ initializeCalibrationState(const std::vector<ImageObservation> &images,
                       options.initial_accel_bias_m_s2.z()};
   }
 
-  state.camera_time_shift_s.value = options.initial_camera_time_shift_s;
+  return state;
+}
 
+} // namespace
+
+CalibrationState
+initializeCalibrationState(const std::vector<ImageObservation> &images,
+                           const std::vector<ImuSample> &imu_samples,
+                           const CalibrationOptions &options) {
+  const double camera_time_shift_s = initialCameraTimeShiftFor(options, 0, 1);
+  const double imu_time_offset_s = initialImuTimeOffsetFor(options, 0, 1);
+  const auto [first, last] =
+      timeSpan(images, imu_samples, camera_time_shift_s, imu_time_offset_s);
+  CalibrationState state =
+      initializeCalibrationStateForTimeSpan(first, last, options);
+  state.camera_time_shift_s.value = camera_time_shift_s;
+  if (!options.initial_imu_time_offsets_s.empty()) {
+    state.imu_time_offsets_s = {imu_time_offset_s};
+  }
   return state;
 }
 
@@ -1250,19 +1377,18 @@ CalibrationState initializeCalibrationState(
   if (cameras.empty()) {
     throw std::runtime_error("at least one camera dataset is required");
   }
-  std::vector<ImageObservation> all_images;
-  for (const CameraObservationDataset &camera : cameras) {
-    all_images.insert(all_images.end(), camera.images.begin(),
-                      camera.images.end());
-  }
+  const auto [first, last] = alignedTimeSpan(cameras, imu_samples, options);
   CalibrationState state =
-      initializeCalibrationState(all_images, imu_samples, options);
+      initializeCalibrationStateForTimeSpan(first, last, options);
   state.camera_extrinsics.resize(cameras.size());
   state.camera_time_shifts.resize(cameras.size());
+  state.camera_time_shift_s.value =
+      initialCameraTimeShiftFor(options, 0, cameras.size());
   state.camera_extrinsics[0] = state.T_c_b;
   state.camera_time_shifts[0] = state.camera_time_shift_s;
   for (std::size_t i = 1; i < cameras.size(); ++i) {
-    state.camera_time_shifts[i].value = options.initial_camera_time_shift_s;
+    state.camera_time_shifts[i].value =
+        initialCameraTimeShiftFor(options, i, cameras.size());
   }
   return state;
 }
@@ -1277,26 +1403,24 @@ CalibrationState initializeCalibrationState(
   if (imus.empty()) {
     throw std::runtime_error("at least one IMU dataset is required");
   }
-  std::vector<ImageObservation> all_images;
-  for (const CameraObservationDataset &camera : cameras) {
-    all_images.insert(all_images.end(), camera.images.begin(),
-                      camera.images.end());
-  }
-  std::vector<ImuSample> all_imu_samples;
-  for (const ImuObservationDataset &imu : imus) {
-    all_imu_samples.insert(all_imu_samples.end(), imu.samples.begin(),
-                           imu.samples.end());
-  }
+  const auto [first, last] = alignedTimeSpan(cameras, imus, options);
   CalibrationState state =
-      initializeCalibrationState(all_images, all_imu_samples, options);
+      initializeCalibrationStateForTimeSpan(first, last, options);
   state.camera_extrinsics.resize(cameras.size());
   state.camera_time_shifts.resize(cameras.size());
+  state.camera_time_shift_s.value =
+      initialCameraTimeShiftFor(options, 0, cameras.size());
   state.camera_extrinsics[0] = state.T_c_b;
   state.camera_time_shifts[0] = state.camera_time_shift_s;
   for (std::size_t i = 1; i < cameras.size(); ++i) {
-    state.camera_time_shifts[i].value = options.initial_camera_time_shift_s;
+    state.camera_time_shifts[i].value =
+        initialCameraTimeShiftFor(options, i, cameras.size());
   }
   ensureMultiImuStateSize(&state, imus.size());
+  for (std::size_t imu_index = 0; imu_index < imus.size(); ++imu_index) {
+    state.imu_time_offsets_s[imu_index] =
+        initialImuTimeOffsetFor(options, imu_index, imus.size());
+  }
   return state;
 }
 
@@ -1356,7 +1480,7 @@ buildCalibrationProblem(const CameraIntrinsics &intrinsics,
           : problem->ParameterBlockTangentSize(dataPtr(state->gravity));
   if (options.add_time_shift_prior && options.time_shift_prior_sigma_s > 0.0) {
     problem->AddResidualBlock(
-        createTimeShiftPrior(options.time_shift_prior_s,
+        createTimeShiftPrior(cameraTimeShiftPriorCenter(options, 0),
                              options.time_shift_prior_sigma_s),
         nullptr, dataPtr(state->camera_time_shift_s));
     ++summary.time_shift_priors;
@@ -1639,6 +1763,11 @@ buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
   if (!state || !problem) {
     throw std::invalid_argument("state and problem must be non-null");
   }
+  if (!options.camera_time_shift_priors_s.empty() &&
+      options.camera_time_shift_priors_s.size() != cameras.size()) {
+    throw std::invalid_argument(
+        "per-camera time-shift prior centers must match camera count");
+  }
 
   CalibrationBuildSummary summary =
       buildCalibrationProblem(cameras.front().intrinsics, imu_noise,
@@ -1687,7 +1816,8 @@ buildCalibrationProblem(const std::vector<CameraObservationDataset> &cameras,
     if (options.add_time_shift_prior &&
         options.time_shift_prior_sigma_s > 0.0) {
       problem->AddResidualBlock(
-          createTimeShiftPrior(options.time_shift_prior_s,
+          createTimeShiftPrior(cameraTimeShiftPriorCenter(options,
+                                                           camera_index),
                                options.time_shift_prior_sigma_s),
           nullptr, dataPtr(time_shift));
       ++summary.time_shift_priors;

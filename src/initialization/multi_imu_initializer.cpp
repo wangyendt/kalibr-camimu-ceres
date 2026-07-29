@@ -14,11 +14,12 @@
 
 #include "ceres_cam_imu/core/so3.h"
 #include "ceres_cam_imu/core/so3_jacobians.h"
+#include "uniform_signal_correlation.h"
 
 namespace ceres_cam_imu {
 namespace {
 
-void writeMat3RowMajor(const Mat3& matrix, double* jacobian) {
+void writeMat3RowMajor(const Mat3 &matrix, double *jacobian) {
   for (int row = 0; row < 3; ++row) {
     for (int col = 0; col < 3; ++col) {
       jacobian[row * 3 + col] = matrix(row, col);
@@ -28,15 +29,14 @@ void writeMat3RowMajor(const Mat3& matrix, double* jacobian) {
 
 class RelativeGyroRotationCost final
     : public ceres::SizedCostFunction<3, 3, 3> {
- public:
+public:
   RelativeGyroRotationCost(Vec3 omega_reference, Vec3 omega_target,
                            const double weight = 1.0)
       : omega_reference_(std::move(omega_reference)),
-        omega_target_(std::move(omega_target)),
-        weight_(weight) {}
+        omega_target_(std::move(omega_target)), weight_(weight) {}
 
-  bool Evaluate(double const* const* parameters, double* residuals,
-                double** jacobians) const override {
+  bool Evaluate(double const *const *parameters, double *residuals,
+                double **jacobians) const override {
     const Eigen::Map<const Vec3> r_i_b(parameters[0]);
     const Eigen::Map<const Vec3> bias(parameters[1]);
     const Mat3 R_i_b = rotationVectorToMatrix(r_i_b);
@@ -51,8 +51,7 @@ class RelativeGyroRotationCost final
     }
     if (jacobians[0]) {
       const Mat3 J =
-          weight_ * R_i_b * skew(omega_reference_) *
-          leftJacobianSO3(r_i_b);
+          weight_ * R_i_b * skew(omega_reference_) * leftJacobianSO3(r_i_b);
       writeMat3RowMajor(J, jacobians[0]);
     }
     if (jacobians[1]) {
@@ -61,7 +60,7 @@ class RelativeGyroRotationCost final
     return true;
   }
 
- private:
+private:
   Vec3 omega_reference_;
   Vec3 omega_target_;
   double weight_;
@@ -69,30 +68,27 @@ class RelativeGyroRotationCost final
 
 class RelativeAccelLeverCost final
     : public ceres::SizedCostFunction<3, 3, 3, 3> {
- public:
+public:
   RelativeAccelLeverCost(Vec3 omega_reference, Vec3 alpha_reference,
                          Vec3 accel_reference, Vec3 accel_target,
                          const double weight)
       : omega_reference_(std::move(omega_reference)),
         alpha_reference_(std::move(alpha_reference)),
         accel_reference_(std::move(accel_reference)),
-        accel_target_(std::move(accel_target)),
-        weight_(weight) {}
+        accel_target_(std::move(accel_target)), weight_(weight) {}
 
-  bool Evaluate(double const* const* parameters, double* residuals,
-                double** jacobians) const override {
+  bool Evaluate(double const *const *parameters, double *residuals,
+                double **jacobians) const override {
     const Eigen::Map<const Vec3> r_i_b(parameters[0]);
     const Eigen::Map<const Vec3> lever_b(parameters[1]);
     const Eigen::Map<const Vec3> accel_bias_delta_b(parameters[2]);
     const Mat3 R_i_b = rotationVectorToMatrix(r_i_b);
-    const Mat3 lever_jacobian =
-        skew(alpha_reference_) + skew(omega_reference_) *
-                                     skew(omega_reference_);
+    const Mat3 lever_jacobian = skew(alpha_reference_) +
+                                skew(omega_reference_) * skew(omega_reference_);
     const Vec3 accel_delta_b =
         R_i_b.transpose() * accel_target_ - accel_reference_;
-    const Vec3 residual =
-        weight_ * (lever_jacobian * lever_b + accel_bias_delta_b -
-                   accel_delta_b);
+    const Vec3 residual = weight_ * (lever_jacobian * lever_b +
+                                     accel_bias_delta_b - accel_delta_b);
     residuals[0] = residual.x();
     residuals[1] = residual.y();
     residuals[2] = residual.z();
@@ -101,9 +97,8 @@ class RelativeAccelLeverCost final
       return true;
     }
     if (jacobians[0]) {
-      const Mat3 J =
-          -weight_ *
-          rotationTransposeTimesVectorDerivative(r_i_b, accel_target_);
+      const Mat3 J = -weight_ * rotationTransposeTimesVectorDerivative(
+                                    r_i_b, accel_target_);
       writeMat3RowMajor(J, jacobians[0]);
     }
     if (jacobians[1]) {
@@ -115,7 +110,7 @@ class RelativeAccelLeverCost final
     return true;
   }
 
- private:
+private:
   Vec3 omega_reference_;
   Vec3 alpha_reference_;
   Vec3 accel_reference_;
@@ -124,12 +119,12 @@ class RelativeAccelLeverCost final
 };
 
 class VectorPriorCost final : public ceres::SizedCostFunction<3, 3> {
- public:
+public:
   VectorPriorCost(Vec3 prior, const double sigma)
       : prior_(std::move(prior)), inv_sigma_(1.0 / sigma) {}
 
-  bool Evaluate(double const* const* parameters, double* residuals,
-                double** jacobians) const override {
+  bool Evaluate(double const *const *parameters, double *residuals,
+                double **jacobians) const override {
     const Eigen::Map<const Vec3> value(parameters[0]);
     const Vec3 residual = inv_sigma_ * (value - prior_);
     residuals[0] = residual.x();
@@ -141,12 +136,12 @@ class VectorPriorCost final : public ceres::SizedCostFunction<3, 3> {
     return true;
   }
 
- private:
+private:
   Vec3 prior_;
   double inv_sigma_;
 };
 
-double meanPositiveDt(const std::vector<ImuSample>& samples) {
+double meanPositiveDt(const std::vector<ImuSample> &samples) {
   if (samples.size() < 2) {
     throw std::runtime_error(
         "at least two IMU samples are required for IMU chain initialization");
@@ -166,8 +161,31 @@ double meanPositiveDt(const std::vector<ImuSample>& samples) {
   return total_dt / static_cast<double>(count);
 }
 
-bool interpolateGyro(const std::vector<ImuSample>& samples,
-                     const double timestamp_s, Vec3* gyro) {
+std::vector<ImuSample>
+deduplicateImuTimestamps(const std::vector<ImuSample> &samples) {
+  std::vector<ImuSample> unique;
+  unique.reserve(samples.size());
+  for (const ImuSample &sample : samples) {
+    if (!unique.empty() && sample.timestamp_s < unique.back().timestamp_s) {
+      throw std::runtime_error(
+          "IMU timestamps must be nondecreasing for gyro correlation");
+    }
+    if (!unique.empty() && sample.timestamp_s == unique.back().timestamp_s) {
+      unique.back() = sample;
+      continue;
+    }
+    unique.push_back(sample);
+  }
+  if (unique.size() < 2) {
+    throw std::runtime_error(
+        "at least two distinct IMU timestamps are required for gyro "
+        "correlation");
+  }
+  return unique;
+}
+
+bool interpolateGyro(const std::vector<ImuSample> &samples,
+                     const double timestamp_s, Vec3 *gyro) {
   if (!gyro || samples.size() < 2) {
     return false;
   }
@@ -175,11 +193,11 @@ bool interpolateGyro(const std::vector<ImuSample>& samples,
       timestamp_s > samples.back().timestamp_s) {
     return false;
   }
-  const auto upper = std::lower_bound(
-      samples.begin(), samples.end(), timestamp_s,
-      [](const ImuSample& sample, const double t) {
-        return sample.timestamp_s < t;
-      });
+  const auto upper =
+      std::lower_bound(samples.begin(), samples.end(), timestamp_s,
+                       [](const ImuSample &sample, const double t) {
+                         return sample.timestamp_s < t;
+                       });
   if (upper == samples.begin()) {
     *gyro = upper->gyro_rad_s;
     return true;
@@ -188,8 +206,8 @@ bool interpolateGyro(const std::vector<ImuSample>& samples,
     *gyro = samples.back().gyro_rad_s;
     return true;
   }
-  const ImuSample& right = *upper;
-  const ImuSample& left = *(upper - 1);
+  const ImuSample &right = *upper;
+  const ImuSample &left = *(upper - 1);
   const double dt = right.timestamp_s - left.timestamp_s;
   if (!(dt > 0.0)) {
     *gyro = left.gyro_rad_s;
@@ -200,9 +218,9 @@ bool interpolateGyro(const std::vector<ImuSample>& samples,
   return true;
 }
 
-bool interpolateImuSample(const std::vector<ImuSample>& samples,
-                          const double timestamp_s, ImuSample* interpolated,
-                          Vec3* angular_accel_rad_s2) {
+bool interpolateImuSample(const std::vector<ImuSample> &samples,
+                          const double timestamp_s, ImuSample *interpolated,
+                          Vec3 *angular_accel_rad_s2) {
   if (!interpolated || samples.size() < 2) {
     return false;
   }
@@ -210,11 +228,11 @@ bool interpolateImuSample(const std::vector<ImuSample>& samples,
       timestamp_s > samples.back().timestamp_s) {
     return false;
   }
-  const auto upper = std::lower_bound(
-      samples.begin(), samples.end(), timestamp_s,
-      [](const ImuSample& sample, const double t) {
-        return sample.timestamp_s < t;
-      });
+  const auto upper =
+      std::lower_bound(samples.begin(), samples.end(), timestamp_s,
+                       [](const ImuSample &sample, const double t) {
+                         return sample.timestamp_s < t;
+                       });
   if (upper == samples.begin()) {
     *interpolated = *upper;
     if (angular_accel_rad_s2) {
@@ -222,15 +240,16 @@ bool interpolateImuSample(const std::vector<ImuSample>& samples,
       if (!(dt > 0.0)) {
         return false;
       }
-      *angular_accel_rad_s2 = ((upper + 1)->gyro_rad_s - upper->gyro_rad_s) / dt;
+      *angular_accel_rad_s2 =
+          ((upper + 1)->gyro_rad_s - upper->gyro_rad_s) / dt;
     }
     return true;
   }
   if (upper == samples.end()) {
     *interpolated = samples.back();
     if (angular_accel_rad_s2) {
-      const ImuSample& right = samples.back();
-      const ImuSample& left = *(samples.end() - 2);
+      const ImuSample &right = samples.back();
+      const ImuSample &left = *(samples.end() - 2);
       const double dt = right.timestamp_s - left.timestamp_s;
       if (!(dt > 0.0)) {
         return false;
@@ -239,8 +258,8 @@ bool interpolateImuSample(const std::vector<ImuSample>& samples,
     }
     return true;
   }
-  const ImuSample& right = *upper;
-  const ImuSample& left = *(upper - 1);
+  const ImuSample &right = *upper;
+  const ImuSample &left = *(upper - 1);
   const double dt = right.timestamp_s - left.timestamp_s;
   if (!(dt > 0.0)) {
     return false;
@@ -248,8 +267,7 @@ bool interpolateImuSample(const std::vector<ImuSample>& samples,
   const double u = (timestamp_s - left.timestamp_s) / dt;
   interpolated->timestamp_s = timestamp_s;
   interpolated->gyro_rad_s = (1.0 - u) * left.gyro_rad_s + u * right.gyro_rad_s;
-  interpolated->accel_m_s2 =
-      (1.0 - u) * left.accel_m_s2 + u * right.accel_m_s2;
+  interpolated->accel_m_s2 = (1.0 - u) * left.accel_m_s2 + u * right.accel_m_s2;
   if (angular_accel_rad_s2) {
     *angular_accel_rad_s2 = (right.gyro_rad_s - left.gyro_rad_s) / dt;
   }
@@ -258,14 +276,15 @@ bool interpolateImuSample(const std::vector<ImuSample>& samples,
 
 struct CorrelationResult {
   double time_offset_s = 0.0;
-  int discrete_shift_samples = 0;
+  std::int64_t discrete_shift_samples = 0;
   double sample_dt_s = 0.0;
+  double discrete_shift_residual_s = 0.0;
   double search_radius_s = 0.0;
   int max_lag_samples = 0;
   int matched_samples = 0;
   double peak_correlation = 0.0;
   bool boundary_peak_rejected = false;
-  int rejected_discrete_shift_samples = 0;
+  std::int64_t rejected_discrete_shift_samples = 0;
   int rejected_matched_samples = 0;
   double rejected_peak_correlation = 0.0;
 };
@@ -276,38 +295,47 @@ struct LagCorrelationStats {
   double correlation = -std::numeric_limits<double>::infinity();
 };
 
-double rawOverlapDurationSeconds(const ImuObservationDataset& reference_imu,
-                                 const ImuObservationDataset& target_imu) {
-  const double overlap_start =
-      std::max(reference_imu.samples.front().timestamp_s,
-               target_imu.samples.front().timestamp_s);
-  const double overlap_end =
-      std::min(reference_imu.samples.back().timestamp_s,
-               target_imu.samples.back().timestamp_s);
-  if (!(overlap_end > overlap_start)) {
-    throw std::runtime_error(
-        "IMU time ranges do not overlap for full-offset correlation");
-  }
-  return overlap_end - overlap_start;
-}
-
-double correlationSearchRadiusSeconds(
-    const ImuObservationDataset& reference_imu,
-    const ImuObservationDataset& target_imu,
-    const ImuChainInitializerOptions& options) {
-  return options.use_full_overlap_time_offset_search
-             ? rawOverlapDurationSeconds(reference_imu, target_imu)
-             : options.max_time_offset_search_s;
-}
-
 int maxCorrelationLagSamples(const double search_radius_s, const double dt) {
   return std::max(0, static_cast<int>(std::round(search_radius_s / dt)));
 }
 
-LagCorrelationStats gyroNormCorrelationAtLag(
-    const ImuObservationDataset& reference_imu,
-    const ImuObservationDataset& target_imu, const int lag,
-    const double dt, const int stride, const int min_samples) {
+internal::UniformScalarSignal
+makeUniformGyroNormSignal(const std::vector<ImuSample> &samples,
+                          const double sample_dt_s) {
+  if (samples.size() < 2) {
+    throw std::runtime_error(
+        "at least two IMU samples are required for gyro correlation");
+  }
+  internal::UniformScalarSignal signal;
+  signal.start_time_s = samples.front().timestamp_s;
+  signal.sample_dt_s = sample_dt_s;
+  const int count = internal::uniformSampleCount(
+      signal.start_time_s, samples.back().timestamp_s, sample_dt_s);
+  signal.values.reserve(static_cast<std::size_t>(std::max(0, count)));
+  std::size_t upper = 1;
+  for (int index = 0; index < count; ++index) {
+    const double timestamp_s =
+        signal.start_time_s + static_cast<double>(index) * sample_dt_s;
+    while (upper + 1 < samples.size() &&
+           samples[upper].timestamp_s < timestamp_s) {
+      ++upper;
+    }
+    const ImuSample &left = samples[upper - 1];
+    const ImuSample &right = samples[upper];
+    const double alpha = std::clamp((timestamp_s - left.timestamp_s) /
+                                        (right.timestamp_s - left.timestamp_s),
+                                    0.0, 1.0);
+    signal.values.push_back((1.0 - alpha) * left.gyro_rad_s.norm() +
+                            alpha * right.gyro_rad_s.norm());
+  }
+  return signal;
+}
+
+LagCorrelationStats
+gyroNormCorrelationAtLag(const ImuObservationDataset &reference_imu,
+                         const ImuObservationDataset &target_imu, const int lag,
+                         const double dt, const int stride,
+                         const int min_samples) {
   const double offset_s = static_cast<double>(lag) * dt;
   double sum_reference = 0.0;
   double sum_target = 0.0;
@@ -317,10 +345,10 @@ LagCorrelationStats gyroNormCorrelationAtLag(
   int matched = 0;
   for (std::size_t i = 0; i < target_imu.samples.size();
        i += static_cast<std::size_t>(stride)) {
-    const ImuSample& target = target_imu.samples[i];
+    const ImuSample &target = target_imu.samples[i];
     Vec3 reference_gyro = Vec3::Zero();
-    if (!interpolateGyro(reference_imu.samples,
-                         target.timestamp_s + offset_s, &reference_gyro)) {
+    if (!interpolateGyro(reference_imu.samples, target.timestamp_s + offset_s,
+                         &reference_gyro)) {
       continue;
     }
     const double reference_norm = reference_gyro.norm();
@@ -338,8 +366,7 @@ LagCorrelationStats gyroNormCorrelationAtLag(
     return stats;
   }
   const double inv_count = 1.0 / static_cast<double>(matched);
-  const double covariance =
-      sum_cross - sum_reference * sum_target * inv_count;
+  const double covariance = sum_cross - sum_reference * sum_target * inv_count;
   const double reference_variance =
       sum_reference_sq - sum_reference * sum_reference * inv_count;
   const double target_variance =
@@ -353,15 +380,79 @@ LagCorrelationStats gyroNormCorrelationAtLag(
   return stats;
 }
 
-CorrelationResult estimateTimeOffsetByGyroNorm(
-    const ImuObservationDataset& reference_imu,
-    const ImuObservationDataset& target_imu,
-    const ImuChainInitializerOptions& options) {
-  const double dt = meanPositiveDt(target_imu.samples);
-  const double search_radius_s =
-      correlationSearchRadiusSeconds(reference_imu, target_imu, options);
-  const int max_lag_samples =
-      maxCorrelationLagSamples(search_radius_s, dt);
+CorrelationResult estimateFullOverlapTimeOffsetByGyroNorm(
+    const ImuObservationDataset &reference_imu,
+    const ImuObservationDataset &target_imu,
+    const ImuChainInitializerOptions &options) {
+  const double fine_dt = meanPositiveDt(target_imu.samples);
+  const double coarse_dt = options.full_search_coarse_sample_dt_s;
+  const internal::UniformScalarSignal coarse_reference =
+      makeUniformGyroNormSignal(reference_imu.samples, coarse_dt);
+  const internal::UniformScalarSignal coarse_target =
+      makeUniformGyroNormSignal(target_imu.samples, coarse_dt);
+  const internal::UniformScalarSignal fine_reference =
+      makeUniformGyroNormSignal(reference_imu.samples, fine_dt);
+  const internal::UniformScalarSignal fine_target =
+      makeUniformGyroNormSignal(target_imu.samples, fine_dt);
+  constexpr internal::AppliedShiftConvention kImuOffsetConvention =
+      internal::AppliedShiftConvention::kLeftMinusRightPlusLag;
+  const internal::CoarseToFineCorrelationResult correlation =
+      internal::searchCoarseToFineCorrelation(
+          coarse_reference, coarse_target, fine_reference, fine_target,
+          options.min_overlap_fraction, 0.0,
+          options.full_search_fine_half_width_s, kImuOffsetConvention);
+  const auto &fine = correlation.fine;
+  const double best_offset_s = correlation.best_shift_s;
+  const std::int64_t total_shift_samples =
+      std::llround(best_offset_s / fine_dt);
+  CorrelationResult result;
+  result.time_offset_s = best_offset_s;
+  result.discrete_shift_samples = total_shift_samples;
+  result.sample_dt_s = fine_dt;
+  result.discrete_shift_residual_s =
+      result.time_offset_s -
+      static_cast<double>(result.discrete_shift_samples) * result.sample_dt_s;
+  result.search_radius_s = std::max(
+      std::abs(internal::appliedShiftForLag(fine_reference, fine_target,
+                                            correlation.fine_global_first_lag,
+                                            kImuOffsetConvention)),
+      std::abs(internal::appliedShiftForLag(fine_reference, fine_target,
+                                            correlation.fine_global_last_lag,
+                                            kImuOffsetConvention)));
+  result.max_lag_samples = std::max(std::abs(correlation.fine_global_first_lag),
+                                    std::abs(correlation.fine_global_last_lag));
+  result.matched_samples = fine.best_matched;
+  result.peak_correlation = fine.best_correlation;
+  if (correlation.global_boundary) {
+    result.boundary_peak_rejected = true;
+    result.rejected_discrete_shift_samples = result.discrete_shift_samples;
+    result.rejected_matched_samples = result.matched_samples;
+    result.rejected_peak_correlation = result.peak_correlation;
+    result.time_offset_s = 0.0;
+    result.discrete_shift_samples = 0;
+    result.discrete_shift_residual_s = 0.0;
+    result.matched_samples = 0;
+    result.peak_correlation = 0.0;
+  }
+  return result;
+}
+
+CorrelationResult
+estimateTimeOffsetByGyroNorm(const ImuObservationDataset &reference_imu,
+                             const ImuObservationDataset &target_imu,
+                             const ImuChainInitializerOptions &options) {
+  ImuObservationDataset correlation_reference = reference_imu;
+  ImuObservationDataset correlation_target = target_imu;
+  correlation_reference.samples =
+      deduplicateImuTimestamps(reference_imu.samples);
+  correlation_target.samples = deduplicateImuTimestamps(target_imu.samples);
+  if (options.use_full_overlap_time_offset_search) {
+    return estimateFullOverlapTimeOffsetByGyroNorm(correlation_reference,
+                                                   correlation_target, options);
+  }
+  const double dt = meanPositiveDt(correlation_target.samples);
+  const double search_radius_s = options.max_time_offset_search_s;
+  const int max_lag_samples = maxCorrelationLagSamples(search_radius_s, dt);
   const int stride = std::max(1, options.sample_stride);
 
   CorrelationResult best;
@@ -370,8 +461,9 @@ CorrelationResult estimateTimeOffsetByGyroNorm(
   best.max_lag_samples = max_lag_samples;
   best.peak_correlation = -std::numeric_limits<double>::infinity();
   for (int lag = -max_lag_samples; lag <= max_lag_samples; ++lag) {
-    const LagCorrelationStats stats = gyroNormCorrelationAtLag(
-        reference_imu, target_imu, lag, dt, stride, options.min_samples);
+    const LagCorrelationStats stats =
+        gyroNormCorrelationAtLag(correlation_reference, correlation_target, lag,
+                                 dt, stride, options.min_samples);
     if (!stats.valid) {
       continue;
     }
@@ -390,8 +482,9 @@ CorrelationResult estimateTimeOffsetByGyroNorm(
   }
   if (max_lag_samples > 0 &&
       std::abs(best.discrete_shift_samples) == max_lag_samples) {
-    const LagCorrelationStats zero_lag = gyroNormCorrelationAtLag(
-        reference_imu, target_imu, 0, dt, stride, options.min_samples);
+    const LagCorrelationStats zero_lag =
+        gyroNormCorrelationAtLag(correlation_reference, correlation_target, 0,
+                                 dt, stride, options.min_samples);
     if (!zero_lag.valid) {
       throw std::runtime_error(
           "not enough zero-lag IMU samples for boundary-peak rejection");
@@ -408,23 +501,23 @@ CorrelationResult estimateTimeOffsetByGyroNorm(
   return best;
 }
 
-void collectGyroPairs(const ImuObservationDataset& reference_imu,
-                      const ImuObservationDataset& target_imu,
+void collectGyroPairs(const ImuObservationDataset &reference_imu,
+                      const ImuObservationDataset &target_imu,
                       const double time_offset_s, const int stride,
-                      std::vector<Vec3>* reference_gyro,
-                      std::vector<Vec3>* target_gyro) {
+                      std::vector<Vec3> *reference_gyro,
+                      std::vector<Vec3> *target_gyro) {
   if (!reference_gyro || !target_gyro) {
     throw std::invalid_argument("gyro pair outputs must be non-null");
   }
   reference_gyro->clear();
   target_gyro->clear();
   const int safe_stride = std::max(1, stride);
-  reference_gyro->reserve(target_imu.samples.size() /
-                          static_cast<std::size_t>(safe_stride) + 1);
+  reference_gyro->reserve(
+      target_imu.samples.size() / static_cast<std::size_t>(safe_stride) + 1);
   target_gyro->reserve(reference_gyro->capacity());
   for (std::size_t i = 0; i < target_imu.samples.size();
        i += static_cast<std::size_t>(safe_stride)) {
-    const ImuSample& target = target_imu.samples[i];
+    const ImuSample &target = target_imu.samples[i];
     Vec3 reference = Vec3::Zero();
     if (!interpolateGyro(reference_imu.samples,
                          target.timestamp_s + time_offset_s, &reference)) {
@@ -443,22 +536,22 @@ struct ImuPairSample {
   Vec3 accel_target = Vec3::Zero();
 };
 
-std::vector<ImuPairSample> collectImuPairSamples(
-    const ImuObservationDataset& reference_imu,
-    const ImuObservationDataset& target_imu, const double time_offset_s,
-    const int stride) {
+std::vector<ImuPairSample>
+collectImuPairSamples(const ImuObservationDataset &reference_imu,
+                      const ImuObservationDataset &target_imu,
+                      const double time_offset_s, const int stride) {
   std::vector<ImuPairSample> samples;
   const int safe_stride = std::max(1, stride);
-  samples.reserve(target_imu.samples.size() /
-                  static_cast<std::size_t>(safe_stride) + 1);
+  samples.reserve(
+      target_imu.samples.size() / static_cast<std::size_t>(safe_stride) + 1);
   for (std::size_t i = 0; i < target_imu.samples.size();
        i += static_cast<std::size_t>(safe_stride)) {
-    const ImuSample& target = target_imu.samples[i];
+    const ImuSample &target = target_imu.samples[i];
     ImuSample reference;
     Vec3 alpha_reference = Vec3::Zero();
     if (!interpolateImuSample(reference_imu.samples,
-                              target.timestamp_s + time_offset_s,
-                              &reference, &alpha_reference)) {
+                              target.timestamp_s + time_offset_s, &reference,
+                              &alpha_reference)) {
       continue;
     }
     ImuPairSample pair;
@@ -472,10 +565,10 @@ std::vector<ImuPairSample> collectImuPairSamples(
   return samples;
 }
 
-Mat3 wahbaRotationReferenceToTarget(const std::vector<Vec3>& reference_gyro,
-                                    const std::vector<Vec3>& target_gyro,
-                                    Vec3* reference_mean, Vec3* target_mean,
-                                    Vec3* singular_values) {
+Mat3 wahbaRotationReferenceToTarget(const std::vector<Vec3> &reference_gyro,
+                                    const std::vector<Vec3> &target_gyro,
+                                    Vec3 *reference_mean, Vec3 *target_mean,
+                                    Vec3 *singular_values) {
   Vec3 mean_reference = Vec3::Zero();
   Vec3 mean_target = Vec3::Zero();
   for (std::size_t i = 0; i < reference_gyro.size(); ++i) {
@@ -488,9 +581,8 @@ Mat3 wahbaRotationReferenceToTarget(const std::vector<Vec3>& reference_gyro,
 
   Mat3 correlation = Mat3::Zero();
   for (std::size_t i = 0; i < reference_gyro.size(); ++i) {
-    correlation +=
-        (reference_gyro[i] - mean_reference) *
-        (target_gyro[i] - mean_target).transpose();
+    correlation += (reference_gyro[i] - mean_reference) *
+                   (target_gyro[i] - mean_target).transpose();
   }
 
   Eigen::JacobiSVD<Mat3> svd(correlation,
@@ -511,9 +603,9 @@ Mat3 wahbaRotationReferenceToTarget(const std::vector<Vec3>& reference_gyro,
   return svd.matrixV() * fix * svd.matrixU().transpose();
 }
 
-double gyroRms(const std::vector<Vec3>& reference_gyro,
-               const std::vector<Vec3>& target_gyro, const Mat3& R_i_b,
-               const Vec3& bias) {
+double gyroRms(const std::vector<Vec3> &reference_gyro,
+               const std::vector<Vec3> &target_gyro, const Mat3 &R_i_b,
+               const Vec3 &bias) {
   double sum_sq = 0.0;
   for (std::size_t i = 0; i < reference_gyro.size(); ++i) {
     sum_sq += (R_i_b * reference_gyro[i] + bias - target_gyro[i]).squaredNorm();
@@ -521,18 +613,18 @@ double gyroRms(const std::vector<Vec3>& reference_gyro,
   return std::sqrt(sum_sq / static_cast<double>(reference_gyro.size()));
 }
 
-double accelLeverRms(const std::vector<ImuPairSample>& samples,
-                     const Mat3& R_i_b, const Vec3& r_b,
-                     const Vec3& accel_bias_delta_body) {
+double accelLeverRms(const std::vector<ImuPairSample> &samples,
+                     const Mat3 &R_i_b, const Vec3 &r_b,
+                     const Vec3 &accel_bias_delta_body) {
   if (samples.empty()) {
     return 0.0;
   }
   double sum_sq = 0.0;
   const Mat3 R_b_i = R_i_b.transpose();
-  for (const ImuPairSample& sample : samples) {
+  for (const ImuPairSample &sample : samples) {
     const Mat3 lever_jacobian =
-        skew(sample.alpha_reference) + skew(sample.omega_reference) *
-                                           skew(sample.omega_reference);
+        skew(sample.alpha_reference) +
+        skew(sample.omega_reference) * skew(sample.omega_reference);
     const Vec3 accel_delta =
         R_b_i * sample.accel_target - sample.accel_reference;
     const Vec3 residual =
@@ -551,33 +643,31 @@ struct LeverArmEstimate {
 };
 
 LeverArmEstimate estimateLeverArmFromAccelDifference(
-    const ImuObservationDataset& reference_imu,
-    const ImuObservationDataset& target_imu, const double time_offset_s,
-    const Mat3& R_i_b, const ImuChainInitializerOptions& options) {
+    const ImuObservationDataset &reference_imu,
+    const ImuObservationDataset &target_imu, const double time_offset_s,
+    const Mat3 &R_i_b, const ImuChainInitializerOptions &options) {
   LeverArmEstimate result;
   const int stride = std::max(1, options.sample_stride);
   std::vector<Mat3> lever_jacobians;
   std::vector<Vec3> accel_deltas;
-  lever_jacobians.reserve(target_imu.samples.size() /
-                          static_cast<std::size_t>(stride) + 1);
+  lever_jacobians.reserve(
+      target_imu.samples.size() / static_cast<std::size_t>(stride) + 1);
   accel_deltas.reserve(lever_jacobians.capacity());
   const Mat3 R_b_i = R_i_b.transpose();
   for (std::size_t i = 0; i < target_imu.samples.size();
        i += static_cast<std::size_t>(stride)) {
-    const ImuSample& target = target_imu.samples[i];
+    const ImuSample &target = target_imu.samples[i];
     ImuSample reference;
     Vec3 alpha_b = Vec3::Zero();
     if (!interpolateImuSample(reference_imu.samples,
-                              target.timestamp_s + time_offset_s,
-                              &reference, &alpha_b)) {
+                              target.timestamp_s + time_offset_s, &reference,
+                              &alpha_b)) {
       continue;
     }
-    const Vec3& omega_b = reference.gyro_rad_s;
-    const Mat3 lever_jacobian =
-        skew(alpha_b) + skew(omega_b) * skew(omega_b);
+    const Vec3 &omega_b = reference.gyro_rad_s;
+    const Mat3 lever_jacobian = skew(alpha_b) + skew(omega_b) * skew(omega_b);
     lever_jacobians.push_back(lever_jacobian);
-    accel_deltas.push_back(R_b_i * target.accel_m_s2 -
-                           reference.accel_m_s2);
+    accel_deltas.push_back(R_b_i * target.accel_m_s2 - reference.accel_m_s2);
   }
   const std::size_t sample_count = accel_deltas.size();
   if (sample_count < static_cast<std::size_t>(options.min_samples)) {
@@ -585,24 +675,23 @@ LeverArmEstimate estimateLeverArmFromAccelDifference(
   }
 
   Mat3 mean_jacobian = Mat3::Zero();
-  for (const Mat3& jacobian : lever_jacobians) {
+  for (const Mat3 &jacobian : lever_jacobians) {
     mean_jacobian += jacobian;
   }
   mean_jacobian /= static_cast<double>(sample_count);
   Mat3 excitation = Mat3::Zero();
-  for (const Mat3& jacobian : lever_jacobians) {
-    excitation += (jacobian - mean_jacobian).transpose() *
-                  (jacobian - mean_jacobian);
+  for (const Mat3 &jacobian : lever_jacobians) {
+    excitation +=
+        (jacobian - mean_jacobian).transpose() * (jacobian - mean_jacobian);
   }
   Eigen::SelfAdjointEigenSolver<Mat3> excitation_solver(excitation);
   if (excitation_solver.info() != Eigen::Success) {
     return result;
   }
   const Vec3 excitation_values = excitation_solver.eigenvalues();
-  result.singular_values =
-      Vec3(std::sqrt(std::max(0.0, excitation_values(2))),
-           std::sqrt(std::max(0.0, excitation_values(1))),
-           std::sqrt(std::max(0.0, excitation_values(0))));
+  result.singular_values = Vec3(std::sqrt(std::max(0.0, excitation_values(2))),
+                                std::sqrt(std::max(0.0, excitation_values(1))),
+                                std::sqrt(std::max(0.0, excitation_values(0))));
   if (result.singular_values(2) <= options.min_lever_excitation) {
     return result;
   }
@@ -610,8 +699,7 @@ LeverArmEstimate estimateLeverArmFromAccelDifference(
   Eigen::MatrixXd A(static_cast<Eigen::Index>(3 * sample_count), 6);
   Eigen::VectorXd y(static_cast<Eigen::Index>(3 * sample_count));
   for (std::size_t i = 0; i < sample_count; ++i) {
-    A.block<3, 3>(static_cast<Eigen::Index>(3 * i), 0) =
-        lever_jacobians[i];
+    A.block<3, 3>(static_cast<Eigen::Index>(3 * i), 0) = lever_jacobians[i];
     A.block<3, 3>(static_cast<Eigen::Index>(3 * i), 3) = Mat3::Identity();
     y.segment<3>(static_cast<Eigen::Index>(3 * i)) = accel_deltas[i];
   }
@@ -624,9 +712,8 @@ LeverArmEstimate estimateLeverArmFromAccelDifference(
   }
   double sum_sq = 0.0;
   for (std::size_t i = 0; i < sample_count; ++i) {
-    const Vec3 residual =
-        lever_jacobians[i] * result.r_b + result.bias_delta_body -
-        accel_deltas[i];
+    const Vec3 residual = lever_jacobians[i] * result.r_b +
+                          result.bias_delta_body - accel_deltas[i];
     sum_sq += residual.squaredNorm();
   }
   result.rms_m_s2 = std::sqrt(sum_sq / static_cast<double>(sample_count));
@@ -638,10 +725,11 @@ LeverArmEstimate estimateLeverArmFromAccelDifference(
   return result;
 }
 
-ceres::Solver::Summary refineRotationAndBias(
-    const std::vector<Vec3>& reference_gyro,
-    const std::vector<Vec3>& target_gyro,
-    const ImuChainInitializerOptions& options, Mat3* R_i_b, Vec3* bias) {
+ceres::Solver::Summary
+refineRotationAndBias(const std::vector<Vec3> &reference_gyro,
+                      const std::vector<Vec3> &target_gyro,
+                      const ImuChainInitializerOptions &options, Mat3 *R_i_b,
+                      Vec3 *bias) {
   if (!R_i_b || !bias) {
     throw std::invalid_argument("rotation refinement outputs must be non-null");
   }
@@ -658,7 +746,8 @@ ceres::Solver::Summary refineRotationAndBias(
   }
 
   ceres::Solver::Options solver_options;
-  solver_options.max_num_iterations = std::max(0, options.refine_max_iterations);
+  solver_options.max_num_iterations =
+      std::max(0, options.refine_max_iterations);
   solver_options.linear_solver_type = ceres::DENSE_QR;
   solver_options.num_threads = 2;
   solver_options.minimizer_progress_to_stdout = false;
@@ -675,9 +764,9 @@ ceres::Solver::Summary refineRotationAndBias(
 }
 
 ceres::Solver::Summary refineRotationLeverAndBiasWithAccel(
-    const std::vector<ImuPairSample>& samples,
-    const ImuChainInitializerOptions& options, Mat3* R_i_b, Vec3* gyro_bias,
-    Vec3* r_b, Vec3* accel_bias_delta_body, double* accel_rms_m_s2) {
+    const std::vector<ImuPairSample> &samples,
+    const ImuChainInitializerOptions &options, Mat3 *R_i_b, Vec3 *gyro_bias,
+    Vec3 *r_b, Vec3 *accel_bias_delta_body, double *accel_rms_m_s2) {
   if (!R_i_b || !gyro_bias || !r_b || !accel_bias_delta_body ||
       !accel_rms_m_s2) {
     throw std::invalid_argument("accel refinement outputs must be non-null");
@@ -695,10 +784,12 @@ ceres::Solver::Summary refineRotationLeverAndBiasWithAccel(
   problem.AddParameterBlock(mutable_accel_bias.data(), 3);
   if (options.refine_rotation_bound_rad > 0.0) {
     for (int i = 0; i < 3; ++i) {
-      problem.SetParameterLowerBound(
-          r_i_b.data(), i, initial_r_i_b(i) - options.refine_rotation_bound_rad);
-      problem.SetParameterUpperBound(
-          r_i_b.data(), i, initial_r_i_b(i) + options.refine_rotation_bound_rad);
+      problem.SetParameterLowerBound(r_i_b.data(), i,
+                                     initial_r_i_b(i) -
+                                         options.refine_rotation_bound_rad);
+      problem.SetParameterUpperBound(r_i_b.data(), i,
+                                     initial_r_i_b(i) +
+                                         options.refine_rotation_bound_rad);
     }
   }
   for (int i = 0; i < 3; ++i) {
@@ -708,25 +799,22 @@ ceres::Solver::Summary refineRotationLeverAndBiasWithAccel(
                                    options.max_lever_arm_norm_m);
   }
 
-  for (const ImuPairSample& sample : samples) {
-    problem.AddResidualBlock(
-        new RelativeGyroRotationCost(sample.omega_reference,
-                                     sample.omega_target,
-                                     options.refine_gyro_weight),
-        nullptr, r_i_b.data(), mutable_gyro_bias.data());
-    problem.AddResidualBlock(
-        new RelativeAccelLeverCost(sample.omega_reference,
-                                   sample.alpha_reference,
-                                   sample.accel_reference,
-                                   sample.accel_target,
-                                   options.refine_accel_weight),
-        nullptr, r_i_b.data(), mutable_r_b.data(),
-        mutable_accel_bias.data());
+  for (const ImuPairSample &sample : samples) {
+    problem.AddResidualBlock(new RelativeGyroRotationCost(
+                                 sample.omega_reference, sample.omega_target,
+                                 options.refine_gyro_weight),
+                             nullptr, r_i_b.data(), mutable_gyro_bias.data());
+    problem.AddResidualBlock(new RelativeAccelLeverCost(
+                                 sample.omega_reference, sample.alpha_reference,
+                                 sample.accel_reference, sample.accel_target,
+                                 options.refine_accel_weight),
+                             nullptr, r_i_b.data(), mutable_r_b.data(),
+                             mutable_accel_bias.data());
   }
   if (options.refine_lever_prior_sigma_m > 0.0) {
     problem.AddResidualBlock(
-        new VectorPriorCost(*r_b, options.refine_lever_prior_sigma_m),
-        nullptr, mutable_r_b.data());
+        new VectorPriorCost(*r_b, options.refine_lever_prior_sigma_m), nullptr,
+        mutable_r_b.data());
   }
   if (options.refine_accel_bias_prior_sigma_m_s2 > 0.0) {
     problem.AddResidualBlock(
@@ -736,7 +824,8 @@ ceres::Solver::Summary refineRotationLeverAndBiasWithAccel(
   }
 
   ceres::Solver::Options solver_options;
-  solver_options.max_num_iterations = std::max(0, options.refine_max_iterations);
+  solver_options.max_num_iterations =
+      std::max(0, options.refine_max_iterations);
   solver_options.linear_solver_type = ceres::DENSE_QR;
   solver_options.num_threads = 2;
   solver_options.minimizer_progress_to_stdout = false;
@@ -756,10 +845,10 @@ ceres::Solver::Summary refineRotationLeverAndBiasWithAccel(
   return summary;
 }
 
-}  // namespace
+} // namespace
 
-ImuExtrinsicBlock imuExtrinsicFromRotationAndLever(const Mat3& R_i_b,
-                                                   const Vec3& r_b) {
+ImuExtrinsicBlock imuExtrinsicFromRotationAndLever(const Mat3 &R_i_b,
+                                                   const Vec3 &r_b) {
   ImuExtrinsicBlock block;
   const Vec3 r_i_b = rotationMatrixToVector(R_i_b);
   for (int i = 0; i < 3; ++i) {
@@ -769,25 +858,59 @@ ImuExtrinsicBlock imuExtrinsicFromRotationAndLever(const Mat3& R_i_b,
   return block;
 }
 
-ImuExtrinsicBlock imuExtrinsicFromRotation(const Mat3& R_i_b) {
+ImuExtrinsicBlock imuExtrinsicFromRotation(const Mat3 &R_i_b) {
   return imuExtrinsicFromRotationAndLever(R_i_b, Vec3::Zero());
 }
 
-ImuChainInitializerPairResult estimateImuChainPairPrior(
-    const ImuObservationDataset& reference_imu,
-    const ImuObservationDataset& target_imu, const std::size_t imu_index,
-    const ImuChainInitializerOptions& options) {
+ImuChainInitializerPairResult
+estimateImuChainPairPrior(const ImuObservationDataset &reference_imu,
+                          const ImuObservationDataset &target_imu,
+                          const std::size_t imu_index,
+                          const ImuChainInitializerOptions &options) {
   if (reference_imu.samples.size() < 2 || target_imu.samples.size() < 2) {
     throw std::runtime_error(
         "reference and target IMUs need at least two samples");
   }
   if (!options.use_full_overlap_time_offset_search &&
       options.max_time_offset_search_s < 0.0) {
-    throw std::runtime_error("IMU chain max offset search must be non-negative");
+    throw std::runtime_error(
+        "IMU chain max offset search must be non-negative");
+  }
+  if (options.use_full_overlap_time_offset_search &&
+      (!(std::isfinite(options.min_overlap_fraction) &&
+         options.min_overlap_fraction > 0.0 &&
+         options.min_overlap_fraction <= 1.0) ||
+       !(std::isfinite(options.full_search_coarse_sample_dt_s) &&
+         options.full_search_coarse_sample_dt_s > 0.0) ||
+       !(std::isfinite(options.full_search_fine_half_width_s) &&
+         options.full_search_fine_half_width_s > 0.0))) {
+    throw std::runtime_error(
+        "full-range IMU correlation requires overlap fraction in (0,1] and "
+        "positive coarse/fine search intervals");
   }
 
   const CorrelationResult correlation =
       estimateTimeOffsetByGyroNorm(reference_imu, target_imu, options);
+
+  ImuChainInitializerPairResult result;
+  result.imu_index = imu_index;
+  result.time_offset_s = correlation.time_offset_s;
+  result.discrete_shift_samples = correlation.discrete_shift_samples;
+  result.sample_dt_s = correlation.sample_dt_s;
+  result.discrete_shift_residual_s = correlation.discrete_shift_residual_s;
+  result.time_offset_search_radius_s = correlation.search_radius_s;
+  result.max_search_lag_samples = correlation.max_lag_samples;
+  result.matched_samples = correlation.matched_samples;
+  result.peak_correlation = correlation.peak_correlation;
+  result.time_offset_boundary_peak_rejected =
+      correlation.boundary_peak_rejected;
+  result.rejected_discrete_shift_samples =
+      correlation.rejected_discrete_shift_samples;
+  result.rejected_matched_samples = correlation.rejected_matched_samples;
+  result.rejected_peak_correlation = correlation.rejected_peak_correlation;
+  if (correlation.boundary_peak_rejected) {
+    return result;
+  }
 
   std::vector<Vec3> reference_gyro;
   std::vector<Vec3> target_gyro;
@@ -801,9 +924,9 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
   Vec3 reference_mean = Vec3::Zero();
   Vec3 target_mean = Vec3::Zero();
   Vec3 singular_values = Vec3::Zero();
-  Mat3 R_i_b = wahbaRotationReferenceToTarget(
-      reference_gyro, target_gyro, &reference_mean, &target_mean,
-      &singular_values);
+  Mat3 R_i_b = wahbaRotationReferenceToTarget(reference_gyro, target_gyro,
+                                              &reference_mean, &target_mean,
+                                              &singular_values);
   if (singular_values.sum() <= options.min_rotation_excitation) {
     throw std::runtime_error(
         "gyro motion is too weak for IMU chain rotation initialization");
@@ -811,9 +934,8 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
   Vec3 bias = target_mean - R_i_b * reference_mean;
   ceres::Solver::Summary refine_summary;
   if (options.refine_with_ceres && options.refine_max_iterations > 0) {
-    refine_summary =
-        refineRotationAndBias(reference_gyro, target_gyro, options, &R_i_b,
-                              &bias);
+    refine_summary = refineRotationAndBias(reference_gyro, target_gyro, options,
+                                           &R_i_b, &bias);
   }
   LeverArmEstimate lever;
   if (options.estimate_lever_arms) {
@@ -824,9 +946,9 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
   bool accel_refined = false;
   double accel_refine_rms_m_s2 = 0.0;
   if (options.refine_with_accel && options.refine_max_iterations > 0) {
-    std::vector<ImuPairSample> pair_samples = collectImuPairSamples(
-        reference_imu, target_imu, correlation.time_offset_s,
-        options.sample_stride);
+    std::vector<ImuPairSample> pair_samples =
+        collectImuPairSamples(reference_imu, target_imu,
+                              correlation.time_offset_s, options.sample_stride);
     if (pair_samples.size() < static_cast<std::size_t>(options.min_samples)) {
       throw std::runtime_error(
           "not enough overlapping samples for IMU chain accel refinement");
@@ -835,8 +957,8 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
     Vec3 refined_accel_bias =
         lever.estimated ? lever.bias_delta_body : Vec3::Zero();
     accel_refine_summary = refineRotationLeverAndBiasWithAccel(
-        pair_samples, options, &R_i_b, &bias, &refined_r_b,
-        &refined_accel_bias, &accel_refine_rms_m_s2);
+        pair_samples, options, &R_i_b, &bias, &refined_r_b, &refined_accel_bias,
+        &accel_refine_rms_m_s2);
     accel_refined = true;
     lever.r_b = refined_r_b;
     lever.bias_delta_body = refined_accel_bias;
@@ -848,20 +970,7 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
          accel_refine_rms_m_s2 <= options.max_lever_accel_rms_m_s2);
   }
 
-  ImuChainInitializerPairResult result;
-  result.imu_index = imu_index;
-  result.time_offset_s = correlation.time_offset_s;
-  result.discrete_shift_samples = correlation.discrete_shift_samples;
-  result.sample_dt_s = correlation.sample_dt_s;
-  result.time_offset_search_radius_s = correlation.search_radius_s;
-  result.max_search_lag_samples = correlation.max_lag_samples;
   result.matched_samples = static_cast<int>(reference_gyro.size());
-  result.peak_correlation = correlation.peak_correlation;
-  result.time_offset_boundary_peak_rejected = correlation.boundary_peak_rejected;
-  result.rejected_discrete_shift_samples =
-      correlation.rejected_discrete_shift_samples;
-  result.rejected_matched_samples = correlation.rejected_matched_samples;
-  result.rejected_peak_correlation = correlation.rejected_peak_correlation;
   result.R_i_b = R_i_b;
   result.r_b = lever.estimated ? lever.r_b : Vec3::Zero();
   result.r_i_b = rotationMatrixToVector(R_i_b);
@@ -872,11 +981,9 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
   result.accel_bias_delta_body_m_s2 = lever.bias_delta_body;
   result.lever_singular_values = lever.singular_values;
   result.accel_rms_m_s2 = lever.rms_m_s2;
-  result.refine_iterations = accel_refined
-                                 ? static_cast<int>(
-                                       accel_refine_summary.iterations.size())
-                                 : static_cast<int>(
-                                       refine_summary.iterations.size());
+  result.refine_iterations =
+      accel_refined ? static_cast<int>(accel_refine_summary.iterations.size())
+                    : static_cast<int>(refine_summary.iterations.size());
   result.refine_final_cost = accel_refined ? accel_refine_summary.final_cost
                                            : refine_summary.final_cost;
   result.accel_refined = accel_refined;
@@ -884,9 +991,9 @@ ImuChainInitializerPairResult estimateImuChainPairPrior(
   return result;
 }
 
-ImuChainInitializerResult estimateImuChainPrior(
-    const std::vector<ImuObservationDataset>& imus,
-    const ImuChainInitializerOptions& options) {
+ImuChainInitializerResult
+estimateImuChainPrior(const std::vector<ImuObservationDataset> &imus,
+                      const ImuChainInitializerOptions &options) {
   if (imus.size() < 2) {
     throw std::runtime_error(
         "at least two IMUs are required for IMU chain initialization");
@@ -894,11 +1001,10 @@ ImuChainInitializerResult estimateImuChainPrior(
   ImuChainInitializerResult result;
   result.imu_results.reserve(imus.size() - 1);
   for (std::size_t imu_index = 1; imu_index < imus.size(); ++imu_index) {
-    result.imu_results.push_back(
-        estimateImuChainPairPrior(imus.front(), imus[imu_index], imu_index,
-                                  options));
+    result.imu_results.push_back(estimateImuChainPairPrior(
+        imus.front(), imus[imu_index], imu_index, options));
   }
   return result;
 }
 
-}  // namespace ceres_cam_imu
+} // namespace ceres_cam_imu

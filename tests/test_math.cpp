@@ -920,6 +920,20 @@ int main() {
                   static_cast<double>(shift_estimate.discrete_shift_samples) *
                       shift_estimate.sample_dt_s) < 1e-12);
 
+  // Real logs can contain a short run of byte-for-byte duplicate IMU rows at
+  // one timestamp. Correlation treats those rows as one sample instead of
+  // rejecting an otherwise nondecreasing stream or overweighting the frozen
+  // point.
+  std::vector<ceres_cam_imu::ImuSample> duplicate_timestamp_imu = shifted_imu;
+  duplicate_timestamp_imu.insert(duplicate_timestamp_imu.begin() + 80, 5,
+                                 shifted_imu[80]);
+  const ceres_cam_imu::TimeShiftPriorEstimate duplicate_timestamp_estimate =
+      ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+          shift_pose_observations, duplicate_timestamp_imu,
+          identity_extrinsic, shift_options);
+  assert(std::abs(duplicate_timestamp_estimate.shift_s -
+                  shift_estimate.shift_s) < 1e-12);
+
   // Now the mirrored case. Note what it is and is not for: the positive case
   // above already catches a global sign flip on its own, because it compares
   // against a signed ground truth. What a single side cannot catch is
@@ -951,6 +965,136 @@ int main() {
              negative_shift_estimate.shift_s -
              static_cast<double>(negative_shift_estimate.discrete_shift_samples) *
                  negative_shift_estimate.sample_dt_s) < 1e-12);
+
+  // Independent clocks may use unrelated epochs even when both streams record
+  // the same physical motion. Moving only the IMU timestamps forward by 500 s
+  // must therefore move the recovered t_imu = t_cam + shift by exactly the
+  // same amount; the signal samples themselves are unchanged. This exercises
+  // the public estimator seam rather than a private correlation helper.
+  constexpr double independent_clock_epoch_s = 500.003;
+  std::vector<ceres_cam_imu::ImuSample> epoch_shifted_imu = shifted_imu;
+  for (ceres_cam_imu::ImuSample &sample : epoch_shifted_imu) {
+    sample.timestamp_s += independent_clock_epoch_s;
+  }
+  const ceres_cam_imu::TimeShiftPriorEstimate epoch_shift_estimate =
+      ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+          shift_pose_observations, epoch_shifted_imu, identity_extrinsic,
+          shift_options);
+  const double true_epoch_shift_s = independent_clock_epoch_s + true_shift_s;
+  assert(!epoch_shift_estimate.boundary_peak_rejected);
+  assert(std::abs(epoch_shift_estimate.shift_s - true_epoch_shift_s) < 1e-8);
+  assert(std::abs(
+             epoch_shift_estimate.shift_s -
+             static_cast<double>(epoch_shift_estimate.discrete_shift_samples) *
+                     epoch_shift_estimate.sample_dt_s -
+                 epoch_shift_estimate.discrete_shift_residual_s) < 1e-12);
+  assert(std::abs(epoch_shift_estimate.discrete_shift_residual_s) > 1e-4);
+
+  // A Unix-epoch clock paired with a device-uptime clock can differ by much
+  // more than INT_MAX native IMU samples. The total shift representation must
+  // not overflow even though the relative correlation lag remains small.
+  constexpr double unix_epoch_offset_s = 1700000000.003;
+  std::vector<ceres_cam_imu::ImuSample> unix_epoch_imu = shifted_imu;
+  for (ceres_cam_imu::ImuSample &sample : unix_epoch_imu) {
+    sample.timestamp_s += unix_epoch_offset_s;
+  }
+  const ceres_cam_imu::TimeShiftPriorEstimate unix_epoch_estimate =
+      ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+          shift_pose_observations, unix_epoch_imu, identity_extrinsic,
+          shift_options);
+  const double true_unix_epoch_shift_s = unix_epoch_offset_s + true_shift_s;
+  assert(!unix_epoch_estimate.boundary_peak_rejected);
+  assert(std::abs(unix_epoch_estimate.shift_s - true_unix_epoch_shift_s) <=
+         unix_epoch_estimate.sample_dt_s + 1e-12);
+  const double reconstructed_unix_epoch_shift_s =
+      static_cast<double>(unix_epoch_estimate.discrete_shift_samples) *
+          unix_epoch_estimate.sample_dt_s +
+      unix_epoch_estimate.discrete_shift_residual_s;
+  assert(std::abs(
+             unix_epoch_estimate.shift_s - reconstructed_unix_epoch_shift_s) <=
+         2.0 * std::numeric_limits<double>::epsilon() *
+             std::abs(unix_epoch_estimate.shift_s));
+
+  // The default search is overlap-limited, not capped at the legacy 0.2 s.
+  // This is a genuine signal lag beyond that old cap rather than a pure epoch
+  // translation: the IMU records camera motion 0.45 s earlier.
+  constexpr double wide_signal_shift_s = 0.45;
+  std::vector<ceres_cam_imu::ImuSample> wide_shifted_imu;
+  for (int i = 0; i <= 600; ++i) {
+    const double t_imu = 0.6 + 0.002 * static_cast<double>(i);
+    ceres_cam_imu::ImuSample sample;
+    sample.timestamp_s = t_imu;
+    sample.gyro_rad_s = angular_velocity_at(t_imu - wide_signal_shift_s);
+    wide_shifted_imu.push_back(sample);
+  }
+  const ceres_cam_imu::TimeShiftPriorEstimate wide_shift_estimate =
+      ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+          shift_pose_observations, wide_shifted_imu, identity_extrinsic,
+          shift_options);
+  assert(!wide_shift_estimate.boundary_peak_rejected);
+  assert(std::abs(wide_shift_estimate.shift_s - wide_signal_shift_s) <=
+         wide_shift_estimate.sample_dt_s + 1e-12);
+
+  // At the default 50% overlap limit the candidate is evaluated, but a peak
+  // exactly on that outer boundary is still clipped and must be rejected.
+  // Samples before t=1 belong to motion outside the camera recording; only
+  // the final half of this IMU stream matches the first half of the camera.
+  std::vector<ceres_cam_imu::ImuSample> half_overlap_imu;
+  for (int i = 0; i <= 1000; ++i) {
+    const double t_imu = 0.002 * static_cast<double>(i);
+    ceres_cam_imu::ImuSample sample;
+    sample.timestamp_s = t_imu;
+    sample.gyro_rad_s =
+        t_imu >= 1.0 ? angular_velocity_at(t_imu - 1.0)
+                     : ceres_cam_imu::Vec3::Zero();
+    half_overlap_imu.push_back(sample);
+  }
+  const ceres_cam_imu::TimeShiftPriorEstimate half_overlap_estimate =
+      ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+          shift_pose_observations, half_overlap_imu, identity_extrinsic,
+          shift_options);
+  assert(half_overlap_estimate.boundary_peak_rejected);
+  assert(half_overlap_estimate.discrete_shift_samples == 0);
+  assert(half_overlap_estimate.shift_s == 0.0);
+
+  // A coarse 10 ms grid can quantize an interior peak onto an explicit search
+  // boundary. The native 2 ms refinement is authoritative: a true 37 ms
+  // shift under a 40 ms cap must not be rejected merely because the coarse
+  // pass first lands on 40 ms.
+  constexpr double near_boundary_shift_s = 0.037;
+  std::vector<ceres_cam_imu::ImuSample> high_rate_shifted_imu;
+  for (int i = 0; i <= 800; ++i) {
+    const double t_imu = 0.2 + 0.002 * static_cast<double>(i);
+    ceres_cam_imu::ImuSample sample;
+    sample.timestamp_s = t_imu;
+    sample.gyro_rad_s = angular_velocity_at(t_imu - near_boundary_shift_s);
+    high_rate_shifted_imu.push_back(sample);
+  }
+  ceres_cam_imu::TimeShiftPriorOptions near_boundary_options = shift_options;
+  near_boundary_options.max_search_s = 0.04;
+  const ceres_cam_imu::TimeShiftPriorEstimate near_boundary_estimate =
+      ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+          shift_pose_observations, high_rate_shifted_imu, identity_extrinsic,
+          near_boundary_options);
+  assert(!near_boundary_estimate.boundary_peak_rejected);
+  assert(std::abs(near_boundary_estimate.shift_s - near_boundary_shift_s) <=
+         near_boundary_estimate.sample_dt_s + 1e-12);
+
+  // A non-finite explicit cap is neither the documented unbounded sentinel
+  // (zero) nor a usable physical limit. Reject it instead of silently treating
+  // NaN as the full-range mode.
+  ceres_cam_imu::TimeShiftPriorOptions nan_search_options = shift_options;
+  nan_search_options.max_search_s =
+      std::numeric_limits<double>::quiet_NaN();
+  bool rejected_nan_search_limit = false;
+  try {
+    (void)ceres_cam_imu::estimateCameraImuTimeShiftPrior(
+        shift_pose_observations, high_rate_shifted_imu, identity_extrinsic,
+        nan_search_options);
+  } catch (const std::invalid_argument &) {
+    rejected_nan_search_limit = true;
+  }
+  assert(rejected_nan_search_limit);
 
   // Boundary rejection. Neither accepted case above reaches it. Squeeze the
   // search window down to exactly the true lag (0.04 s / 0.01 s = 4 samples)

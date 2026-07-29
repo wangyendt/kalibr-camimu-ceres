@@ -18,6 +18,7 @@ add_library(ceres_cam_imu STATIC
   src/core/so3.cpp
   src/core/types.cpp
   src/initialization/camera_translation_initializer.cpp
+  src/initialization/kalibr_style_multi_imu_initializer.cpp
   src/initialization/multi_imu_initializer.cpp
   src/initialization/orientation_gravity_initializer.cpp
   src/initialization/pose_spline_fit.cpp
@@ -82,4 +83,50 @@ if(CERES_CAM_IMU_BUILD_TESTS)
   add_executable(test_math tests/test_math.cpp)
   target_link_libraries(test_math PRIVATE ceres_cam_imu)
   add_test(NAME test_math COMMAND test_math)
+
+  add_executable(test_kalibr_style_multi_imu_initializer
+    tests/test_kalibr_style_multi_imu_initializer.cpp)
+  target_link_libraries(test_kalibr_style_multi_imu_initializer
+    PRIVATE ceres_cam_imu)
+  add_test(
+    NAME test_kalibr_style_multi_imu_initializer
+    COMMAND test_kalibr_style_multi_imu_initializer)
+
+  if(TARGET calibrate_cam_imu)
+    add_test(
+      NAME test_cli_kalibr_style_multi_imu
+      COMMAND ${CMAKE_COMMAND}
+        -DCALIBRATE_CAM_IMU=$<TARGET_FILE:calibrate_cam_imu>
+        -DFIXTURE_GENERATOR=$<TARGET_FILE:test_kalibr_style_multi_imu_initializer>
+        -DFIXTURE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test_fixture_one_cam_four_imus
+        -DRESULT_PATH=${CMAKE_CURRENT_BINARY_DIR}/test_cli_kalibr_style_multi_imu_result.yaml
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_kalibr_style_multi_imu.cmake)
+    add_test(
+      NAME test_cli_kalibr_style_multi_camera_multi_imu
+      COMMAND ${CMAKE_COMMAND}
+        -DCALIBRATE_CAM_IMU=$<TARGET_FILE:calibrate_cam_imu>
+        -DFIXTURE_GENERATOR=$<TARGET_FILE:test_kalibr_style_multi_imu_initializer>
+        -DFIXTURE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test_fixture_two_cams_two_imus
+        -DRESULT_PATH=${CMAKE_CURRENT_BINARY_DIR}/test_cli_kalibr_style_multi_camera_multi_imu_result.yaml
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_kalibr_style_multi_camera_multi_imu.cmake)
+    add_test(
+      NAME test_cli_kalibr_style_multi_imu_explicit_time
+      COMMAND ${CMAKE_COMMAND}
+        -DCALIBRATE_CAM_IMU=$<TARGET_FILE:calibrate_cam_imu>
+        -DFIXTURE_GENERATOR=$<TARGET_FILE:test_kalibr_style_multi_imu_initializer>
+        -DFIXTURE_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test_fixture_one_cam_four_imus_explicit
+        -DRESULT_PATH=${CMAKE_CURRENT_BINARY_DIR}/test_cli_kalibr_style_multi_imu_explicit_time_result.yaml
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cli_kalibr_style_multi_imu_explicit_time.cmake)
+
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+      add_test(
+        NAME test_benchmark_kalibr_style_single_path
+        COMMAND ${CMAKE_COMMAND}
+          -DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}
+          -DRUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tools/run_docker_benchmark.py
+          -DWORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/test_benchmark_kalibr_style_single_path
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_benchmark_kalibr_style_single_path.cmake)
+    endif()
+  endif()
 endif()

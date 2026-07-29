@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 #include "ceres_cam_imu/core/types.h"
@@ -15,11 +16,17 @@ struct TimeShiftPriorOptions {
   // Matches the smoothness lambda passed to Kalibr's initPoseSplineSparse().
   double pose_fit_regularization = 1e-4;
   // Prevent normalized correlation from selecting tiny-overlap edge lags.
+  // The default permits every lag that retains at least half of the shorter
+  // stream, so independently-originated timestamps do not need to overlap.
   double min_overlap_fraction = 0.5;
-  // Keep the camera/IMU search bounded, but allow the roughly 0.09--0.12 s
-  // offsets seen in the production data. The boundary gate below still turns
-  // a clipped optimum into "unknown" instead of accepting it as an estimate.
-  double max_search_s = 0.2;
+  // Optional absolute bound on the reported t_imu = t_cam + shift. Zero means
+  // no fixed seconds bound: min_overlap_fraction defines the search extent.
+  // A positive value preserves the legacy explicitly bounded behavior.
+  double max_search_s = 0.0;
+  // Full-range correlation is evaluated on a cheap uniform coarse grid, then
+  // refined at the native mean IMU period around the winning coarse peak.
+  double coarse_sample_dt_s = 0.01;
+  double fine_search_half_width_s = 0.05;
 };
 
 // Sign convention, once, for every field below.
@@ -33,15 +40,15 @@ struct TimeShiftPriorOptions {
 // query_time_s = timestamp_s_ + camera_time_shift_s. We report in that same
 // applied-shift sign.
 //
-// So: every *_discrete_shift_samples field is the APPLIED discrete shift
-// (-best_lag), not the raw correlation lag. The upshot is the invariant
+// So: every *_discrete_shift_samples field is the nearest APPLIED total shift
+// in native-IMU samples. With unrelated timestamp origins the exact origin
+// difference need not be an integer number of samples. In that case shift_s
+// retains the exact origin term and discrete_shift_residual_s closes the
+// diagnostic identity
 //   shift_s == discrete_shift_samples * sample_dt_s
-// which holds exactly for shift_s / discrete_shift_samples. tests/test_math.cpp
-// asserts it on a positive shift, a negative shift, and on the
-// boundary_peak_rejected path (where both are forced to zero). The mirrored
-// case is there to catch sign-asymmetric handling of the negation, not to
-// disambiguate the convention -- either signed case alone would already catch
-// a global flip.
+//              + discrete_shift_residual_s.
+// The mirrored case catches sign-asymmetric handling of the negation; either
+// signed case alone already catches a global flip.
 //
 // Not covered by that invariant: second_best_discrete_shift_samples has no
 // paired seconds-valued field, so nothing cross-checks its sign at runtime.
@@ -53,18 +60,22 @@ struct TimeShiftPriorOptions {
 struct TimeShiftPriorEstimate {
   // Applied shift, seconds, in the t_imu = t_cam + shift_s convention.
   double shift_s = 0.0;
-  // Applied shift in samples (= -best_lag). Same sign as shift_s.
-  int discrete_shift_samples = 0;
+  // Applied total shift in samples. Same sign as shift_s. This is 64-bit so a
+  // Unix-epoch clock can be aligned with a device-uptime clock.
+  std::int64_t discrete_shift_samples = 0;
   double sample_dt_s = 0.0;
   int num_samples = 0;
   double peak_correlation = 0.0;
   // Also an applied shift, not a raw lag. Same sign convention as above.
-  int second_best_discrete_shift_samples = 0;
+  std::int64_t second_best_discrete_shift_samples = 0;
   double second_best_correlation = 0.0;
   double zero_lag_correlation = 0.0;
   double predicted_norm_rms = 0.0;
   double measured_norm_rms = 0.0;
   bool boundary_peak_rejected = false;
+  // Appended to preserve positional aggregate initialization of the older
+  // fields. Exact shift = discrete samples * sample_dt_s + this residual.
+  double discrete_shift_residual_s = 0.0;
 };
 
 // Resolves a correlation estimate against an already available initialization.
