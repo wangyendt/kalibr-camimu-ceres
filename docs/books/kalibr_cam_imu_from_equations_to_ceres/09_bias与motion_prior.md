@@ -107,8 +107,7 @@ $$
 \mathbf e^\omega_k =
 \mathbf R_{ib}\boldsymbol\omega_b(t_k)
 +
-\mathbf b_g(t_k)
--
+\mathbf b_g(t_k) -
 \mathbf z^\omega_k.
 $$
 
@@ -128,8 +127,7 @@ $$
 \mathbf e^a_k =
 \mathbf R_{ib}\mathbf u_b(t_k)
 +
-\mathbf b_a(t_k)
--
+\mathbf b_a(t_k) -
 \mathbf z^a_k.
 $$
 

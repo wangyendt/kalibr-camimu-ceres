@@ -72,8 +72,7 @@ $$
 \mathbf A_T
 \triangleq
 \frac{\partial\mathbf e^\pi}
-{\partial\delta\boldsymbol\xi_{T_{c_nw},K}} =
--
+{\partial\delta\boldsymbol\xi_{T_{c_nw},K}} = -
 \mathbf J_{\pi,\tilde{\mathbf p}_c}
 \mathrm{boxMinus}(\tilde{\mathbf p}_c)
 \in\mathbb R^{2\times6}.
@@ -138,8 +137,7 @@ $$
 
 $$
 \mathbf e^\pi_{n,k,\ell} =
-\mathbf y_{n,k,\ell}
--
+\mathbf y_{n,k,\ell} -
 \hat{\mathbf y}_{n,k,\ell}.
 $$
 
@@ -205,8 +203,7 @@ $$
 \mathbf e^\omega_k =
 \mathbf R_{ib}\boldsymbol\omega_b(t_k)
 +
-\mathbf b_g(t_k)
--
+\mathbf b_g(t_k) -
 \mathbf z^\omega_k,
 \qquad
 \mathbf y_\omega\triangleq\mathbf R_{ib}\boldsymbol\omega_b.
@@ -232,8 +229,7 @@ $$
 \mathbf e^a_k =
 \mathbf R_{ib}\mathbf u_b(t_k)
 +
-\mathbf b_a(t_k)
--
+\mathbf b_a(t_k) -
 \mathbf z^a_k,
 \qquad
 \mathbf y_a\triangleq\mathbf R_{ib}\mathbf u_b.
@@ -296,8 +292,7 @@ $$
 \mathbf e^a_k =
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf u_b
 +
-\mathbf b_a
--
+\mathbf b_a -
 \mathbf z^a.
 $$
 
@@ -337,8 +332,7 @@ $$
 +
 \mathbf A_g\mathbf a_g
 +
-\mathbf b_g
--
+\mathbf b_g -
 \mathbf z^\omega,
 \qquad
 \boldsymbol\omega_g=\mathbf R_{gi}\mathbf R_{ib}\boldsymbol\omega_b,
@@ -375,8 +369,7 @@ $$
 \mathbf I_j\mathbf R_{ib}\boldsymbol\ell_j
 \right]
 +
-\mathbf b_a
--
+\mathbf b_a -
 \mathbf z^a,
 $$
 

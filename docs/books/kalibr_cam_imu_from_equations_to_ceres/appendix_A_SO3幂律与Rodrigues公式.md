@@ -74,8 +74,7 @@ $$
 
 $$
 \mathbf x\times(\mathbf y\times\mathbf z) =
-\mathbf y(\mathbf x^\top\mathbf z)
--
+\mathbf y(\mathbf x^\top\mathbf z) -
 \mathbf z(\mathbf x^\top\mathbf y).
 $$
 
@@ -83,8 +82,7 @@ $$
 
 $$
 \boldsymbol\omega\times(\boldsymbol\omega\times\mathbf a) =
-\boldsymbol\omega(\boldsymbol\omega^\top\mathbf a)
--
+\boldsymbol\omega(\boldsymbol\omega^\top\mathbf a) -
 \mathbf a(\boldsymbol\omega^\top\boldsymbol\omega).
 $$
 
@@ -93,8 +91,7 @@ $$
 $$
 \boldsymbol\Omega^2\mathbf a =
 \left(
-\boldsymbol\omega\boldsymbol\omega^\top
--
+\boldsymbol\omega\boldsymbol\omega^\top -
 \theta^2\mathbf I
 \right)\mathbf a.
 $$
@@ -103,8 +100,7 @@ $$
 
 $$
 \boldsymbol\Omega^2 =
-\boldsymbol\omega\boldsymbol\omega^\top
--
+\boldsymbol\omega\boldsymbol\omega^\top -
 \theta^2\mathbf I.
 $$
 
@@ -119,8 +115,7 @@ $$
 \boldsymbol\Omega\boldsymbol\Omega^2 =
 \boldsymbol\Omega
 \left(
-\boldsymbol\omega\boldsymbol\omega^\top
--
+\boldsymbol\omega\boldsymbol\omega^\top -
 \theta^2\mathbf I
 \right).
 $$
@@ -129,8 +124,7 @@ $$
 
 $$
 \boldsymbol\Omega^3 =
-\boldsymbol\Omega\boldsymbol\omega\boldsymbol\omega^\top
--
+\boldsymbol\Omega\boldsymbol\omega\boldsymbol\omega^\top -
 \theta^2\boldsymbol\Omega.
 $$
 
@@ -145,8 +139,7 @@ $$
 所以第一项为零，得到：
 
 $$
-\boldsymbol\Omega^3 =
--
+\boldsymbol\Omega^3 = -
 \theta^2\boldsymbol\Omega.
 $$
 
@@ -157,8 +150,7 @@ $$
 由：
 
 $$
-\boldsymbol\Omega^3 =
--
+\boldsymbol\Omega^3 = -
 \theta^2\boldsymbol\Omega
 $$
 
@@ -441,8 +433,7 @@ $$
 
 $$
 1-\cos\theta =
-\frac{\theta^2}{2!}
--
+\frac{\theta^2}{2!} -
 \frac{\theta^4}{4!}
 +
 \frac{\theta^6}{6!}
@@ -459,8 +450,7 @@ $$
 
 $$
 \theta-\sin\theta =
-\frac{\theta^3}{3!}
--
+\frac{\theta^3}{3!} -
 \frac{\theta^5}{5!}
 +
 \frac{\theta^7}{7!}
@@ -503,8 +493,7 @@ $$
 $$
 \boxed{
 \mathbf J_r(\boldsymbol\omega) =
-\mathbf I
--
+\mathbf I -
 \frac{1-\cos\theta}{\theta^2}
 [\boldsymbol\omega]_\times
 +
@@ -528,8 +517,7 @@ $$
 
 $$
 \mathbf J_r(\boldsymbol\omega) =
-\mathbf I
--
+\mathbf I -
 \frac12[\boldsymbol\omega]_\times
 +
 \frac16[\boldsymbol\omega]_\times^2

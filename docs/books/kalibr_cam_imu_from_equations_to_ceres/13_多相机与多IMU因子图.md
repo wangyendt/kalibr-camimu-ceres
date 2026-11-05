@@ -49,8 +49,7 @@ $$
 $$
 \boxed{
 \mathbf e^\pi_{n,k,\ell} =
-\mathbf y_{n,k,\ell}
--
+\mathbf y_{n,k,\ell} -
 \boldsymbol\pi_n\!\left(
 \mathbf T_{c_nb}\mathbf T_{bw}(t_{n,k})\mathbf p^w_\ell;
 \boldsymbol\eta_n,\boldsymbol\kappa_n
@@ -96,8 +95,7 @@ $$
 \mathbf e^\omega_{m,k} =
 \mathbf R_{i_mb}\boldsymbol\omega_b(t_{m,k})
 +
-\mathbf b^g_m(t_{m,k})
--
+\mathbf b^g_m(t_{m,k}) -
 \mathbf z^\omega_{m,k}.
 }
 $$
@@ -109,8 +107,7 @@ $$
 \mathbf e^a_{m,k} =
 \mathbf R_{i_mb}\mathbf u_{b,m}(t_{m,k})
 +
-\mathbf b^a_m(t_{m,k})
--
+\mathbf b^a_m(t_{m,k}) -
 \mathbf z^a_{m,k}.
 }
 $$
@@ -153,8 +150,7 @@ $$
 \mathbf e^a_{m,k} =
 \mathbf M_{a,m}\mathbf R_{i_mb}\mathbf u_{b,m}
 +
-\mathbf b^a_m
--
+\mathbf b^a_m -
 \mathbf z^a_{m,k}.
 $$
 
@@ -166,8 +162,7 @@ $$
 +
 \mathbf A_{g,m}\mathbf a_{g,m}
 +
-\mathbf b^g_m
--
+\mathbf b^g_m -
 \mathbf z^\omega_{m,k},
 $$
 

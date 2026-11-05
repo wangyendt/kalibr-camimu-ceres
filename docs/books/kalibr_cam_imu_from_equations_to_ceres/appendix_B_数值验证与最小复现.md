@@ -34,8 +34,7 @@ $$
 \mathbf J_i(:,j)
 \approx
 \frac{
-\mathbf e(\boldsymbol\theta_i\boxplus \epsilon\mathbf e_j)
--
+\mathbf e(\boldsymbol\theta_i\boxplus \epsilon\mathbf e_j) -
 \mathbf e(\boldsymbol\theta_i\boxplus -\epsilon\mathbf e_j)
 }{2\epsilon}.
 }
@@ -196,8 +195,7 @@ $$
 $$
 \boxed{
 \frac{\partial\boldsymbol\xi_{\mathbf S,K}}
-{\partial\boldsymbol\xi_{\mathbf T,K}} =
--
+{\partial\boldsymbol\xi_{\mathbf T,K}} = -
 \mathrm{boxTimes}(\mathbf S).
 }
 $$
@@ -320,8 +318,7 @@ $$
 \mathbf e^\omega =
 \mathbf R_{ib}\boldsymbol\omega_b(t)
 +
-\mathbf b_g(t)
--
+\mathbf b_g(t) -
 \mathbf z^\omega.
 $$
 
@@ -366,8 +363,7 @@ $$
 \mathbf e^a =
 \mathbf R_{ib}\mathbf u_b(t)
 +
-\mathbf b_a(t)
--
+\mathbf b_a(t) -
 \mathbf z^a.
 $$
 
@@ -463,8 +459,7 @@ $$
 第一种，直接验证梯度方向。对任意小增量 $\delta\mathbf c$：
 
 $$
-E(\mathbf c+\epsilon\delta\mathbf c)
--
+E(\mathbf c+\epsilon\delta\mathbf c) -
 E(\mathbf c-\epsilon\delta\mathbf c)
 \approx
 4\epsilon\,\delta\mathbf c^\top\mathbf Q\mathbf c.

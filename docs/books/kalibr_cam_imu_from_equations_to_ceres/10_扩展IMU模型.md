@@ -369,8 +369,7 @@ Gravity：
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^a,\mathbf g_w} =
--
+\mathbf J_{\mathbf e^a,\mathbf g_w} = -
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf R_{bw}.
 }
 $$
@@ -961,8 +960,7 @@ $$
 间接 lever-arm 变化来自：
 
 $$
-\delta(\mathbf R_{ib}^{-1}\mathbf r_j^i) =
--
+\delta(\mathbf R_{ib}^{-1}\mathbf r_j^i) = -
 \mathbf R_{ib}^{-1}
 [\mathbf r_j^i]_\times
 \delta\boldsymbol\phi_{ib,K}.
@@ -971,8 +969,7 @@ $$
 所以：
 
 $$
-\delta\boldsymbol\ell_j =
--
+\delta\boldsymbol\ell_j = -
 \mathbf A_r
 \mathbf R_{ib}^{-1}
 [\mathbf r_j^i]_\times
@@ -982,8 +979,7 @@ $$
 乘回输出：
 
 $$
-\mathbf I_j\mathbf R_{ib}\delta\boldsymbol\ell_j =
--
+\mathbf I_j\mathbf R_{ib}\delta\boldsymbol\ell_j = -
 \mathbf I_j\mathbf R_{ib}\mathbf A_r
 \mathbf R_{ib}^{-1}
 [\mathbf r_j^i]_\times
@@ -1005,8 +1001,7 @@ $$
 \sum_{j\in\{x,y,z\}}
 \mathbf I_j
 \left[
-[\mathbf R_{ib}\boldsymbol\ell_j]_\times
--
+[\mathbf R_{ib}\boldsymbol\ell_j]_\times -
 \mathbf R_{ib}\mathbf A_r
 \mathbf R_{ib}^{-1}
 [\mathbf r_j^i]_\times
