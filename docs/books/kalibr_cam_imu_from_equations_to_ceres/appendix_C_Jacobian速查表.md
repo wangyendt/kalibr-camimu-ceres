@@ -191,7 +191,7 @@ $$
 | $\mathbf T_{c_0b}$ 的 $\mathbf t_0$ | $\sigma_t^{-1}(-\mathbf A\mathbf R_i\mathbf R_0^\top)$ | $\mathbf 0$ | $6\times3$ |
 | $\mathbf T_{c_0b}$ 的 $\mathbf r_0$ | $\sigma_t^{-1}[-\mathbf A\mathbf R_i\mathbf D_{R^\top v}(\mathbf r_0,\mathbf t_0)]$ | $\sigma_R^{-1}[-\mathbf J_l(-\mathbf r_\Delta)^{-1}\mathbf A\mathbf R_i\mathbf J_l(\mathbf r_0)]$ | $6\times3$ |
 | $\mathbf T_{c_ib}$ 的 $\mathbf t_i$ | $\sigma_t^{-1}\mathbf A$ | $\mathbf 0$ | $6\times3$ |
-| $\mathbf T_{c_ib}$ 的 $\mathbf r_i$ | $\sigma_t^{-1}[-\mathbf A\mathbf R_i[\mathbf q_0]_\times\mathbf J_l(\mathbf r_i)]$ | $\sigma_R^{-1}[\mathbf J_l(\mathbf r_\Delta)^{-1}\mathbf R_0\mathbf J_l(\mathbf r_i)]$ | $6\times3$ |
+| $\mathbf T _{c _ib}$ 的 $\mathbf r _i$ | $\sigma _t^{-1}[-\mathbf A\mathbf R _i[\mathbf q _0] _\times\mathbf J _l(\mathbf r _i)]$ | $\sigma _R^{-1}[\mathbf J _l(\mathbf r _\Delta)^{-1}\mathbf R _0\mathbf J _l(\mathbf r _i)]$ | $6\times3$ |
 
 推导出处：8.6.2 节。源码位置：`src/optimizer/calibration_problem.cpp` 的 `CameraChainExtrinsicPriorCost::Evaluate()`。
 
@@ -344,8 +344,8 @@ $$
 |---|---|---:|
 | active pose control point $\mathbf c_j$ | $\mathbf M_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\boldsymbol\omega_b,\mathbf c_j}+\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\mathbf u_b,\mathbf c_j}$ | $3\times6$ |
 | gravity $\mathbf g_w$ | $-\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf R_{bw}$ | $3\times3$（2-DOF 参数化时右乘 $\mathbf J_g$ 得 $3\times2$） |
-| IMU 外参旋转 $\mathbf R_{ib}$ | $\mathbf M_g\mathbf R_{gi}[\mathbf R_{ib}\boldsymbol\omega_b]_\times+\mathbf A_g\mathbf R_{gi}[\mathbf R_{ib}\mathbf u_b]_\times$ | $3\times3$ |
-| gyro sensing rotation $\mathbf R_{gi}$ | $\mathbf M_g[\boldsymbol\omega_g]_\times+\mathbf A_g[\mathbf a_g]_\times$ | $3\times3$ |
+| IMU 外参旋转 $\mathbf R _{ib}$ | $\mathbf M _g\mathbf R _{gi}[\mathbf R _{ib}\boldsymbol\omega _b] _\times+\mathbf A _g\mathbf R _{gi}[\mathbf R _{ib}\mathbf u _b] _\times$ | $3\times3$ |
+| gyro sensing rotation $\mathbf R _{gi}$ | $\mathbf M _g[\boldsymbol\omega _g] _\times+\mathbf A _g[\mathbf a _g] _\times$ | $3\times3$ |
 | IMU lever arm $\mathbf r_b$ | $\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf A_r$ | $3\times3$ |
 | gyro bias control $\mathbf d^g_{j+\ell}$ | $\mu_\ell^{(0)}(t_k)\mathbf I_3$ | $3\times3$ |
 | gyro matrix $\operatorname{vec}(\mathbf M_g)$ | $[\omega_{g,1}\mathbf I_3\ \omega_{g,2}\mathbf I_3\ \omega_{g,3}\mathbf I_3]$ | $3\times9$ before mask |
@@ -390,7 +390,7 @@ $$
 |---|---|---:|
 | axis offset $\mathbf r_j^i$ | $\mathbf M_{\mathrm{acc}}\mathbf I_j\mathbf R_{ib}\mathbf A_r\mathbf R_{ib}^{-1}$ | $3\times3$ |
 | base lever arm $\mathbf r_b$ | $\mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf A_r$ | $3\times3$ |
-| IMU 外参旋转 $\mathbf R_{ib}$ | $\mathbf M_{\mathrm{acc}}\left([\mathbf R_{ib}\mathbf h_b]_\times+\sum_j\mathbf I_j\left([\mathbf R_{ib}\boldsymbol\ell_j]_\times-\mathbf R_{ib}\mathbf A_r\mathbf R_{ib}^{-1}[\mathbf r_j^i]_\times\right)\right)$ | $3\times3$ |
+| IMU 外参旋转 $\mathbf R _{ib}$ | $\mathbf M _{\mathrm{acc}}\left([\mathbf R _{ib}\mathbf h _b] _\times+\sum _j\mathbf I _j\left([\mathbf R _{ib}\boldsymbol\ell _j] _\times-\mathbf R _{ib}\mathbf A _r\mathbf R _{ib}^{-1}[\mathbf r _j^i] _\times\right)\right)$ | $3\times3$ |
 
 其他 pose、gravity、bias、matrix 分支沿用 C.7，只是把 $\mathbf u_b$ 换成 bracket 内部表达。注意 $\mathbf R_{ib}$ 行的间接项：size-effect 下 $\mathbf R_{ib}$ 同时通过“旋到 IMU frame”和“ $\mathbf R_{ib}^{-1}\mathbf r_j^i$ 改变 body-frame lever arm”两条链路进入。
 
@@ -512,6 +512,6 @@ $$
 | Ceres 接口 | 定义 | Jacobian |
 |---|---|---|
 | `Plus(x, delta)` | $\mathbf t^+=\mathbf t+\delta\mathbf t,\ \mathbf C(\mathbf r^+)=\mathbf C(\delta\mathbf r)\mathbf C(\mathbf r)$ | $\begin{bmatrix}\mathbf I&\mathbf 0\\\mathbf 0&\mathbf J_l(-\mathbf r)^{-1}\end{bmatrix}$ |
-| `Minus(y, x)` 对 $\mathbf y$ | $\mathbf y\boxminus\mathbf x=[\mathbf t_y-\mathbf t_x,\ \mathrm{Log}_K(\mathbf C(\mathbf r_y)\mathbf C(\mathbf r_x)^\top)]^\top$ | $\begin{bmatrix}\mathbf I&\mathbf 0\\\mathbf 0&\mathbf C(\mathbf r)\mathbf J_l(\mathbf r)\end{bmatrix}$ |
+| `Minus(y, x)` 对 $\mathbf y$ | $\mathbf y\boxminus\mathbf x=[\mathbf t _ y-\mathbf t _ x,\ \mathrm{Log} _ K(\mathbf C(\mathbf r _ y)\mathbf C(\mathbf r _ x)^\top)]^\top$ | $\begin{bmatrix}\mathbf I&\mathbf 0\\\mathbf 0&\mathbf C(\mathbf r)\mathbf J_l(\mathbf r)\end{bmatrix}$ |
 
 推导出处：0.10.4 节。源码位置：`src/optimizer/calibration_problem.cpp` 的 `Pose6Manifold`。

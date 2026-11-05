@@ -488,7 +488,7 @@ $$
 \mathbf J_l(-\boldsymbol\omega).
 $$
 
-由于 $[-\boldsymbol\omega]_\times=-[\boldsymbol\omega]_\times$，而 $[-\boldsymbol\omega]_\times^2=[\boldsymbol\omega]_\times^2$，所以：
+由于 $[-\boldsymbol\omega] _\times=-[\boldsymbol\omega] _\times$，而 $[-\boldsymbol\omega] _\times^2=[\boldsymbol\omega] _\times^2$，所以：
 
 $$
 \boxed{
@@ -597,7 +597,7 @@ $$
 
 ### A.9.1 $\mathbf J_r(\boldsymbol\psi)=\mathbf J_l(-\boldsymbol\psi)$
 
-这一段就是 A.7 的结论。因为 $[-\boldsymbol\psi]_\times=-[\boldsymbol\psi]_\times$ 而 $[-\boldsymbol\psi]_\times^2=[\boldsymbol\psi]_\times^2$，把 $\mathbf J_l$ 的闭式里的 $\boldsymbol\psi$ 换成 $-\boldsymbol\psi$，只有叉乘一次项翻号，二次项不动，得到的正是 $\mathbf J_r$ 的闭式。
+这一段就是 A.7 的结论。因为 $[-\boldsymbol\psi] _\times=-[\boldsymbol\psi] _\times$ 而 $[-\boldsymbol\psi] _\times^2=[\boldsymbol\psi] _\times^2$，把 $\mathbf J _l$ 的闭式里的 $\boldsymbol\psi$ 换成 $-\boldsymbol\psi$，只有叉乘一次项翻号，二次项不动，得到的正是 $\mathbf J _r$ 的闭式。
 
 ### A.9.2 $\mathbf J_l(-\boldsymbol\psi)=\mathrm{Exp}(-\boldsymbol\psi)\mathbf J_l(\boldsymbol\psi)$
 
@@ -759,12 +759,14 @@ $$
 $\theta\gtrsim10^{-2}$ 时确实是机器精度，但**角度越小偏差越大**，到 $\theta=10^{-8}$ 已经涨到 $10^{-9}$。这不是恒等式不成立，而是朴素闭式里的相消误差，而且罪魁祸首是 $\mathbf J_l$ 一侧不是 $\mathbf S_K$ 一侧。
 
 > **先固定基。** 下面沿用 A.9.2 的写法， $\mathbf A\triangleq[\mathbf u]_\times$ 是**单位轴**的反对称矩阵，于是
+>
 > $$
 > \mathbf J_l(\boldsymbol\psi)
 > =\mathbf I
 > +\underbrace{\frac{1-\cos\theta}{\theta}}_{\textstyle a_1(\theta)}\mathbf A
 > +\underbrace{\frac{\theta-\sin\theta}{\theta}}_{\textstyle a_2(\theta)}\mathbf A^2 .
 > $$
+>
 > 如果换成 $[\boldsymbol\psi]_\times=\theta\mathbf A$ 当基，两个系数要各除一个 $\theta$、 $\theta^2$，写成 $\frac{1-\cos\theta}{\theta^2}$ 与 $\frac{\theta-\sin\theta}{\theta^3}$。**两套系数绝不能混用**，混了就会得到既不是 $\theta/2$ 也不是 $\theta^2/6$ 的第三种极限。本节全部用上面这一套。
 
 把 $a_1,a_2$ 各自的双精度绝对误差单独测出来，就能看清是谁在漏精度：

@@ -916,7 +916,7 @@ $$
 }
 $$
 
-由于本章的 $\mathbf A_r=[\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times$ 不依赖具体 lever-arm 值，且三个 selector 相加为单位阵，上式可以直接化简成：
+由于本章的 $\mathbf A _r=[\boldsymbol\alpha _b] _\times+[\boldsymbol\omega _b] _\times[\boldsymbol\omega _b] _\times$ 不依赖具体 lever-arm 值，且三个 selector 相加为单位阵，上式可以直接化简成：
 
 $$
 \boxed{
@@ -1054,7 +1054,7 @@ $$
 }
 $$
 
-这和 10.5.1 的 $\mathbf A_r$ 形成对照： $\mathbf A_r=[\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times$ **不** 依赖 $\mathbf r$，所以三根轴共用一个；而 $\mathbf A_\alpha$、 $\mathbf A_\omega$ 依赖 $\mathbf r$，必须逐轴分别求值。这一点是 size-effect pose Jacobian 唯一的“新意”，也是最容易写错的地方——若图省事只在 $\mathbf r_b$ 上算一次 $\mathbf A_\alpha,\mathbf A_\omega$ 再乘 $\sum_j\mathbf I_j=\mathbf I_3$，得到的就是普通模型的 Jacobian，size-effect 对轨迹的全部贡献都被抹掉了。
+这和 10.5.1 的 $\mathbf A _r$ 形成对照： $\mathbf A _r=[\boldsymbol\alpha _b] _\times+[\boldsymbol\omega _b] _\times[\boldsymbol\omega _b] _\times$ **不** 依赖 $\mathbf r$，所以三根轴共用一个；而 $\mathbf A _\alpha$、 $\mathbf A _\omega$ 依赖 $\mathbf r$，必须逐轴分别求值。这一点是 size-effect pose Jacobian 唯一的“新意”，也是最容易写错的地方——若图省事只在 $\mathbf r _b$ 上算一次 $\mathbf A _\alpha,\mathbf A _\omega$ 再乘 $\sum _j\mathbf I _j=\mathbf I _3$，得到的就是普通模型的 Jacobian，size-effect 对轨迹的全部贡献都被抹掉了。
 
 于是第 $j$ 条轴的 lever-arm 加速度变化是：
 
@@ -1092,7 +1092,7 @@ $$
 }
 $$
 
-其中 $\mathbf J_{\boldsymbol\omega_b,\mathbf c_k}$、 $\mathbf J_{\boldsymbol\alpha_b,\mathbf c_k}$、 $\mathbf J_{\mathbf a_w,\mathbf c_k}$、 $\mathbf J^{\mathrm{rot}}_{\mathbf R_{bw},\mathbf c_k}$ 都是第 5 章的 spline Jacobian，size-effect 一个都没改。（ $\boldsymbol\alpha_b$ 在第 7 章记为 $\boldsymbol\alpha_b^K$，指的是同一个源码接口量 `angularAccelerationBodyFrame`。）
+其中 $\mathbf J _{\boldsymbol\omega _b,\mathbf c _k}$、 $\mathbf J _{\boldsymbol\alpha _b,\mathbf c _k}$、 $\mathbf J _{\mathbf a _w,\mathbf c _k}$、 $\mathbf J^{\mathrm{rot}} _{\mathbf R _{bw},\mathbf c _k}$ 都是第 5 章的 spline Jacobian，size-effect 一个都没改。（ $\boldsymbol\alpha _b$ 在第 7 章记为 $\boldsymbol\alpha _b^K$，指的是同一个源码接口量 `angularAccelerationBodyFrame`。）
 
 **selector 不能提出求和号。** 注意 $\mathbf I_j$ 夹在 $\mathbf M_{\mathrm{acc}}$ 和 $\mathbf R_{ib}$ 之间，而不是在 $\mathbf R_{ib}$ 里面，所以
 
@@ -1152,7 +1152,7 @@ for (int axis = 0; axis < 3; ++axis) {
 }
 ```
 
-其中 `leverAccelerationAlphaJacobian(r)` 返回 $-[\mathbf r]_\times=\mathbf A_\alpha(\mathbf r)$，`leverAccelerationOmegaJacobian(omega, r)` 返回 $-[\boldsymbol\omega_b\times\mathbf r]_\times-[\boldsymbol\omega_b]_\times[\mathbf r]_\times=\mathbf A_\omega(\mathbf r)$，`p_b` 逐轴取 `axis_points_b[axis]`。控制点的平移分量另走一条支路 `R_i_b * R_b_w * λ''`，因为平移只经 $\mathbf a_w$ 进入 $\mathbf h_b$，和 lever arm 无关。
+其中 `leverAccelerationAlphaJacobian(r)` 返回 $-[\mathbf r] _\times=\mathbf A _\alpha(\mathbf r)$，`leverAccelerationOmegaJacobian(omega, r)` 返回 $-[\boldsymbol\omega _b\times\mathbf r] _\times-[\boldsymbol\omega _b] _\times[\mathbf r] _\times=\mathbf A _\omega(\mathbf r)$，`p_b` 逐轴取 `axis_points_b[axis]`。控制点的平移分量另走一条支路 `R_i_b * R_b_w * λ''`，因为平移只经 $\mathbf a _w$ 进入 $\mathbf h _b$，和 lever arm 无关。
 
 ## 10.6 源码桥
 
@@ -1276,8 +1276,8 @@ $$
 |---|---|
 | pose 控制点 $\mathbf c_j$ | $\mathbf M_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\boldsymbol\omega_b,\mathbf c_j}+\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\mathbf u_b,\mathbf c_j}$ |
 | gravity $\mathbf g_w$ | $-\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf R_{bw}$（ $\mathbf A_g=\mathbf 0$ 时为 $\mathbf 0$，见 10.4.4） |
-| IMU 外参旋转 $\mathbf R_{ib}$ | $\mathbf M_g\mathbf R_{gi}[\mathbf R_{ib}\boldsymbol\omega_b]_\times+\mathbf A_g\mathbf R_{gi}[\mathbf R_{ib}\mathbf u_b]_\times$ |
-| gyro sensing rotation $\mathbf R_{gi}$ | $\mathbf M_g[\boldsymbol\omega_g]_\times+\mathbf A_g[\mathbf a_g]_\times$ |
+| IMU 外参旋转 $\mathbf R _{ib}$ | $\mathbf M _g\mathbf R _{gi}[\mathbf R _{ib}\boldsymbol\omega _b] _\times+\mathbf A _g\mathbf R _{gi}[\mathbf R _{ib}\mathbf u _b] _\times$ |
+| gyro sensing rotation $\mathbf R _{gi}$ | $\mathbf M _g[\boldsymbol\omega _g] _\times+\mathbf A _g[\mathbf a _g] _\times$ |
 | lever arm $\mathbf r_b$ | $\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf A_r$ |
 | gyro bias 控制点 | $\mu_\ell^{(0)}\mathbf I_3$ |
 | $\mathbf M_g$ 切空间（下三角 mask， $k=6$） | $[\omega_{g,1}\mathbf I_3\ \omega_{g,2}\mathbf I_3\ \omega_{g,3}\mathbf I_3]\,\mathbf B_{\mathrm{tril}}$， $\mathbf B_{\mathrm{tril}}\in\mathbb R^{9\times6}$ 取 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列 |

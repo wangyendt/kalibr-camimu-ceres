@@ -45,7 +45,7 @@ $$
 \mathbf b_a(t)\in\mathbb R^3.
 $$
 
-其中 $\mathbf b_g(t)$ 是 gyro bias，单位通常是 rad/s； $\mathbf b_a(t)$ 是 accelerometer bias，单位通常是 m/s$^2$。
+其中 $\mathbf b _g(t)$ 是 gyro bias，单位通常是 rad/s； $\mathbf b _a(t)$ 是 accelerometer bias，单位通常是 m/s $^2$。
 
 为了和 pose spline 的控制点区分，本章记 gyro bias 控制点为：
 
@@ -946,7 +946,7 @@ Kalibr 实现选择直接使用 $\mathbf Q$，因为这样避免显式构造一�
 | Kalibr 装 Hessian | 无 | 无（直接 $\mathbf H+\!\!=\mathbf Q$） | 不需要 |
 | Ceres 逐 segment | $\mathbf e^{(s)}=(\mathbf S_{\mathrm{seg}}\otimes\mathbf W^{1/2})\mathbf c^{(s)}\in\mathbb R^{qD}$ | $[\mathbf S_{\mathrm{seg}}]_{:,\ell}\otimes\mathbf W^{1/2}$（常数） | $q\times q$ |
 
-其中 $\mathbf S_{\mathrm{seg}}^\top\mathbf S_{\mathrm{seg}}=\mathbf G_s^{(r)}$， $\left[\mathbf G_s^{(r)}\right]_{ab}=\int_{\tau_s}^{\tau_{s+1}}\mu_a^{(r)}\mu_b^{(r)}dt$，闭式见 9.8.2。bias prior 取 $D=3$、 $q=6$，residual 是 $18$ 维；pose prior 取 $D=6$，residual 是 $36$ 维。
+其中 $\mathbf S _{\mathrm{seg}}^\top\mathbf S _{\mathrm{seg}}=\mathbf G _s^{(r)}$， $\left[\mathbf G _s^{(r)}\right] _{ab}=\int _{\tau _s}^{\tau _{s+1}}\mu _a^{(r)}\mu _b^{(r)}dt$，闭式见 9.8.2。bias prior 取 $D=3$、 $q=6$，residual 是 $18$ 维；pose prior 取 $D=6$，residual 是 $36$ 维。
 
 ## 9.10 常见混淆
 

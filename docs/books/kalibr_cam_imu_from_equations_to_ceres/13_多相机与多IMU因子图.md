@@ -345,10 +345,10 @@ $$
 
 | 设计变量 | 含义 | Kalibr 源码 | 参数化 |
 |---|---|---|---|
-| $\mathbf R_{i_mb}=\mathbf C(\boldsymbol\varphi_m)$ | body→imu$_m$ 旋转 | `self.q_i_b_Dv` | 旋转向量 $\boldsymbol\varphi_m\in\mathbb R^3$ |
-| $\mathbf r_{b,m}\in\mathbb R^3$ | imu$_m$ 原点在 body 系中的位置（杠杆臂） | `self.r_b_Dv` | 欧式三维 |
+| $\mathbf R _{i _mb}=\mathbf C(\boldsymbol\varphi _m)$ | body→imu $_m$ 旋转 | `self.q_i_b_Dv` | 旋转向量 $\boldsymbol\varphi _m\in\mathbb R^3$ |
+| $\mathbf r _{b,m}\in\mathbb R^3$ | imu $_m$ 原点在 body 系中的位置（杠杆臂） | `self.r_b_Dv` | 欧式三维 |
 
-二者一起组成 body→imu$_m$ 的刚体变换（对照 `getTransformationFromBodyToImu`）：
+二者一起组成 body→imu $_m$ 的刚体变换（对照 `getTransformationFromBodyToImu`）：
 
 $$
 \mathbf T_{i_mb} =
@@ -360,7 +360,7 @@ $$
 \mathbf p_{i_m}=\mathbf R_{i_mb}(\mathbf p_b-\mathbf r_{b,m}).
 $$
 
-即 $\mathbf r_{b,m}$ 是“在 body 系里 imu$_m$ 原点的坐标”，平移分量是 $-\mathbf R_{i_mb}\mathbf r_{b,m}$ 而不是 $\mathbf r_{b,m}$ 本身。这一点在写结果 YAML（`T_i_b`）时必须对齐，否则外参平移会差一个旋转。
+即 $\mathbf r _{b,m}$ 是“在 body 系里 imu $_m$ 原点的坐标”，平移分量是 $-\mathbf R _{i _mb}\mathbf r _{b,m}$ 而不是 $\mathbf r _{b,m}$ 本身。这一点在写结果 YAML（`T_i_b`）时必须对齐，否则外参平移会差一个旋转。
 
 ### 13.8.2 旋转约定 $\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)$
 
@@ -375,7 +375,7 @@ $$
 \theta=\|\boldsymbol\varphi\|,\ \mathbf a=\boldsymbol\varphi/\theta.
 $$
 
-注意这是**负号指数**： $\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)=\exp([\boldsymbol\varphi]_\times)^\top$。整套左 Jacobian（`leftJacobianSO3`）和下面所有推导都建立在这个约定上：
+注意这是**负号指数**： $\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi] _\times)=\exp([\boldsymbol\varphi] _\times)^\top$。整套左 Jacobian（`leftJacobianSO3`）和下面所有推导都建立在这个约定上：
 
 $$
 \mathbf J_l(\boldsymbol\varphi) =
@@ -391,7 +391,7 @@ $$
 }
 $$
 
-推导：用 BCH 一阶式 $\exp([\mathbf a+\mathrm d\mathbf a]_\times)\approx\exp([\mathbf a]_\times)\exp\big([\mathbf J_r(\mathbf a)\,\mathrm d\mathbf a]_\times\big)$，取 $\mathbf a=-\boldsymbol\varphi$、 $\mathrm d\mathbf a=-\boldsymbol\delta$：
+推导：用 BCH 一阶式 $\exp([\mathbf a+\mathrm d\mathbf a] _\times)\approx\exp([\mathbf a] _\times)\exp\big([\mathbf J _r(\mathbf a)\,\mathrm d\mathbf a] _\times\big)$，取 $\mathbf a=-\boldsymbol\varphi$、 $\mathrm d\mathbf a=-\boldsymbol\delta$：
 
 $$
 \mathbf C(\boldsymbol\varphi+\boldsymbol\delta) =
@@ -600,7 +600,7 @@ if ((sq_norm == 0.0) || (rho[2] <= 0.0)) {
 }
 ```
 
-Triggs 修正只在 $\rho''>0$ 时才启用。Cauchy 和 Huber 都是凹函数， $\rho''\le0$ 恒成立——Cauchy 严格小于零，Huber 在阈值内 $\rho_0(s)=s$ 是仿射的、 $\rho''=0$，阈值外才严格小于零——两种情形都落进 `rho[2] <= 0.0` 这条短路，于是它每次都命中，Ceres 实际做的就是"$\sqrt{\rho'}$ 同时缩放残差和 Jacobian"——**和 Kalibr 的 IRLS 逐字相同**。所以把 $\rho''$ 显式置零并不改变任何数值：
+Triggs 修正只在 $\rho''>0$ 时才启用。Cauchy 和 Huber 都是凹函数， $\rho''\le0$ 恒成立——Cauchy 严格小于零，Huber 在阈值内 $\rho _0(s)=s$ 是仿射的、 $\rho''=0$，阈值外才严格小于零——两种情形都落进 `rho[2] <= 0.0` 这条短路，于是它每次都命中，Ceres 实际做的就是" $\sqrt{\rho'}$ 同时缩放残差和 Jacobian"——**和 Kalibr 的 IRLS 逐字相同**。所以把 $\rho''$ 显式置零并不改变任何数值：
 
 $$
 \rho'(s)=w(s),\qquad \rho''(s)=0 \quad(\text{与真实 }\rho''\le0\text{ 等效}),
@@ -619,7 +619,7 @@ $$
 | 量 | 本章公式 | 源码 |
 |---|---|---|
 | $\partial\mathbf e^\omega/\partial\boldsymbol\varphi_m$ | $\tfrac1{\sigma_g}\mathbf R_{i_mb}[\boldsymbol\omega_b]_\times\mathbf J_l$ | `R_i_b*skew(omega_b)*leftJacobianSO3` |
-| $\partial\mathbf e^a/\partial\mathbf r_{b,m}$ | $\tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}([\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times^2)$ | `M_accel*R_i_b*(skew(alpha)+skew(omega)^2)` |
+| $\partial\mathbf e^a/\partial\mathbf r _{b,m}$ | $\tfrac1{\sigma _a}\mathbf M _a\mathbf R _{i _mb}([\boldsymbol\alpha _b] _\times+[\boldsymbol\omega _b] _\times^2)$ | `M_accel*R_i_b*(skew(alpha)+skew(omega)^2)` |
 | $\partial\mathbf e^a/\partial\boldsymbol\varphi_m$ | $\tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}[\mathbf u_{b,m}]_\times\mathbf J_l$ | `M_accel*R_i_b*skew(body_specific_force)*leftJacobianSO3` |
 
 **当前实现状态与仍需保留的证据边界。**
