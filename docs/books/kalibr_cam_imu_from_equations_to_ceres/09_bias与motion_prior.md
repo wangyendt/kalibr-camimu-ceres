@@ -72,8 +72,7 @@ $$
 
 $$
 \boxed{
-\mathbf b_g(t)
-=
+\mathbf b_g(t) =
 \sum_{\ell=0}^{q_g-1}
 \mu_\ell^{(0)}(t)\,
 \mathbf d^g_{j_g(t)+\ell}.
@@ -84,8 +83,7 @@ $$
 
 $$
 \boxed{
-\mathbf b_a(t)
-=
+\mathbf b_a(t) =
 \sum_{\ell=0}^{q_a-1}
 \nu_\ell^{(0)}(t)\,
 \mathbf d^a_{j_a(t)+\ell}.
@@ -106,8 +104,7 @@ $$
 在 measurement residual 里，bias 的作用很直接。Gyro residual 是：
 
 $$
-\mathbf e^\omega_k
-=
+\mathbf e^\omega_k =
 \mathbf R_{ib}\boldsymbol\omega_b(t_k)
 +
 \mathbf b_g(t_k)
@@ -120,8 +117,7 @@ $$
 $$
 \boxed{
 \frac{\partial\mathbf e^\omega_k}
-{\partial\mathbf d^g_{j_g+\ell}}
-=
+{\partial\mathbf d^g_{j_g+\ell}} =
 \mu_\ell^{(0)}(t_k)\mathbf I_3.
 }
 $$
@@ -129,8 +125,7 @@ $$
 Accelerometer residual 是：
 
 $$
-\mathbf e^a_k
-=
+\mathbf e^a_k =
 \mathbf R_{ib}\mathbf u_b(t_k)
 +
 \mathbf b_a(t_k)
@@ -143,8 +138,7 @@ $$
 $$
 \boxed{
 \frac{\partial\mathbf e^a_k}
-{\partial\mathbf d^a_{j_a+\ell}}
-=
+{\partial\mathbf d^a_{j_a+\ell}} =
 \nu_\ell^{(0)}(t_k)\mathbf I_3.
 }
 $$
@@ -181,8 +175,7 @@ $$
 
 $$
 \boxed{
-E_b
-=
+E_b =
 \int_{t_0}^{t_1}
 \dot{\mathbf b}(t)^\top
 \mathbf W_b
@@ -194,8 +187,7 @@ $$
 其中：
 
 $$
-\mathbf W_b
-=
+\mathbf W_b =
 \boldsymbol\Sigma_w^{-1}.
 $$
 
@@ -226,8 +218,7 @@ $$
 把它们堆成一个局部向量：
 
 $$
-\mathbf c^{(s)}
-=
+\mathbf c^{(s)} =
 \begin{bmatrix}
 \mathbf c_s\\
 \mathbf c_{s+1}\\
@@ -249,8 +240,7 @@ $$
 因此曲线的 $r$ 阶导数是：
 
 $$
-\mathbf x^{(r)}(t)
-=
+\mathbf x^{(r)}(t) =
 \sum_{\ell=0}^{q-1}
 \mu_\ell^{(r)}(t)
 \mathbf c_{s+\ell}.
@@ -259,8 +249,7 @@ $$
 为了写成矩阵形式，定义：
 
 $$
-\mathbf A_s^{(r)}(t)
-=
+\mathbf A_s^{(r)}(t) =
 \begin{bmatrix}
 \mu_0^{(r)}(t)\mathbf I_D&
 \mu_1^{(r)}(t)\mathbf I_D&
@@ -274,8 +263,7 @@ $$
 
 $$
 \boxed{
-\mathbf x^{(r)}(t)
-=
+\mathbf x^{(r)}(t) =
 \mathbf A_s^{(r)}(t)\mathbf c^{(s)}.
 }
 $$
@@ -283,8 +271,7 @@ $$
 现在考虑一段上的 motion prior：
 
 $$
-E_s
-=
+E_s =
 \int_{\tau_s}^{\tau_{s+1}}
 \mathbf x^{(r)}(t)^\top
 \mathbf W
@@ -340,8 +327,7 @@ $$
 
 $$
 \boxed{
-E_s
-=
+E_s =
 \mathbf c^{(s)\top}
 \mathbf Q_s^{(r)}
 \mathbf c^{(s)}.
@@ -352,8 +338,7 @@ $$
 
 $$
 \boxed{
-\mathbf Q^{(r)}_{s,ab}
-=
+\mathbf Q^{(r)}_{s,ab} =
 \left[
 \int_{\tau_s}^{\tau_{s+1}}
 \mu_a^{(r)}(t)\mu_b^{(r)}(t)\,dt
@@ -368,8 +353,7 @@ $$
 最后，把所有 segment 的局部矩阵装配到全局控制点向量：
 
 $$
-\mathbf c
-=
+\mathbf c =
 \begin{bmatrix}
 \mathbf c_0\\
 \mathbf c_1\\
@@ -383,10 +367,8 @@ $$
 
 $$
 \boxed{
-E
-=
-\sum_s E_s
-=
+E =
+\sum_s E_s =
 \mathbf c^\top\mathbf Q\mathbf c.
 }
 $$
@@ -406,8 +388,7 @@ $$
 
 $$
 \boxed{
-\mathbf Q_s^{(r)}
-=
+\mathbf Q_s^{(r)} =
 \mathbf M_s^\top
 \left(
 \mathbf W\otimes\mathbf V_s^{(r)}
@@ -449,8 +430,7 @@ gyroBiasMotionErr = asp.BSplineEuclideanMotionError(self.gyroBiasDv, Wgyro, 1)
 
 $$
 \boxed{
-\mathbf W_g
-=
+\mathbf W_g =
 \frac{1}{\sigma_{wg}^2}\mathbf I_3,
 \qquad
 r=1.
@@ -461,14 +441,12 @@ $$
 
 $$
 \boxed{
-E_{b_g}
-=
+E_{b_g} =
 \int_{t_0}^{t_1}
 \dot{\mathbf b}_g(t)^\top
 \mathbf W_g
 \dot{\mathbf b}_g(t)
-dt
-=
+dt =
 \mathbf d_g^\top
 \mathbf Q_g
 \mathbf d_g.
@@ -478,8 +456,7 @@ $$
 其中：
 
 $$
-\mathbf d_g
-=
+\mathbf d_g =
 \begin{bmatrix}
 \mathbf d^g_0\\
 \mathbf d^g_1\\
@@ -499,20 +476,17 @@ accelBiasMotionErr = asp.BSplineEuclideanMotionError(self.accelBiasDv, Waccel, 1
 
 $$
 \boxed{
-E_{b_a}
-=
+E_{b_a} =
 \int_{t_0}^{t_1}
 \dot{\mathbf b}_a(t)^\top
 \mathbf W_a
 \dot{\mathbf b}_a(t)
-dt
-=
+dt =
 \mathbf d_a^\top
 \mathbf Q_a
 \mathbf d_a,
 \qquad
-\mathbf W_a
-=
+\mathbf W_a =
 \frac{1}{\sigma_{wa}^2}\mathbf I_3.
 }
 $$
@@ -524,30 +498,25 @@ $$
 如果 $\mathbf Q_g$ 可以分解为：
 
 $$
-\mathbf Q_g
-=
+\mathbf Q_g =
 \mathbf S_g^\top\mathbf S_g,
 $$
 
 那么：
 
 $$
-E_{b_g}
-=
-\mathbf d_g^\top\mathbf Q_g\mathbf d_g
-=
+E_{b_g} =
+\mathbf d_g^\top\mathbf Q_g\mathbf d_g =
 \|\mathbf S_g\mathbf d_g\|^2.
 $$
 
 这等价于定义：
 
 $$
-\mathbf e^{b_g}
-=
+\mathbf e^{b_g} =
 \mathbf S_g\mathbf d_g,
 \qquad
-\mathbf J^{b_g}
-=
+\mathbf J^{b_g} =
 \mathbf S_g.
 $$
 
@@ -556,16 +525,14 @@ $$
 $$
 \mathbf H
 \mathrel{+}=
-\mathbf J^{b_g\top}\mathbf J^{b_g}
-=
+\mathbf J^{b_g\top}\mathbf J^{b_g} =
 \mathbf Q_g,
 $$
 
 $$
 \mathbf b_{\mathrm{rhs}}
 \mathrel{-}=
-\mathbf J^{b_g\top}\mathbf e^{b_g}
-=
+\mathbf J^{b_g\top}\mathbf e^{b_g} =
 \mathbf Q_g\mathbf d_g.
 $$
 
@@ -591,8 +558,7 @@ outRhs.segment(rowBase, rows) -= b_u.segment(i*rows, rows);
 Pose motion prior 使用同一个 `BSplineMotionError` 机制，但对象换成 pose spline 的内部曲线值：
 
 $$
-\mathbf s(t)
-=
+\mathbf s(t) =
 \begin{bmatrix}
 \mathbf t_{wb}(t)\\
 \boldsymbol\psi(t)
@@ -615,8 +581,7 @@ asp.addMotionErrorTerms(problem, self.poseDv, W, errorOrder)
 
 $$
 \boxed{
-\mathbf W_m
-=
+\mathbf W_m =
 \mathrm{diag}
 \left(
 \frac{1}{\sigma_t^2},
@@ -641,14 +606,12 @@ $$
 
 $$
 \boxed{
-E_{\mathrm{pose}}
-=
+E_{\mathrm{pose}} =
 \int_{t_0}^{t_1}
 \mathbf s^{(r_m)}(t)^\top
 \mathbf W_m
 \mathbf s^{(r_m)}(t)
-dt
-=
+dt =
 \mathbf c_s^\top\mathbf Q_s\mathbf c_s.
 }
 $$
@@ -674,8 +637,7 @@ Motion prior 看起来是一个从 $t_0$ 积分到 $t_1$ 的全局项，但它�
 在某个 segment $s$ 上：
 
 $$
-\mathbf x^{(r)}(t)
-=
+\mathbf x^{(r)}(t) =
 \mathbf A_s^{(r)}(t)\mathbf c^{(s)}
 $$
 
@@ -754,8 +716,7 @@ $$
 
 $$
 \boxed{
-\mathbf Q_s^{(r)}
-=
+\mathbf Q_s^{(r)} =
 \mathbf G_s^{(r)}\otimes\mathbf W.
 }
 $$
@@ -764,13 +725,11 @@ $\mathbf G_s^{(r)}$ 只有 $q\times q$，$q=6$ 时就是一个 $6\times6$ 矩阵
 
 $$
 \boxed{
-\mathbf S_{\mathrm{seg}}
-=
+\mathbf S_{\mathrm{seg}} =
 \boldsymbol\Lambda^{1/2}\mathbf V^\top
 \in\mathbb R^{q\times q},
 \qquad
-\mathbf S_{\mathrm{seg}}^\top\mathbf S_{\mathrm{seg}}
-=
+\mathbf S_{\mathrm{seg}}^\top\mathbf S_{\mathrm{seg}} =
 \mathbf G_s^{(r)}.
 }
 $$
@@ -779,8 +738,7 @@ $$
 
 $$
 \boxed{
-\mathbf e^{(s)}
-=
+\mathbf e^{(s)} =
 \left(
 \mathbf S_{\mathrm{seg}}\otimes\mathbf W^{1/2}
 \right)
@@ -794,22 +752,19 @@ Kronecker 的左右顺序由 $\mathbf c^{(s)}$ 的堆叠约定决定：9.4 把 $
 验证它确实等价，只要把范数展开：
 
 $$
-\left\|\mathbf e^{(s)}\right\|^2
-=
+\left\|\mathbf e^{(s)}\right\|^2 =
 \mathbf c^{(s)\top}
 \left(
 \mathbf S_{\mathrm{seg}}^\top\mathbf S_{\mathrm{seg}}
 \otimes
 \mathbf W
 \right)
-\mathbf c^{(s)}
-=
+\mathbf c^{(s)} =
 \mathbf c^{(s)\top}
 \left(
 \mathbf G_s^{(r)}\otimes\mathbf W
 \right)
-\mathbf c^{(s)}
-=
+\mathbf c^{(s)} =
 E_s.
 $$
 
@@ -818,8 +773,7 @@ Jacobian 更省事：$\mathbf e^{(s)}$ 对 $\mathbf c^{(s)}$ 是线性的，所�
 $$
 \boxed{
 \frac{\partial\mathbf e^{(s)}}
-{\partial\mathbf c_{s+\ell}}
-=
+{\partial\mathbf c_{s+\ell}} =
 \left[\mathbf S_{\mathrm{seg}}\right]_{:,\ell}
 \otimes
 \mathbf W^{1/2}
@@ -841,8 +795,7 @@ $$
 
 $$
 \boxed{
-\operatorname{rank}\mathbf G_s^{(r)}
-=
+\operatorname{rank}\mathbf G_s^{(r)} =
 q-r.
 }
 $$
@@ -871,8 +824,7 @@ $$
 则第 $a$ 个 active 基函数在这一段上是一个多项式，$\mathbf B$ 的第 $i$ 行第 $a$ 列就是它的 $\bar u^i$ 次项系数：
 
 $$
-\mu_a^{(0)}(t)
-=
+\mu_a^{(0)}(t) =
 \sum_{i=0}^{q-1}
 B_{ia}\,\bar u^{\,i}.
 $$
@@ -880,8 +832,7 @@ $$
 对时间求 $r$ 阶导数时，每求一次导都要多出一个 $1/\Delta t$，同时次数低于 $r$ 的项被打掉：
 
 $$
-\mu_a^{(r)}(t)
-=
+\mu_a^{(r)}(t) =
 \Delta t^{-r}
 \sum_{i\ge r}
 B_{ia}
@@ -894,8 +845,7 @@ $$
 $$
 \boxed{
 \int_{\tau_s}^{\tau_{s+1}}
-\mu_a^{(r)}\mu_b^{(r)}\,dt
-=
+\mu_a^{(r)}\mu_b^{(r)}\,dt =
 \Delta t^{\,1-2r}
 \sum_{i,j\ge r}
 B_{ia}B_{jb}

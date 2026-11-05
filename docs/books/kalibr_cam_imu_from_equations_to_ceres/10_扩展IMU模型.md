@@ -3,12 +3,10 @@
 第 6 章和第 7 章先推了普通 IMU 模型：
 
 $$
-\hat{\boldsymbol\omega}_i
-=
+\hat{\boldsymbol\omega}_i =
 \mathbf R_{ib}\boldsymbol\omega_b+\mathbf b_g,
 \qquad
-\hat{\mathbf a}_i
-=
+\hat{\mathbf a}_i =
 \mathbf R_{ib}\mathbf u_b+\mathbf b_a.
 $$
 
@@ -51,8 +49,7 @@ $$
 
 $$
 \boxed{
-\mathbf u_b
-=
+\mathbf u_b =
 \mathbf R_{bw}(\mathbf a_w-\mathbf g_w)
 +
 \boldsymbol\alpha_b\times\mathbf r_b
@@ -85,8 +82,7 @@ $$
 它有两类变化：
 
 $$
-\delta\mathbf y
-=
+\delta\mathbf y =
 \delta\mathbf M\,\mathbf x
 +
 \mathbf M\,\delta\mathbf x.
@@ -96,8 +92,7 @@ $$
 
 $$
 \boxed{
-\frac{\partial\mathbf y}{\partial\mathbf x}
-=
+\frac{\partial\mathbf y}{\partial\mathbf x} =
 \mathbf M
 \in\mathbb R^{3\times3}.
 }
@@ -106,8 +101,7 @@ $$
 若先把 $\mathbf M$ 当成 full $3\times3$ matrix，并按列堆叠：
 
 $$
-\operatorname{vec}(\mathbf M)
-=
+\operatorname{vec}(\mathbf M) =
 \begin{bmatrix}
 \mathbf m_1\\
 \mathbf m_2\\
@@ -123,8 +117,7 @@ $$
 则：
 
 $$
-\delta\mathbf M\,\mathbf x
-=
+\delta\mathbf M\,\mathbf x =
 x_1\delta\mathbf m_1
 +
 x_2\delta\mathbf m_2
@@ -137,8 +130,7 @@ $$
 $$
 \boxed{
 \frac{\partial(\mathbf M\mathbf x)}
-{\partial\operatorname{vec}(\mathbf M)}
-=
+{\partial\operatorname{vec}(\mathbf M)} =
 \begin{bmatrix}
 x_1\mathbf I_3&
 x_2\mathbf I_3&
@@ -164,8 +156,7 @@ np.array([[1, 0, 0],
 
 $$
 \boxed{
-\mathbf J_{\mathrm{dv}}
-=
+\mathbf J_{\mathrm{dv}} =
 \mathbf J_{\mathrm{full}}\mathbf B,
 \qquad
 \mathbf J_{\mathrm{full}}\in\mathbb R^{3\times9},
@@ -217,8 +208,7 @@ $$
 $$
 \boxed{
 \mathbf B_{\text{full}}
-\ \text{的第 }k\text{ 列 }1\text{ 所在行}
-=
+\ \text{的第 }k\text{ 列 }1\text{ 所在行} =
 [\,0,\ 3,\ 6,\ 1,\ 4,\ 7,\ 2,\ 5,\ 8\,].
 }
 $$
@@ -232,8 +222,7 @@ $$
 a_{g,1}\mathbf I_3&
 a_{g,2}\mathbf I_3&
 a_{g,3}\mathbf I_3
-\end{bmatrix}
-=
+\end{bmatrix} =
 \mathbf a_g^\top\otimes\mathbf I_3,
 $$
 
@@ -241,13 +230,10 @@ $$
 
 $$
 \boxed{
-\mathbf J_{\mathrm{dv}}
-=
+\mathbf J_{\mathrm{dv}} =
 \left(\mathbf a_g^\top\otimes\mathbf I_3\right)
-\mathbf K_{3,3}
-=
-\mathbf I_3\otimes\mathbf a_g^\top
-=
+\mathbf K_{3,3} =
+\mathbf I_3\otimes\mathbf a_g^\top =
 \begin{bmatrix}
 \mathbf a_g^\top&\mathbf 0&\mathbf 0\\
 \mathbf 0&\mathbf a_g^\top&\mathbf 0\\
@@ -272,8 +258,7 @@ _A += Eigen::Map<Eigen::Matrix<double, 3, 3>>(dV.data());   // Eigen 默认列�
 对满 mask 代入 $\mathbf d=[1,2,\ldots,9]^\top$，得到的增量矩阵是
 
 $$
-\Delta\mathbf A_g
-=
+\Delta\mathbf A_g =
 \begin{bmatrix}
 1&2&3\\
 4&5&6\\
@@ -316,8 +301,7 @@ print((build_B(full) @ np.arange(1., 10.)).reshape(3, 3, order='F'))  # 1..9 按
 先看扩展 accelerometer，但暂时不考虑 size-effect。普通模型的 raw accelerometer prediction 是：
 
 $$
-\mathbf x_i
-=
+\mathbf x_i =
 \mathbf R_{ib}\mathbf u_b.
 $$
 
@@ -325,12 +309,10 @@ $$
 
 $$
 \boxed{
-\hat{\mathbf a}
-=
+\hat{\mathbf a} =
 \mathbf M_{\mathrm{acc}}\mathbf x_i
 +
-\mathbf b_a
-=
+\mathbf b_a =
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf u_b
 +
 \mathbf b_a.
@@ -348,8 +330,7 @@ aerr = EuclideanError(im.alpha, ..., a + b_i)
 按第 6、7 章的习惯，先写这个扩展模型的 variation 母式，下面两个小节都只是从母式取分支。令 $\mathbf x_i=\mathbf R_{ib}\mathbf u_b$，则预测量是 $\hat{\mathbf a}=\mathbf M_{\mathrm{acc}}\mathbf x_i+\mathbf b_a$。$\mathbf M_{\mathrm{acc}}$ 是普通欧式矩阵参数，扰动就是逐元素相加；$\mathbf x_i$ 的扰动 $\delta\mathbf x_i$ 已经由 7.6 节的母式给出——pose、gravity、外参旋转、lever arm 的全部贡献都汇在它里面。特别是 $\mathbf u_b$ 内部仍然沿用第 7 章的分解：
 
 $$
-\delta\mathbf u_b
-=
+\delta\mathbf u_b =
 \delta\mathbf h_b+\delta\boldsymbol\ell_b,
 $$
 
@@ -359,8 +340,7 @@ $$
 
 $$
 \boxed{
-\delta\mathbf e^a
-=
+\delta\mathbf e^a =
 \delta\mathbf M_{\mathrm{acc}}\,\mathbf x_i
 +
 \mathbf M_{\mathrm{acc}}\,\delta\mathbf x_i
@@ -379,8 +359,7 @@ $$
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^a,\mathbf c_j}
-=
+\mathbf J_{\mathbf e^a,\mathbf c_j} =
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}
 \mathbf J_{\mathbf u_b,\mathbf c_j}.
 }
@@ -390,8 +369,7 @@ Gravity：
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^a,\mathbf g_w}
-=
+\mathbf J_{\mathbf e^a,\mathbf g_w} =
 -
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf R_{bw}.
 }
@@ -401,8 +379,7 @@ IMU 外参旋转：
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^a,\boldsymbol\phi_{ib,K}}
-=
+\mathbf J_{\mathbf e^a,\boldsymbol\phi_{ib,K}} =
 \mathbf M_{\mathrm{acc}}
 [\mathbf R_{ib}\mathbf u_b]_\times.
 }
@@ -412,8 +389,7 @@ Lever arm：
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^a,\mathbf r_b}
-=
+\mathbf J_{\mathbf e^a,\mathbf r_b} =
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}
 \left(
 [\boldsymbol\alpha_b]_\times
@@ -427,8 +403,7 @@ Accel bias 仍然是直接相加：
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^a,\mathbf d^a_{j+\ell}}
-=
+\mathbf J_{\mathbf e^a,\mathbf d^a_{j+\ell}} =
 \nu_\ell^{(0)}(t_k)\mathbf I_3.
 }
 $$
@@ -444,8 +419,7 @@ $$
 对 $\mathbf M_{\mathrm{acc}}$ 求导时，保持 $\mathbf x_i$ 和 bias 不变：
 
 $$
-\delta\mathbf e^a
-=
+\delta\mathbf e^a =
 \delta\mathbf M_{\mathrm{acc}}\mathbf x_i.
 $$
 
@@ -454,8 +428,7 @@ $$
 $$
 \boxed{
 \frac{\partial\mathbf e^a}
-{\partial\operatorname{vec}(\mathbf M_{\mathrm{acc}})}
-=
+{\partial\operatorname{vec}(\mathbf M_{\mathrm{acc}})} =
 \begin{bmatrix}
 x_{i,1}\mathbf I_3&
 x_{i,2}\mathbf I_3&
@@ -471,8 +444,7 @@ $$
 普通 gyro 模型只使用 body angular velocity：
 
 $$
-\hat{\boldsymbol\omega}
-=
+\hat{\boldsymbol\omega} =
 \mathbf R_{ib}\boldsymbol\omega_b+\mathbf b_g.
 $$
 
@@ -486,12 +458,10 @@ $$
 
 $$
 \boxed{
-\boldsymbol\omega_g
-=
+\boldsymbol\omega_g =
 \mathbf R_{gi}\mathbf R_{ib}\boldsymbol\omega_b,
 \qquad
-\mathbf a_g
-=
+\mathbf a_g =
 \mathbf R_{gi}\mathbf R_{ib}\mathbf u_b.
 }
 $$
@@ -500,8 +470,7 @@ $$
 
 $$
 \boxed{
-\hat{\boldsymbol\omega}
-=
+\hat{\boldsymbol\omega} =
 \mathbf M_g\boldsymbol\omega_g
 +
 \mathbf A_g\mathbf a_g
@@ -527,8 +496,7 @@ w = M * (C_gyro_b * w_b) + Ma * (C_gyro_b * a_b)
 
 $$
 \boxed{
-\delta\mathbf e^\omega
-=
+\delta\mathbf e^\omega =
 \delta\mathbf M_g\,\boldsymbol\omega_g
 +
 \mathbf M_g\,\delta\boldsymbol\omega_g
@@ -548,8 +516,7 @@ $$
 对 gyro scale/misalignment：
 
 $$
-\delta\mathbf e^\omega
-=
+\delta\mathbf e^\omega =
 \delta\mathbf M_g\,\boldsymbol\omega_g.
 $$
 
@@ -558,8 +525,7 @@ $$
 $$
 \boxed{
 \frac{\partial\mathbf e^\omega}
-{\partial\operatorname{vec}(\mathbf M_g)}
-=
+{\partial\operatorname{vec}(\mathbf M_g)} =
 \begin{bmatrix}
 \omega_{g,1}\mathbf I_3&
 \omega_{g,2}\mathbf I_3&
@@ -571,8 +537,7 @@ $$
 对 acceleration sensitivity：
 
 $$
-\delta\mathbf e^\omega
-=
+\delta\mathbf e^\omega =
 \delta\mathbf A_g\,\mathbf a_g.
 $$
 
@@ -581,8 +546,7 @@ $$
 $$
 \boxed{
 \frac{\partial\mathbf e^\omega}
-{\partial\operatorname{vec}(\mathbf A_g)}
-=
+{\partial\operatorname{vec}(\mathbf A_g)} =
 \begin{bmatrix}
 a_{g,1}\mathbf I_3&
 a_{g,2}\mathbf I_3&
@@ -595,12 +559,9 @@ $$
 
 $$
 \boxed{
-\frac{\partial\mathbf e^\omega}{\partial\delta\mathbf a}
-=
-\left(\mathbf a_g^\top\otimes\mathbf I_3\right)\mathbf K_{3,3}
-=
-\mathbf I_3\otimes\mathbf a_g^\top
-=
+\frac{\partial\mathbf e^\omega}{\partial\delta\mathbf a} =
+\left(\mathbf a_g^\top\otimes\mathbf I_3\right)\mathbf K_{3,3} =
+\mathbf I_3\otimes\mathbf a_g^\top =
 \begin{bmatrix}
 a_{g,1}&a_{g,2}&a_{g,3}&&&&&&\\
 &&&a_{g,1}&a_{g,2}&a_{g,3}&&&\\
@@ -616,8 +577,7 @@ $$
 对 $\mathbf R_{gi}$ 使用 Kalibr rotation tangent：
 
 $$
-\mathbf R_{gi}^+
-=
+\mathbf R_{gi}^+ =
 \mathrm{Exp}(-\delta\boldsymbol\phi_{gi,K})\mathbf R_{gi}.
 $$
 
@@ -640,15 +600,13 @@ $$
 由第 0 章的 rotation action Jacobian：
 
 $$
-\delta(\mathbf R_{gi}\boldsymbol\omega_i)
-=
+\delta(\mathbf R_{gi}\boldsymbol\omega_i) =
 [\boldsymbol\omega_g]_\times
 \delta\boldsymbol\phi_{gi,K},
 $$
 
 $$
-\delta(\mathbf R_{gi}\mathbf a_i)
-=
+\delta(\mathbf R_{gi}\mathbf a_i) =
 [\mathbf a_g]_\times
 \delta\boldsymbol\phi_{gi,K}.
 $$
@@ -656,8 +614,7 @@ $$
 代入扩展 gyro prediction：
 
 $$
-\delta\mathbf e^\omega
-=
+\delta\mathbf e^\omega =
 \mathbf M_g[\boldsymbol\omega_g]_\times\delta\boldsymbol\phi_{gi,K}
 +
 \mathbf A_g[\mathbf a_g]_\times\delta\boldsymbol\phi_{gi,K}.
@@ -667,8 +624,7 @@ $$
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^\omega,\boldsymbol\phi_{gi,K}}
-=
+\mathbf J_{\mathbf e^\omega,\boldsymbol\phi_{gi,K}} =
 \mathbf M_g[\boldsymbol\omega_g]_\times
 +
 \mathbf A_g[\mathbf a_g]_\times.
@@ -688,13 +644,11 @@ $$
 则：
 
 $$
-\delta\boldsymbol\omega_i
-=
+\delta\boldsymbol\omega_i =
 [\boldsymbol\omega_i]_\times
 \delta\boldsymbol\phi_{ib,K},
 \qquad
-\delta\mathbf a_i
-=
+\delta\mathbf a_i =
 [\mathbf a_i]_\times
 \delta\boldsymbol\phi_{ib,K}.
 $$
@@ -702,13 +656,11 @@ $$
 继续左乘 $\mathbf R_{gi}$：
 
 $$
-\delta\boldsymbol\omega_g
-=
+\delta\boldsymbol\omega_g =
 \mathbf R_{gi}[\boldsymbol\omega_i]_\times
 \delta\boldsymbol\phi_{ib,K},
 \qquad
-\delta\mathbf a_g
-=
+\delta\mathbf a_g =
 \mathbf R_{gi}[\mathbf a_i]_\times
 \delta\boldsymbol\phi_{ib,K}.
 $$
@@ -717,8 +669,7 @@ $$
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^\omega,\boldsymbol\phi_{ib,K}}
-=
+\mathbf J_{\mathbf e^\omega,\boldsymbol\phi_{ib,K}} =
 \mathbf M_g\mathbf R_{gi}
 [\mathbf R_{ib}\boldsymbol\omega_b]_\times
 +
@@ -739,8 +690,7 @@ $$
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^\omega,\mathbf c_j}
-=
+\mathbf J_{\mathbf e^\omega,\mathbf c_j} =
 \mathbf M_g\mathbf R_{gi}\mathbf R_{ib}
 \mathbf J_{\boldsymbol\omega_b,\mathbf c_j}
 +
@@ -762,8 +712,7 @@ $$
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^\omega,\mathbf g_w}
-=
+\mathbf J_{\mathbf e^\omega,\mathbf g_w} =
 -\,\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf R_{bw}.
 }
 $$
@@ -781,8 +730,7 @@ $\mathbf J_{\mathbf e^\omega,\delta\mathbf u}=-\mathbf A_g\mathbf R_{gi}\mathbf 
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^\omega,\mathbf r_b}
-=
+\mathbf J_{\mathbf e^\omega,\mathbf r_b} =
 \mathbf A_g\mathbf R_{gi}\mathbf R_{ib}
 \left(
 [\boldsymbol\alpha_b]_\times
@@ -796,8 +744,7 @@ $$
 
 $$
 \boxed{
-\mathbf J_{\mathbf e^\omega,\mathbf d^g_{j+\ell}}
-=
+\mathbf J_{\mathbf e^\omega,\mathbf d^g_{j+\ell}} =
 \mu_\ell^{(0)}(t_k)\mathbf I_3.
 }
 $$
@@ -814,16 +761,13 @@ $$
 
 $$
 \boxed{
-\mathbf r_x^b
-=
+\mathbf r_x^b =
 \mathbf r_b+\mathbf R_{ib}^{-1}\mathbf r_x^i,
 \quad
-\mathbf r_y^b
-=
+\mathbf r_y^b =
 \mathbf r_b+\mathbf R_{ib}^{-1}\mathbf r_y^i,
 \quad
-\mathbf r_z^b
-=
+\mathbf r_z^b =
 \mathbf r_b+\mathbf R_{ib}^{-1}\mathbf r_z^i.
 }
 $$
@@ -839,8 +783,7 @@ rz_b = r_b + C_i_b.inverse() * rz_i
 定义 lever-arm acceleration 函数：
 
 $$
-\boldsymbol\ell(\mathbf r)
-=
+\boldsymbol\ell(\mathbf r) =
 \boldsymbol\alpha_b\times\mathbf r
 +
 \boldsymbol\omega_b\times
@@ -863,8 +806,7 @@ Size-effect accelerometer prediction 是：
 
 $$
 \boxed{
-\hat{\mathbf a}
-=
+\hat{\mathbf a} =
 \mathbf M_{\mathrm{acc}}
 \left[
 \mathbf R_{ib}\mathbf h_b
@@ -891,24 +833,21 @@ $$
 先只看 $\mathbf r_x^i$。它只影响 $\mathbf r_x^b$：
 
 $$
-\delta\mathbf r_x^b
-=
+\delta\mathbf r_x^b =
 \mathbf R_{ib}^{-1}\delta\mathbf r_x^i.
 $$
 
 而：
 
 $$
-\delta\boldsymbol\ell(\mathbf r_x^b)
-=
+\delta\boldsymbol\ell(\mathbf r_x^b) =
 \mathbf A_r(\mathbf r_x^b)\delta\mathbf r_x^b,
 $$
 
 其中：
 
 $$
-\mathbf A_r(\mathbf r)
-=
+\mathbf A_r(\mathbf r) =
 [\boldsymbol\alpha_b]_\times
 +
 [\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times.
@@ -920,8 +859,7 @@ $$
 
 $$
 \boxed{
-\frac{\partial\mathbf e^a}{\partial\mathbf r_x^i}
-=
+\frac{\partial\mathbf e^a}{\partial\mathbf r_x^i} =
 \mathbf M_{\mathrm{acc}}
 \mathbf I_x
 \mathbf R_{ib}
@@ -934,16 +872,14 @@ $$
 
 $$
 \boxed{
-\frac{\partial\mathbf e^a}{\partial\mathbf r_y^i}
-=
+\frac{\partial\mathbf e^a}{\partial\mathbf r_y^i} =
 \mathbf M_{\mathrm{acc}}
 \mathbf I_y
 \mathbf R_{ib}
 \mathbf A_r
 \mathbf R_{ib}^{-1},
 \qquad
-\frac{\partial\mathbf e^a}{\partial\mathbf r_z^i}
-=
+\frac{\partial\mathbf e^a}{\partial\mathbf r_z^i} =
 \mathbf M_{\mathrm{acc}}
 \mathbf I_z
 \mathbf R_{ib}
@@ -959,12 +895,9 @@ $$
 Base lever arm $\mathbf r_b$ 同时进入三条 axis-specific branch：
 
 $$
-\delta\mathbf r_x^b
-=
-\delta\mathbf r_y^b
-=
-\delta\mathbf r_z^b
-=
+\delta\mathbf r_x^b =
+\delta\mathbf r_y^b =
+\delta\mathbf r_z^b =
 \delta\mathbf r_b.
 $$
 
@@ -972,8 +905,7 @@ $$
 
 $$
 \boxed{
-\frac{\partial\mathbf e^a}{\partial\mathbf r_b}
-=
+\frac{\partial\mathbf e^a}{\partial\mathbf r_b} =
 \mathbf M_{\mathrm{acc}}
 \left(
 \mathbf I_x\mathbf R_{ib}\mathbf A_r
@@ -989,8 +921,7 @@ $$
 
 $$
 \boxed{
-\frac{\partial\mathbf e^a}{\partial\mathbf r_b}
-=
+\frac{\partial\mathbf e^a}{\partial\mathbf r_b} =
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf A_r.
 }
 $$
@@ -1013,12 +944,10 @@ $$
 $$
 
 $$
-\mathbf r_j^b
-=
+\mathbf r_j^b =
 \mathbf r_b+\mathbf R_{ib}^{-1}\mathbf r_j^i,
 \qquad
-\boldsymbol\ell_j
-=
+\boldsymbol\ell_j =
 \boldsymbol\ell(\mathbf r_j^b).
 $$
 
@@ -1032,8 +961,7 @@ $$
 间接 lever-arm 变化来自：
 
 $$
-\delta(\mathbf R_{ib}^{-1}\mathbf r_j^i)
-=
+\delta(\mathbf R_{ib}^{-1}\mathbf r_j^i) =
 -
 \mathbf R_{ib}^{-1}
 [\mathbf r_j^i]_\times
@@ -1043,8 +971,7 @@ $$
 所以：
 
 $$
-\delta\boldsymbol\ell_j
-=
+\delta\boldsymbol\ell_j =
 -
 \mathbf A_r
 \mathbf R_{ib}^{-1}
@@ -1055,8 +982,7 @@ $$
 乘回输出：
 
 $$
-\mathbf I_j\mathbf R_{ib}\delta\boldsymbol\ell_j
-=
+\mathbf I_j\mathbf R_{ib}\delta\boldsymbol\ell_j =
 -
 \mathbf I_j\mathbf R_{ib}\mathbf A_r
 \mathbf R_{ib}^{-1}
@@ -1113,8 +1039,7 @@ pose 控制点只通过四个中间量进入：$\mathbf a_w$、$\mathbf R_{bw}$�
 **specific-force 分支** 与 size-effect 无关，和 7.8.1 逐字相同：
 
 $$
-\mathbf J_{\mathbf h_b,\mathbf c_k}
-=
+\mathbf J_{\mathbf h_b,\mathbf c_k} =
 \mathbf R_{bw}\mathbf J_{\mathbf a_w,\mathbf c_k}
 +
 [\mathbf h_b]_\times
@@ -1125,12 +1050,10 @@ $$
 
 $$
 \boxed{
-\mathbf A_\alpha(\mathbf r)
-=
+\mathbf A_\alpha(\mathbf r) =
 -[\mathbf r]_\times,
 \qquad
-\mathbf A_\omega(\mathbf r)
-=
+\mathbf A_\omega(\mathbf r) =
 -[\boldsymbol\omega_b\times\mathbf r]_\times
 -[\boldsymbol\omega_b]_\times[\mathbf r]_\times.
 }
@@ -1141,8 +1064,7 @@ $$
 于是第 $j$ 条轴的 lever-arm 加速度变化是：
 
 $$
-\left.\delta\boldsymbol\ell_j\right|_{\delta\mathbf c_k}
-=
+\left.\delta\boldsymbol\ell_j\right|_{\delta\mathbf c_k} =
 \mathbf A_\alpha(\mathbf r_j^b)\,\delta\boldsymbol\alpha_b
 +
 \mathbf A_\omega(\mathbf r_j^b)\,\delta\boldsymbol\omega_b.
@@ -1209,8 +1131,7 @@ $$
 \mathbf A_\alpha\mathbf J_{\boldsymbol\alpha_b,\mathbf c_k}
 +
 \mathbf A_\omega\mathbf J_{\boldsymbol\omega_b,\mathbf c_k}
-\right)
-=
+\right) =
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf J_{\mathbf u_b,\mathbf c_k},
 $$
 
@@ -1304,8 +1225,7 @@ $\mathbf R_{gi}$ 用 3 维旋转向量存储，预测时通过 $\operatorname{Ex
 前向预测集中在 `residuals/imu_model.*`：
 
 $$
-\hat{\boldsymbol\omega}
-=
+\hat{\boldsymbol\omega} =
 \mathbf M_g\mathbf R_{gi}\mathbf R_{ib}\boldsymbol\omega_b
 +
 \mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf u_b
@@ -1314,8 +1234,7 @@ $$
 $$
 
 $$
-\hat{\mathbf a}
-=
+\hat{\mathbf a} =
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}(\mathbf h_b+\boldsymbol\ell_b)
 +
 \mathbf b_a,
@@ -1425,8 +1344,7 @@ pose 控制点这一行有三个易错点：$\mathbf A_\alpha$、$\mathbf A_\ome
 
 $$
 \frac{\partial(\mathbf M\mathbf x)}
-{\partial\operatorname{vec}(\mathbf M)}
-=
+{\partial\operatorname{vec}(\mathbf M)} =
 \begin{bmatrix}
 x_1\mathbf I_3&
 x_2\mathbf I_3&

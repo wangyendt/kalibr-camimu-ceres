@@ -3,8 +3,7 @@
 第 0 章推导 $SE(3)$ 指数映射时，用到了一个上三角分块矩阵的幂律：
 
 $$
-\left(\delta\boldsymbol\xi_L^\wedge\right)^n
-=
+\left(\delta\boldsymbol\xi_L^\wedge\right)^n =
 \begin{bmatrix}
 \boldsymbol\Phi^n
 &
@@ -22,8 +21,7 @@ $SO(3)$ 的 Rodrigues 公式也可以这样推。它的核心同样不是背公�
 令：
 
 $$
-\boldsymbol\omega
-=
+\boldsymbol\omega =
 \begin{bmatrix}
 \omega_x\\
 \omega_y\\
@@ -39,8 +37,7 @@ $$
 按第 0 章的定义：
 
 $$
-\boldsymbol\Omega\mathbf a
-=
+\boldsymbol\Omega\mathbf a =
 \boldsymbol\omega\times\mathbf a.
 $$
 
@@ -55,8 +52,7 @@ $$
 如果 $\theta\ne 0$，也可以写成：
 
 $$
-\boldsymbol\omega
-=
+\boldsymbol\omega =
 \theta\mathbf u,
 \qquad
 \|\mathbf u\|=1.
@@ -69,18 +65,15 @@ $$
 要理解 $\boldsymbol\Omega^2$，最直接的方法是让它作用在任意向量 $\mathbf a$ 上：
 
 $$
-\boldsymbol\Omega^2\mathbf a
-=
-\boldsymbol\Omega(\boldsymbol\Omega\mathbf a)
-=
+\boldsymbol\Omega^2\mathbf a =
+\boldsymbol\Omega(\boldsymbol\Omega\mathbf a) =
 \boldsymbol\omega\times(\boldsymbol\omega\times\mathbf a).
 $$
 
 用向量三重积公式：
 
 $$
-\mathbf x\times(\mathbf y\times\mathbf z)
-=
+\mathbf x\times(\mathbf y\times\mathbf z) =
 \mathbf y(\mathbf x^\top\mathbf z)
 -
 \mathbf z(\mathbf x^\top\mathbf y).
@@ -89,8 +82,7 @@ $$
 令 $\mathbf x=\boldsymbol\omega$、$\mathbf y=\boldsymbol\omega$、$\mathbf z=\mathbf a$，得到：
 
 $$
-\boldsymbol\omega\times(\boldsymbol\omega\times\mathbf a)
-=
+\boldsymbol\omega\times(\boldsymbol\omega\times\mathbf a) =
 \boldsymbol\omega(\boldsymbol\omega^\top\mathbf a)
 -
 \mathbf a(\boldsymbol\omega^\top\boldsymbol\omega).
@@ -99,8 +91,7 @@ $$
 因为 $\boldsymbol\omega^\top\boldsymbol\omega=\theta^2$，所以：
 
 $$
-\boldsymbol\Omega^2\mathbf a
-=
+\boldsymbol\Omega^2\mathbf a =
 \left(
 \boldsymbol\omega\boldsymbol\omega^\top
 -
@@ -111,8 +102,7 @@ $$
 这个式子对任意 $\mathbf a$ 都成立，因此：
 
 $$
-\boldsymbol\Omega^2
-=
+\boldsymbol\Omega^2 =
 \boldsymbol\omega\boldsymbol\omega^\top
 -
 \theta^2\mathbf I.
@@ -125,10 +115,8 @@ $$
 继续乘一次：
 
 $$
-\boldsymbol\Omega^3
-=
-\boldsymbol\Omega\boldsymbol\Omega^2
-=
+\boldsymbol\Omega^3 =
+\boldsymbol\Omega\boldsymbol\Omega^2 =
 \boldsymbol\Omega
 \left(
 \boldsymbol\omega\boldsymbol\omega^\top
@@ -140,8 +128,7 @@ $$
 展开：
 
 $$
-\boldsymbol\Omega^3
-=
+\boldsymbol\Omega^3 =
 \boldsymbol\Omega\boldsymbol\omega\boldsymbol\omega^\top
 -
 \theta^2\boldsymbol\Omega.
@@ -150,18 +137,15 @@ $$
 但：
 
 $$
-\boldsymbol\Omega\boldsymbol\omega
-=
-\boldsymbol\omega\times\boldsymbol\omega
-=
+\boldsymbol\Omega\boldsymbol\omega =
+\boldsymbol\omega\times\boldsymbol\omega =
 \mathbf 0.
 $$
 
 所以第一项为零，得到：
 
 $$
-\boldsymbol\Omega^3
-=
+\boldsymbol\Omega^3 =
 -
 \theta^2\boldsymbol\Omega.
 $$
@@ -173,8 +157,7 @@ $$
 由：
 
 $$
-\boldsymbol\Omega^3
-=
+\boldsymbol\Omega^3 =
 -
 \theta^2\boldsymbol\Omega
 $$
@@ -184,8 +167,7 @@ $$
 奇数次幂：
 
 $$
-\boldsymbol\Omega^{2k+1}
-=
+\boldsymbol\Omega^{2k+1} =
 (-1)^k\theta^{2k}\boldsymbol\Omega,
 \qquad
 k=0,1,2,\cdots.
@@ -194,8 +176,7 @@ $$
 偶数次幂：
 
 $$
-\boldsymbol\Omega^{2k+2}
-=
+\boldsymbol\Omega^{2k+2} =
 (-1)^k\theta^{2k}\boldsymbol\Omega^2,
 \qquad
 k=0,1,2,\cdots.
@@ -228,10 +209,8 @@ $$
 $SO(3)$ 的指数映射是普通矩阵指数：
 
 $$
-\mathrm{Exp}(\boldsymbol\omega)
-=
-\exp(\boldsymbol\Omega)
-=
+\mathrm{Exp}(\boldsymbol\omega) =
+\exp(\boldsymbol\Omega) =
 \sum_{n=0}^{\infty}
 \frac{1}{n!}
 \boldsymbol\Omega^n.
@@ -240,8 +219,7 @@ $$
 把它拆成单位项、奇数项和偶数项：
 
 $$
-\exp(\boldsymbol\Omega)
-=
+\exp(\boldsymbol\Omega) =
 \mathbf I
 +
 \sum_{k=0}^{\infty}
@@ -258,8 +236,7 @@ $$
 $$
 \sum_{k=0}^{\infty}
 \frac{1}{(2k+1)!}
-\boldsymbol\Omega^{2k+1}
-=
+\boldsymbol\Omega^{2k+1} =
 \left(
 \sum_{k=0}^{\infty}
 \frac{(-1)^k\theta^{2k}}{(2k+1)!}
@@ -284,8 +261,7 @@ $$
 $$
 \sum_{k=0}^{\infty}
 \frac{1}{(2k+2)!}
-\boldsymbol\Omega^{2k+2}
-=
+\boldsymbol\Omega^{2k+2} =
 \left(
 \sum_{k=0}^{\infty}
 \frac{(-1)^k\theta^{2k}}{(2k+2)!}
@@ -302,8 +278,7 @@ $$
 所以：
 
 $$
-\exp(\boldsymbol\Omega)
-=
+\exp(\boldsymbol\Omega) =
 \mathbf I
 +
 \frac{\sin\theta}{\theta}\boldsymbol\Omega
@@ -315,8 +290,7 @@ $$
 
 $$
 \boxed{
-\mathrm{Exp}(\boldsymbol\omega)
-=
+\mathrm{Exp}(\boldsymbol\omega) =
 \mathbf I
 +
 \frac{\sin\theta}{\theta}[\boldsymbol\omega]_\times
@@ -328,8 +302,7 @@ $$
 如果使用单位轴 $\mathbf u$，因为 $\boldsymbol\omega=\theta\mathbf u$，有：
 
 $$
-[\boldsymbol\omega]_\times
-=
+[\boldsymbol\omega]_\times =
 \theta[\mathbf u]_\times.
 $$
 
@@ -337,8 +310,7 @@ $$
 
 $$
 \boxed{
-\mathrm{Exp}(\theta\mathbf u)
-=
+\mathrm{Exp}(\theta\mathbf u) =
 \mathbf I
 +
 \sin\theta[\mathbf u]_\times
@@ -361,13 +333,11 @@ $$
 
 $$
 \lim_{\theta\rightarrow 0}
-\frac{\sin\theta}{\theta}
-=
+\frac{\sin\theta}{\theta} =
 1,
 \qquad
 \lim_{\theta\rightarrow 0}
-\frac{1-\cos\theta}{\theta^2}
-=
+\frac{1-\cos\theta}{\theta^2} =
 \frac12.
 $$
 
@@ -398,8 +368,7 @@ $$
 第 0.10 节里出现的 $\mathbf J_l$ 就是 Micro Lie Theory 对 $\mathrm{Exp}$ 定义的 left Jacobian。在 $SO(3)$ 上，它的级数形式是：
 
 $$
-\mathbf J_l(\boldsymbol\omega)
-=
+\mathbf J_l(\boldsymbol\omega) =
 \sum_{k=0}^{\infty}
 \frac{1}{(k+1)!}
 \boldsymbol\Omega^k
@@ -410,8 +379,7 @@ $$
 先把 $k=0$ 的项单独拿出来：
 
 $$
-\mathbf J_l(\boldsymbol\omega)
-=
+\mathbf J_l(\boldsymbol\omega) =
 \mathbf I
 +
 \sum_{k=1}^{\infty}
@@ -422,8 +390,7 @@ $$
 余下部分继续拆成奇数次幂和偶数次幂：
 
 $$
-\mathbf J_l(\boldsymbol\omega)
-=
+\mathbf J_l(\boldsymbol\omega) =
 \mathbf I
 +
 \sum_{m=0}^{\infty}
@@ -438,20 +405,17 @@ $$
 代入 A.4 的幂律：
 
 $$
-\boldsymbol\Omega^{2m+1}
-=
+\boldsymbol\Omega^{2m+1} =
 (-1)^m\theta^{2m}\boldsymbol\Omega,
 \qquad
-\boldsymbol\Omega^{2m+2}
-=
+\boldsymbol\Omega^{2m+2} =
 (-1)^m\theta^{2m}\boldsymbol\Omega^2.
 $$
 
 得到：
 
 $$
-\mathbf J_l(\boldsymbol\omega)
-=
+\mathbf J_l(\boldsymbol\omega) =
 \mathbf I
 +
 \left(
@@ -476,8 +440,7 @@ $$
 因为：
 
 $$
-1-\cos\theta
-=
+1-\cos\theta =
 \frac{\theta^2}{2!}
 -
 \frac{\theta^4}{4!}
@@ -495,8 +458,7 @@ $$
 因为：
 
 $$
-\theta-\sin\theta
-=
+\theta-\sin\theta =
 \frac{\theta^3}{3!}
 -
 \frac{\theta^5}{5!}
@@ -509,8 +471,7 @@ $$
 
 $$
 \boxed{
-\mathbf J_l(\boldsymbol\omega)
-=
+\mathbf J_l(\boldsymbol\omega) =
 \mathbf I
 +
 \frac{1-\cos\theta}{\theta^2}
@@ -533,8 +494,7 @@ $$
 它和 left Jacobian 的关系是：
 
 $$
-\mathbf J_r(\boldsymbol\omega)
-=
+\mathbf J_r(\boldsymbol\omega) =
 \mathbf J_l(-\boldsymbol\omega).
 $$
 
@@ -542,8 +502,7 @@ $$
 
 $$
 \boxed{
-\mathbf J_r(\boldsymbol\omega)
-=
+\mathbf J_r(\boldsymbol\omega) =
 \mathbf I
 -
 \frac{1-\cos\theta}{\theta^2}
@@ -557,8 +516,7 @@ $$
 这就是为什么 $J_l$ 和 $J_r$ 很像，但不是同一个矩阵。它们的二阶项相同，叉乘一次项符号相反：
 
 $$
-\mathbf J_l(\boldsymbol\omega)
-=
+\mathbf J_l(\boldsymbol\omega) =
 \mathbf I
 +
 \frac12[\boldsymbol\omega]_\times
@@ -569,8 +527,7 @@ O(\theta^3),
 $$
 
 $$
-\mathbf J_r(\boldsymbol\omega)
-=
+\mathbf J_r(\boldsymbol\omega) =
 \mathbf I
 -
 \frac12[\boldsymbol\omega]_\times
@@ -589,8 +546,7 @@ $\mathbf J_r$ 在本书里会以好几种不同的名字反复出现，包括源
 第 0.10 节的推导对象是：
 
 $$
-\delta\boldsymbol\xi_L^\wedge
-=
+\delta\boldsymbol\xi_L^\wedge =
 \begin{bmatrix}
 \boldsymbol\Phi & \delta\boldsymbol\rho_L\\
 \mathbf 0^\top & 0
@@ -612,8 +568,7 @@ $$
 而左上角仍然是：
 
 $$
-\exp(\boldsymbol\Phi)
-=
+\exp(\boldsymbol\Phi) =
 \mathrm{Exp}(\delta\boldsymbol\phi_L),
 $$
 
@@ -632,14 +587,10 @@ $$
 
 $$
 \boxed{
-\mathbf S_K(\boldsymbol\psi)
-=
-\mathbf J_r(\boldsymbol\psi)
-=
-\mathbf J_l(-\boldsymbol\psi)
-=
-\mathrm{Exp}(-\boldsymbol\psi)\mathbf J_l(\boldsymbol\psi)
-=
+\mathbf S_K(\boldsymbol\psi) =
+\mathbf J_r(\boldsymbol\psi) =
+\mathbf J_l(-\boldsymbol\psi) =
+\mathrm{Exp}(-\boldsymbol\psi)\mathbf J_l(\boldsymbol\psi) =
 \mathbf C(\boldsymbol\psi)\mathbf J_l(\boldsymbol\psi)
 }.
 $$
@@ -677,12 +628,10 @@ $$
 把右边那个式子的 $\mathrm{Exp}(\boldsymbol\psi)$ 移到左边，用 $SO(3)$ 的共轭恒等式 $\mathbf R\,\mathrm{Exp}(\mathbf v)\mathbf R^\top=\mathrm{Exp}(\mathbf R\mathbf v)$：
 
 $$
-\mathrm{Exp}\!\left(\mathbf J_l(\boldsymbol\psi)\delta\boldsymbol\psi\right)
-=
+\mathrm{Exp}\!\left(\mathbf J_l(\boldsymbol\psi)\delta\boldsymbol\psi\right) =
 \mathrm{Exp}(\boldsymbol\psi)
 \mathrm{Exp}\!\left(\mathbf J_r(\boldsymbol\psi)\delta\boldsymbol\psi\right)
-\mathrm{Exp}(\boldsymbol\psi)^\top
-=
+\mathrm{Exp}(\boldsymbol\psi)^\top =
 \mathrm{Exp}\!\left(
 \mathrm{Exp}(\boldsymbol\psi)\mathbf J_r(\boldsymbol\psi)\delta\boldsymbol\psi
 \right).
@@ -691,12 +640,10 @@ $$
 对任意 $\delta\boldsymbol\psi$ 成立，所以：
 
 $$
-\mathbf J_l(\boldsymbol\psi)
-=
+\mathbf J_l(\boldsymbol\psi) =
 \mathrm{Exp}(\boldsymbol\psi)\mathbf J_r(\boldsymbol\psi),
 \qquad
-\mathbf J_r(\boldsymbol\psi)
-=
+\mathbf J_r(\boldsymbol\psi) =
 \mathrm{Exp}(-\boldsymbol\psi)\mathbf J_l(\boldsymbol\psi).
 $$
 
@@ -705,12 +652,10 @@ $$
 如果不想借用 adjoint，也可以直接把两个闭式乘开验证。用 $\mathbf A^3=-\mathbf A$、$\mathbf A^4=-\mathbf A^2$，并记 $s=\sin\theta$、$c=\cos\theta$：
 
 $$
-\mathrm{Exp}(-\boldsymbol\psi)
-=
+\mathrm{Exp}(-\boldsymbol\psi) =
 \mathbf I-s\mathbf A+(1-c)\mathbf A^2,
 \qquad
-\mathbf J_l(\boldsymbol\psi)
-=
+\mathbf J_l(\boldsymbol\psi) =
 \mathbf I
 +\frac{1-c}{\theta}\mathbf A
 +\frac{\theta-s}{\theta}\mathbf A^2.
@@ -719,13 +664,11 @@ $$
 乘开后 $\mathbf A$ 的系数是：
 
 $$
-\frac{1-c}{\theta}-s+\frac{s(\theta-s)}{\theta}-\frac{(1-c)^2}{\theta}
-=
+\frac{1-c}{\theta}-s+\frac{s(\theta-s)}{\theta}-\frac{(1-c)^2}{\theta} =
 \frac{1}{\theta}
 \left[
 (1-c)-s^2-(1-c)^2
-\right]
-=
+\right] =
 -\frac{1-c}{\theta},
 $$
 
@@ -736,8 +679,7 @@ $$
 $\mathbf C(\cdot)$ 是 Kalibr 记号，指 `RotationVector::parametersToRotationMatrix` 由旋转向量参数算出的旋转矩阵，本仓库 Ceres 版对应 `rotationVectorToMatrix`。两处实现算的都是：
 
 $$
-\mathbf C(\boldsymbol\psi)
-=
+\mathbf C(\boldsymbol\psi) =
 \mathbf I
 -\sin\theta\,[\mathbf u]_\times
 +(1-\cos\theta)[\mathbf u]_\times^2.
@@ -746,10 +688,8 @@ $$
 和 A.5 的轴角形式 Rodrigues 公式对照，这就是把转角换成 $-\theta$ 的结果：
 
 $$
-\mathbf C(\boldsymbol\psi)
-=
-\mathrm{Exp}(-\theta\mathbf u)
-=
+\mathbf C(\boldsymbol\psi) =
+\mathrm{Exp}(-\theta\mathbf u) =
 \mathrm{Exp}(-\boldsymbol\psi).
 $$
 
@@ -760,8 +700,7 @@ $$
 `RotationVector::parametersToSMatrix` 的实现是：
 
 $$
-\mathbf S_K(\boldsymbol\psi)
-=
+\mathbf S_K(\boldsymbol\psi) =
 \mathbf I
 +c_1\mathbf A
 +c_2\mathbf A^2,
@@ -774,12 +713,10 @@ $$
 注意源码里的 $\mathbf A$ 用的是 **单位轴** $\mathbf u$ 而不是 $\boldsymbol\psi$ 本身，即 $\mathbf A=[\mathbf u]_\times$；这也是它看上去和 $\mathbf J_r$ 闭式不像的唯一原因。把 $\mathbf J_r$ 的闭式换成同一套记号：
 
 $$
-\mathbf J_r(\boldsymbol\psi)
-=
+\mathbf J_r(\boldsymbol\psi) =
 \mathbf I
 -\frac{1-\cos\theta}{\theta^2}[\boldsymbol\psi]_\times
-+\frac{\theta-\sin\theta}{\theta^3}[\boldsymbol\psi]_\times^2
-=
++\frac{\theta-\sin\theta}{\theta^3}[\boldsymbol\psi]_\times^2 =
 \mathbf I
 -\frac{1-\cos\theta}{\theta}\mathbf A
 +\frac{\theta-\sin\theta}{\theta}\mathbf A^2.
@@ -788,10 +725,8 @@ $$
 $\mathbf A^2$ 的系数已经逐字相同。$\mathbf A$ 的系数用半角公式 $1-\cos\theta=2\sin^2(\theta/2)$：
 
 $$
--\frac{1-\cos\theta}{\theta}
-=
--\frac{2\sin^2(\theta/2)}{\theta}
-=
+-\frac{1-\cos\theta}{\theta} =
+-\frac{2\sin^2(\theta/2)}{\theta} =
 c_1.
 $$
 
@@ -892,8 +827,7 @@ $$
 $$
 \mathbf J_l(-\mathbf r)^{-1}
 \cdot
-\mathbf C(\mathbf r)\mathbf J_l(\mathbf r)
-=
+\mathbf C(\mathbf r)\mathbf J_l(\mathbf r) =
 \mathbf I,
 $$
 

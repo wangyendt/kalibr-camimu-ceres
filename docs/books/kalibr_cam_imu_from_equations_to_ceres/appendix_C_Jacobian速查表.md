@@ -9,8 +9,7 @@
 全书的权重机制分三层（6.11.2 节把这三层在 gyro 上点过名），这张表只列最里面那层——**几何 Jacobian**：
 
 $$
-\mathbf J_i
-=
+\mathbf J_i =
 \frac{\partial\mathbf e}{\partial\delta\boldsymbol\theta_i}.
 $$
 
@@ -25,12 +24,10 @@ $$
 真正进入线性系统前还差最后一步加权，规则在第 3 章和 11.7 节：
 
 $$
-\bar{\mathbf e}
-=
+\bar{\mathbf e} =
 \sqrt{w}\,\mathbf L^\top\mathbf e,
 \qquad
-\bar{\mathbf J}_i
-=
+\bar{\mathbf J}_i =
 s_i\sqrt{w}\,\mathbf L^\top\mathbf J_i.
 $$
 
@@ -62,12 +59,10 @@ $$
 Camera residual（第 4 章）：
 
 $$
-\mathbf e^\pi
-=
+\mathbf e^\pi =
 \mathbf y-\hat{\mathbf y},
 \qquad
-\hat{\mathbf y}
-=
+\hat{\mathbf y} =
 \boldsymbol\pi(\mathbf p_c;\boldsymbol\eta).
 $$
 
@@ -77,8 +72,7 @@ $$
 \mathbf A_T
 \triangleq
 \frac{\partial\mathbf e^\pi}
-{\partial\delta\boldsymbol\xi_{T_{c_nw},K}}
-=
+{\partial\delta\boldsymbol\xi_{T_{c_nw},K}} =
 -
 \mathbf J_{\pi,\tilde{\mathbf p}_c}
 \mathrm{boxMinus}(\tilde{\mathbf p}_c)
@@ -90,8 +84,7 @@ $$
 Camera transform 链（第 2 章、8.5 节）：
 
 $$
-\mathbf T_{c_nw}
-=
+\mathbf T_{c_nw} =
 \mathbf T_{c_nb}\mathbf T_{bw},
 \qquad
 \mathbf T_{bw}=\mathbf T_{wb}^{-1}.
@@ -102,8 +95,7 @@ Pose spline（第 5 章）：
 $$
 \mathbf T_{wb}(t)=F(\mathbf s(t)),
 \qquad
-\mathbf J_{\mathbf T,\mathbf c_j}
-=
+\mathbf J_{\mathbf T,\mathbf c_j} =
 \frac{\partial\delta\boldsymbol\xi_{T_{wb},K}}
 {\partial\delta\mathbf c_j}.
 $$
@@ -111,8 +103,7 @@ $$
 Accelerometer 中间量（7.4 节；lever-arm 两项的刚体运动学推导在 7.4.2 节）：
 
 $$
-\mathbf u_b
-=
+\mathbf u_b =
 \mathbf R_{bw}(\mathbf a_w-\mathbf g_w)
 +
 \boldsymbol\alpha_b\times\mathbf r_b
@@ -146,8 +137,7 @@ $$
 比较的是标定板角点的预测像素和检测像素。前向链路：world 角点 $\to$ body $\to$ camera $\to$ 像素。
 
 $$
-\mathbf e^\pi_{n,k,\ell}
-=
+\mathbf e^\pi_{n,k,\ell} =
 \mathbf y_{n,k,\ell}
 -
 \hat{\mathbf y}_{n,k,\ell}.
@@ -175,13 +165,11 @@ Camera residual 对 gyro/accel bias、IMU 内参、IMU lever arm、gravity 的�
 这个 residual 不是 Kalibr 原始 camera reprojection residual，而是当前 Ceres 迁移版在 `--fix-camera-chain-extrinsics` 下加入的相对外参先验。它约束：
 
 $$
-\Delta\mathbf T
-=
+\Delta\mathbf T =
 (\mathbf T^p_{c_i c_0})^{-1}
 \mathbf T_{c_i b}\mathbf T_{c_0 b}^{-1},
 \qquad
-\mathbf e^{cc}
-=
+\mathbf e^{cc} =
 \begin{bmatrix}
 \sigma_t^{-1}\mathbf t_\Delta\\
 \sigma_R^{-1}\mathbf r_\Delta
@@ -214,8 +202,7 @@ $$
 比较的是轨迹角速度旋转到 IMU frame 加 bias 后的预测读数和陀螺仪读数。
 
 $$
-\mathbf e^\omega_k
-=
+\mathbf e^\omega_k =
 \mathbf R_{ib}\boldsymbol\omega_b(t_k)
 +
 \mathbf b_g(t_k)
@@ -242,8 +229,7 @@ Ordinary gyro residual 对 camera 参数、accel bias、gravity、accelerometer 
 比较的是 IMU 原点的预测 specific force（含 gravity 和 lever-arm 项）和加速度计读数。
 
 $$
-\mathbf e^a_k
-=
+\mathbf e^a_k =
 \mathbf R_{ib}\mathbf u_b(t_k)
 +
 \mathbf b_a(t_k)
@@ -265,16 +251,14 @@ $$
 其中 pose 分支内部（7.8.3 节）来自：
 
 $$
-\delta\mathbf u_b
-=
+\delta\mathbf u_b =
 \delta\mathbf h_b+\delta\boldsymbol\ell_b.
 $$
 
 前两项是 $\delta\mathbf h_b$ 的 specific-force 分支，后两项是 $\delta\boldsymbol\ell_b$ 的 lever-arm 分支：
 
 $$
-\mathbf J_{\mathbf u_b,\mathbf c_j}
-=
+\mathbf J_{\mathbf u_b,\mathbf c_j} =
 \mathbf R_{bw}\mathbf J_{\mathbf a_w,\mathbf c_j}
 +
 [\mathbf h_b]_\times
@@ -296,8 +280,7 @@ Ordinary accelerometer residual 对 camera 参数、gyro bias、gyro scale/misal
 普通 accel 模型外面包一层 scale/misalignment 矩阵。母式（10.3 节）是：
 
 $$
-\delta\mathbf e^a
-=
+\delta\mathbf e^a =
 \delta\mathbf M_{\mathrm{acc}}\,\mathbf x_i
 +
 \mathbf M_{\mathrm{acc}}\,\delta\mathbf x_i
@@ -310,8 +293,7 @@ $$
 所以旧分支统一左乘 $\mathbf M_{\mathrm{acc}}$，bias 分支不变，另加一条 matrix 分支。
 
 $$
-\mathbf e^a_k
-=
+\mathbf e^a_k =
 \mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf u_b
 +
 \mathbf b_a
@@ -337,8 +319,7 @@ $$
 扩展 gyro 同时引入 gyro sensing frame 旋转 $\mathbf R_{gi}$、scale/misalignment $\mathbf M_g$ 和 acceleration sensitivity $\mathbf A_g$。母式（10.4 节，6.13 节预告）是：
 
 $$
-\delta\mathbf e^\omega
-=
+\delta\mathbf e^\omega =
 \delta\mathbf M_g\,\boldsymbol\omega_g
 +
 \mathbf M_g\,\delta\boldsymbol\omega_g
@@ -351,8 +332,7 @@ $$
 $$
 
 $$
-\mathbf e^\omega_k
-=
+\mathbf e^\omega_k =
 \mathbf M_g\boldsymbol\omega_g
 +
 \mathbf A_g\mathbf a_g
@@ -386,8 +366,7 @@ $$
 三根 accelerometer sensing axis 各有自己的 lever arm。
 
 $$
-\mathbf e^a
-=
+\mathbf e^a =
 \mathbf M_{\mathrm{acc}}
 \left[
 \mathbf R_{ib}\mathbf h_b
@@ -408,8 +387,7 @@ $$
 \qquad
 \mathbf r_j^b=\mathbf r_b+\mathbf R_{ib}^{-1}\mathbf r_j^i,
 \qquad
-\boldsymbol\ell_j
-=
+\boldsymbol\ell_j =
 \boldsymbol\alpha_b\times\mathbf r_j^b
 +
 \boldsymbol\omega_b\times(\boldsymbol\omega_b\times\mathbf r_j^b).
@@ -430,16 +408,13 @@ $$
 这两个不是普通的逐测量 residual，而是 spline 导数的二次型（第 9 章）。Kalibr 不显式构造 residual/Jacobian，而是直接装配：
 
 $$
-E_{b_g}
-=
+E_{b_g} =
 \mathbf d_g^\top\mathbf Q_g\mathbf d_g,
 \qquad
-E_{b_a}
-=
+E_{b_a} =
 \mathbf d_a^\top\mathbf Q_a\mathbf d_a,
 \qquad
-E_{\mathrm{pose}}
-=
+E_{\mathrm{pose}} =
 \mathbf c_s^\top\mathbf Q_s\mathbf c_s,
 $$
 
@@ -498,8 +473,7 @@ Camera chain 的特殊规则是：
 
 $$
 \frac{\partial\mathbf e^\pi_{n,k,\ell}}
-{\partial\boldsymbol\xi_{\mathbf T_m,K}}
-=
+{\partial\boldsymbol\xi_{\mathbf T_m,K}} =
 \mathbf A_T\mathrm{boxTimes}(\mathbf P_m),
 \qquad
 m\le n,

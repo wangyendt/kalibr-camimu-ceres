@@ -63,14 +63,12 @@ Kalibr 日志还给出两个容易漏掉的约束：最终 pose spline 是 `1248
 这组 Kalibr `Model: calibrated` 的 IMU 残差模型是 base `IccImu`，不是扩展 intrinsic 模型。对应公式为：
 
 $$
-\hat{\boldsymbol\omega}_i
-=
+\hat{\boldsymbol\omega}_i =
 \mathbf C_{ib}\boldsymbol\omega_b+\mathbf b_g,
 $$
 
 $$
-\hat{\mathbf a}_i
-=
+\hat{\mathbf a}_i =
 \mathbf C_{ib}
 \left(
   \mathbf C_{bw}(\mathbf a_w-\mathbf g_w)
@@ -285,8 +283,7 @@ python3 tools/run_ceres_sweep.py --preset camchain-dry-run --preset independent-
 staged release 还必须把“时间变量”定义完整。Kalibr 的 camera residual 查询时间可以写成
 
 $$
-t_b
-=
+t_b =
 t_c+\Delta_{c}^{\rm prior}+\delta_c,
 $$
 

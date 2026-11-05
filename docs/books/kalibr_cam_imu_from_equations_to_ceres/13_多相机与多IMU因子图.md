@@ -38,8 +38,7 @@ $$
 第 $n$ 个 camera 的第 $k$ 帧、第 $\ell$ 个角点 residual 写成：
 
 $$
-t_{n,k}
-=
+t_{n,k} =
 t^{\mathrm{cam}}_{n,k}
 +
 \Delta t_n^{\mathrm{prior}}
@@ -49,8 +48,7 @@ $$
 
 $$
 \boxed{
-\mathbf e^\pi_{n,k,\ell}
-=
+\mathbf e^\pi_{n,k,\ell} =
 \mathbf y_{n,k,\ell}
 -
 \boldsymbol\pi_n\!\left(
@@ -72,8 +70,7 @@ $$
 如果使用第 8.5 节的 camera chain 参数化，则不是为每台 camera 独立放一个完整 $\mathbf T_{c_nb}$，而是：
 
 $$
-\mathbf T_{c_nb}
-=
+\mathbf T_{c_nb} =
 \mathbf T_n\mathbf T_{n-1}\cdots\mathbf T_1\mathbf T_0.
 $$
 
@@ -84,8 +81,7 @@ $$
 第 $m$ 个 IMU 的查询时间记为：
 
 $$
-t_{m,k}
-=
+t_{m,k} =
 t^{\mathrm{imu}}_{m,k}
 +
 \Delta t^i_m.
@@ -97,8 +93,7 @@ $$
 
 $$
 \boxed{
-\mathbf e^\omega_{m,k}
-=
+\mathbf e^\omega_{m,k} =
 \mathbf R_{i_mb}\boldsymbol\omega_b(t_{m,k})
 +
 \mathbf b^g_m(t_{m,k})
@@ -111,8 +106,7 @@ $$
 
 $$
 \boxed{
-\mathbf e^a_{m,k}
-=
+\mathbf e^a_{m,k} =
 \mathbf R_{i_mb}\mathbf u_{b,m}(t_{m,k})
 +
 \mathbf b^a_m(t_{m,k})
@@ -124,8 +118,7 @@ $$
 其中：
 
 $$
-\mathbf u_{b,m}
-=
+\mathbf u_{b,m} =
 \mathbf R_{bw}(\mathbf a_w-\mathbf g_w)
 +
 \boldsymbol\alpha_b\times\mathbf r_{b,m}
@@ -157,8 +150,7 @@ $$
 扩展 IMU 模型也只是把第 10 章的外层函数按 $m$ 复制。例如 scale/misalignment accelerometer 可写成：
 
 $$
-\mathbf e^a_{m,k}
-=
+\mathbf e^a_{m,k} =
 \mathbf M_{a,m}\mathbf R_{i_mb}\mathbf u_{b,m}
 +
 \mathbf b^a_m
@@ -169,8 +161,7 @@ $$
 扩展 gyro 可写成：
 
 $$
-\mathbf e^\omega_{m,k}
-=
+\mathbf e^\omega_{m,k} =
 \mathbf M_{g,m}\boldsymbol\omega_{g,m}
 +
 \mathbf A_{g,m}\mathbf a_{g,m}
@@ -183,12 +174,10 @@ $$
 其中：
 
 $$
-\boldsymbol\omega_{g,m}
-=
+\boldsymbol\omega_{g,m} =
 \mathbf R_{g_mi_m}\mathbf R_{i_mb}\boldsymbol\omega_b,
 \qquad
-\mathbf a_{g,m}
-=
+\mathbf a_{g,m} =
 \mathbf R_{g_mi_m}\mathbf R_{i_mb}\mathbf u_{b,m}.
 $$
 
@@ -214,8 +203,7 @@ $$
 
 $$
 \frac{\partial\mathbf e^\pi_{n,k,\ell}}
-{\partial\boldsymbol\xi_{\mathbf T_m,K}}
-=
+{\partial\boldsymbol\xi_{\mathbf T_m,K}} =
 \mathbf A_T\mathrm{boxTimes}(\mathbf P_m),
 \qquad
 m\le n.
@@ -294,8 +282,7 @@ $$
 线性求解器解出的不是某个 camera 或某个 IMU 的局部更新，而是一整个全局增量：
 
 $$
-\delta\boldsymbol\theta
-=
+\delta\boldsymbol\theta =
 \left[
 \delta\mathbf c^\top,
 \delta\mathbf g^\top,
@@ -369,8 +356,7 @@ $$
 二者一起组成 body→imu$_m$ 的刚体变换（对照 `getTransformationFromBodyToImu`）：
 
 $$
-\mathbf T_{i_mb}
-=
+\mathbf T_{i_mb} =
 \begin{bmatrix}
 \mathbf R_{i_mb} & -\mathbf R_{i_mb}\,\mathbf r_{b,m}\\
 \mathbf 0^\top & 1
@@ -386,12 +372,9 @@ $$
 Ceres 复现采用与 Kalibr `sm::RotationVector` 一致的约定（见 `core/so3.h` 的 `rotationVectorToMatrix`）：
 
 $$
-\mathbf C(\boldsymbol\varphi)
-=
-\mathrm{Exp}_K(\boldsymbol\varphi)
-=
-\mathbf I-\sin\theta\,[\mathbf a]_\times+(1-\cos\theta)[\mathbf a]_\times^2
-=
+\mathbf C(\boldsymbol\varphi) =
+\mathrm{Exp}_K(\boldsymbol\varphi) =
+\mathbf I-\sin\theta\,[\mathbf a]_\times+(1-\cos\theta)[\mathbf a]_\times^2 =
 \exp(-[\boldsymbol\varphi]_\times),
 \qquad
 \theta=\|\boldsymbol\varphi\|,\ \mathbf a=\boldsymbol\varphi/\theta.
@@ -400,8 +383,7 @@ $$
 注意这是**负号指数**：$\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)=\exp([\boldsymbol\varphi]_\times)^\top$。整套左 Jacobian（`leftJacobianSO3`）和下面所有推导都建立在这个约定上：
 
 $$
-\mathbf J_l(\boldsymbol\varphi)
-=
+\mathbf J_l(\boldsymbol\varphi) =
 \mathbf I+\frac{1-\cos\theta}{\theta^2}[\boldsymbol\varphi]_\times+\frac{\theta-\sin\theta}{\theta^3}[\boldsymbol\varphi]_\times^2.
 $$
 
@@ -409,8 +391,7 @@ $$
 
 $$
 \boxed{
-\frac{\partial\big(\mathbf C(\boldsymbol\varphi)\,\mathbf v\big)}{\partial\boldsymbol\varphi}
-=
+\frac{\partial\big(\mathbf C(\boldsymbol\varphi)\,\mathbf v\big)}{\partial\boldsymbol\varphi} =
 \mathbf C(\boldsymbol\varphi)\,[\mathbf v]_\times\,\mathbf J_l(\boldsymbol\varphi).
 }
 $$
@@ -418,8 +399,7 @@ $$
 推导：用 BCH 一阶式 $\exp([\mathbf a+\mathrm d\mathbf a]_\times)\approx\exp([\mathbf a]_\times)\exp\big([\mathbf J_r(\mathbf a)\,\mathrm d\mathbf a]_\times\big)$，取 $\mathbf a=-\boldsymbol\varphi$、$\mathrm d\mathbf a=-\boldsymbol\delta$：
 
 $$
-\mathbf C(\boldsymbol\varphi+\boldsymbol\delta)
-=
+\mathbf C(\boldsymbol\varphi+\boldsymbol\delta) =
 \exp\!\big([-\boldsymbol\varphi-\boldsymbol\delta]_\times\big)
 \approx
 \mathbf C(\boldsymbol\varphi)\exp\!\big(-[\mathbf J_r(-\boldsymbol\varphi)\boldsymbol\delta]_\times\big),
@@ -428,8 +408,7 @@ $$
 $$
 \mathbf C(\boldsymbol\varphi+\boldsymbol\delta)\mathbf v
 \approx
-\mathbf C(\boldsymbol\varphi)\big(\mathbf I-[\mathbf J_r(-\boldsymbol\varphi)\boldsymbol\delta]_\times\big)\mathbf v
-=
+\mathbf C(\boldsymbol\varphi)\big(\mathbf I-[\mathbf J_r(-\boldsymbol\varphi)\boldsymbol\delta]_\times\big)\mathbf v =
 \mathbf C(\boldsymbol\varphi)\mathbf v+\mathbf C(\boldsymbol\varphi)[\mathbf v]_\times\mathbf J_r(-\boldsymbol\varphi)\boldsymbol\delta,
 $$
 
@@ -485,13 +464,11 @@ $$
 所以
 
 $$
-\frac{\partial\mathbf u_{b,m}}{\partial\mathbf r_{b,m}}
-=
+\frac{\partial\mathbf u_{b,m}}{\partial\mathbf r_{b,m}} =
 [\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times,
 \qquad
 \boxed{
-\frac{\partial\mathbf e^a_m}{\partial\mathbf r_{b,m}}
-=
+\frac{\partial\mathbf e^a_m}{\partial\mathbf r_{b,m}} =
 \tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}\Big([\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times\Big).
 }
 $$
@@ -504,8 +481,7 @@ $$
 
 $$
 \boxed{
-\frac{\partial\mathbf e^\omega_m}{\partial\boldsymbol\varphi_m}
-=
+\frac{\partial\mathbf e^\omega_m}{\partial\boldsymbol\varphi_m} =
 \tfrac1{\sigma_g}\mathbf R_{i_mb}[\boldsymbol\omega_b]_\times\mathbf J_l(\boldsymbol\varphi_m)
 }
 \quad(\text{calibrated}).
@@ -515,8 +491,7 @@ $$
 
 $$
 \boxed{
-\frac{\partial\mathbf e^a_m}{\partial\boldsymbol\varphi_m}
-=
+\frac{\partial\mathbf e^a_m}{\partial\boldsymbol\varphi_m} =
 \tfrac1{\sigma_a}\mathbf M_a\mathbf R_{i_mb}[\mathbf u_{b,m}]_\times\mathbf J_l(\boldsymbol\varphi_m).
 }
 $$
@@ -524,8 +499,7 @@ $$
 scale-misalignment 陀螺把 $\boldsymbol\omega_g=\mathbf R_{g_mb}\boldsymbol\omega_b$ 和 $\mathbf a_g=\mathbf R_{g_mb}\mathbf u_{b,m}$ 都过 $\mathbf R_{i_mb}$，因此
 
 $$
-\frac{\partial\mathbf e^\omega_m}{\partial\boldsymbol\varphi_m}
-=
+\frac{\partial\mathbf e^\omega_m}{\partial\boldsymbol\varphi_m} =
 \tfrac1{\sigma_g}\Big(
 \mathbf M_g\mathbf R_{g_mi_m}\mathbf R_{i_mb}[\boldsymbol\omega_b]_\times\mathbf J_l(\boldsymbol\varphi_m)
 +

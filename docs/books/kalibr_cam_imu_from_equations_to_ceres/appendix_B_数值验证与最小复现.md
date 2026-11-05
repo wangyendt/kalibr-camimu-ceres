@@ -13,8 +13,7 @@ $$
 对某个变量块 $\boldsymbol\theta_i$ 的 analytic Jacobian 是：
 
 $$
-\mathbf J_i
-=
+\mathbf J_i =
 \frac{\partial\mathbf e}{\partial\delta\boldsymbol\theta_i}
 \in\mathbb R^{m\times d_i}.
 $$
@@ -45,8 +44,7 @@ $$
 关键是 $\boxplus$ 必须和 analytic Jacobian 的 tangent convention 一致。本书默认检查 Kalibr expression tangent：
 
 $$
-\mathbf R\boxplus_K\delta\boldsymbol\phi
-=
+\mathbf R\boxplus_K\delta\boldsymbol\phi =
 \mathrm{Exp}(-\delta\boldsymbol\phi)\mathbf R.
 $$
 
@@ -95,8 +93,7 @@ $$
 Kalibr 扰动：
 
 $$
-\mathbf R^+
-=
+\mathbf R^+ =
 \mathrm{Exp}(-\delta\boldsymbol\phi)\mathbf R.
 $$
 
@@ -105,8 +102,7 @@ Analytic Jacobian：
 $$
 \boxed{
 \frac{\partial(\mathbf R\mathbf x)}
-{\partial\delta\boldsymbol\phi_K}
-=
+{\partial\delta\boldsymbol\phi_K} =
 [\mathbf R\mathbf x]_\times.
 }
 $$
@@ -125,8 +121,7 @@ $$
 对 homogeneous point：
 
 $$
-\tilde{\mathbf y}
-=
+\tilde{\mathbf y} =
 \mathbf T\tilde{\mathbf p},
 \qquad
 \tilde{\mathbf p}=
@@ -139,8 +134,7 @@ Kalibr expression tangent 下，第 0 章得到：
 
 $$
 \boxed{
-\delta\mathbf y
-=
+\delta\mathbf y =
 w\delta\boldsymbol\rho_K
 +
 [\mathbf y]_\times\delta\boldsymbol\phi_K.
@@ -152,8 +146,7 @@ $$
 $$
 \boxed{
 \frac{\partial\mathbf y}
-{\partial\delta\boldsymbol\xi_K}
-=
+{\partial\delta\boldsymbol\xi_K} =
 \begin{bmatrix}
 w\mathbf I_3&[\mathbf y]_\times
 \end{bmatrix}.
@@ -173,8 +166,7 @@ $$
 Kalibr expression graph 的局部规则是：
 
 $$
-\delta\boldsymbol\xi_{\mathbf T,K}
-=
+\delta\boldsymbol\xi_{\mathbf T,K} =
 \delta\boldsymbol\xi_{\mathbf A,K}
 +
 \mathrm{boxTimes}(\mathbf A)
@@ -185,13 +177,11 @@ $$
 
 $$
 \frac{\partial\boldsymbol\xi_{\mathbf T,K}}
-{\partial\boldsymbol\xi_{\mathbf A,K}}
-=
+{\partial\boldsymbol\xi_{\mathbf A,K}} =
 \mathbf I_6,
 \qquad
 \frac{\partial\boldsymbol\xi_{\mathbf T,K}}
-{\partial\boldsymbol\xi_{\mathbf B,K}}
-=
+{\partial\boldsymbol\xi_{\mathbf B,K}} =
 \mathrm{boxTimes}(\mathbf A).
 $$
 
@@ -206,8 +196,7 @@ $$
 $$
 \boxed{
 \frac{\partial\boldsymbol\xi_{\mathbf S,K}}
-{\partial\boldsymbol\xi_{\mathbf T,K}}
-=
+{\partial\boldsymbol\xi_{\mathbf T,K}} =
 -
 \mathrm{boxTimes}(\mathbf S).
 }
@@ -218,8 +207,7 @@ $$
 好消息是这个逆运算有**闭式且精确**的写法，根本不需要 $\mathrm{Log}_{SE(3)}$。按 0.8.1 的定义，$\boxplus_K$ 就是左乘一个分离参数化的小变换：
 
 $$
-\mathbf T_2
-=
+\mathbf T_2 =
 \begin{bmatrix}
 \mathrm{Exp}(-\delta\boldsymbol\phi_K) & \delta\boldsymbol\rho_K\\
 \mathbf 0^\top & 1
@@ -228,8 +216,7 @@ $$
 \quad\Longrightarrow\quad
 \boldsymbol\Delta
 \triangleq
-\mathbf T_2\mathbf T_1^{-1}
-=
+\mathbf T_2\mathbf T_1^{-1} =
 \begin{bmatrix}
 \mathrm{Exp}(-\delta\boldsymbol\phi_K) & \delta\boldsymbol\rho_K\\
 \mathbf 0^\top & 1
@@ -240,8 +227,7 @@ $$
 
 $$
 \boxed{
-\mathrm{boxminus}_K(\mathbf T_2,\mathbf T_1)
-=
+\mathrm{boxminus}_K(\mathbf T_2,\mathbf T_1) =
 \begin{bmatrix}
 \mathbf t_{\boldsymbol\Delta}\\
 -\mathrm{Log}_{SO(3)}(\mathbf R_{\boldsymbol\Delta})
@@ -280,8 +266,7 @@ $\mathbf D_K\mathrm{Log}_{SE(3)}$ 的误差正是后一种二阶量，即 $O(\|\
 最后区分两套坐标。上式给出的是 **expression tangent** $\delta\boldsymbol\xi_K$，也就是 `boxTimes` 这些 $6\times6$ Jacobian 所用的坐标。如果要验证的是最底层 `Transformation::oplus(dt)` 的 **raw update**，还要按 0.8.1 末尾的关系换一次：
 
 $$
-\delta\mathbf u_{\mathrm{raw}}
-=
+\delta\mathbf u_{\mathrm{raw}} =
 \mathbf S(\mathbf T_1)^{-1}
 \,
 \mathrm{boxminus}_K(\mathbf T_2,\mathbf T_1).
@@ -294,20 +279,17 @@ $$
 最小 forward chain：
 
 $$
-\mathbf p_c
-=
+\mathbf p_c =
 \mathbf R_{c b}\mathbf R_{bw}(\mathbf p_w-\mathbf t_{wb})
 +
 \mathbf t_{c b},
 $$
 
 $$
-\hat{\mathbf y}
-=
+\hat{\mathbf y} =
 \boldsymbol\pi(\mathbf p_c;\boldsymbol\eta),
 \qquad
-\mathbf e^\pi
-=
+\mathbf e^\pi =
 \mathbf y-\hat{\mathbf y}.
 $$
 
@@ -335,8 +317,7 @@ $$
 普通 gyro residual：
 
 $$
-\mathbf e^\omega
-=
+\mathbf e^\omega =
 \mathbf R_{ib}\boldsymbol\omega_b(t)
 +
 \mathbf b_g(t)
@@ -347,28 +328,24 @@ $$
 可以先把 $\boldsymbol\omega_b(t)$ 当作一个普通三维输入，验证：
 
 $$
-\frac{\partial\mathbf e^\omega}{\partial\boldsymbol\omega_b}
-=
+\frac{\partial\mathbf e^\omega}{\partial\boldsymbol\omega_b} =
 \mathbf R_{ib},
 $$
 
 $$
-\frac{\partial\mathbf e^\omega}{\partial\delta\boldsymbol\phi_{ib,K}}
-=
+\frac{\partial\mathbf e^\omega}{\partial\delta\boldsymbol\phi_{ib,K}} =
 [\mathbf R_{ib}\boldsymbol\omega_b]_\times,
 $$
 
 $$
-\frac{\partial\mathbf e^\omega}{\partial\mathbf b_g}
-=
+\frac{\partial\mathbf e^\omega}{\partial\mathbf b_g} =
 \mathbf I_3.
 $$
 
 再把 $\boldsymbol\omega_b(t)$ 换成 pose spline 计算结果，验证：
 
 $$
-\mathbf J_{\mathbf e^\omega,\mathbf c_j}
-=
+\mathbf J_{\mathbf e^\omega,\mathbf c_j} =
 \mathbf R_{ib}
 \mathbf J_{\boldsymbol\omega_b,\mathbf c_j}.
 $$
@@ -377,8 +354,7 @@ Bias spline 控制点验证：
 
 $$
 \frac{\partial\mathbf e^\omega}
-{\partial\mathbf d^g_{j+\ell}}
-=
+{\partial\mathbf d^g_{j+\ell}} =
 \mu_\ell^{(0)}(t)\mathbf I_3.
 $$
 
@@ -387,8 +363,7 @@ $$
 普通 accelerometer residual：
 
 $$
-\mathbf e^a
-=
+\mathbf e^a =
 \mathbf R_{ib}\mathbf u_b(t)
 +
 \mathbf b_a(t)
@@ -399,20 +374,17 @@ $$
 先把 $\mathbf u_b$ 当作普通三维输入，验证：
 
 $$
-\frac{\partial\mathbf e^a}{\partial\mathbf u_b}
-=
+\frac{\partial\mathbf e^a}{\partial\mathbf u_b} =
 \mathbf R_{ib},
 \qquad
-\frac{\partial\mathbf e^a}{\partial\delta\boldsymbol\phi_{ib,K}}
-=
+\frac{\partial\mathbf e^a}{\partial\delta\boldsymbol\phi_{ib,K}} =
 [\mathbf R_{ib}\mathbf u_b]_\times.
 $$
 
 再验证 $\mathbf u_b$ 内部：
 
 $$
-\mathbf u_b
-=
+\mathbf u_b =
 \mathbf R_{bw}(\mathbf a_w-\mathbf g_w)
 +
 \boldsymbol\alpha_b\times\mathbf r_b
@@ -427,13 +399,11 @@ $$
 
 $$
 \frac{\partial(\boldsymbol\alpha_b\times\mathbf r_b)}
-{\partial\boldsymbol\alpha_b}
-=
+{\partial\boldsymbol\alpha_b} =
 -[\mathbf r_b]_\times,
 \qquad
 \frac{\partial(\boldsymbol\alpha_b\times\mathbf r_b)}
-{\partial\mathbf r_b}
-=
+{\partial\mathbf r_b} =
 [\boldsymbol\alpha_b]_\times.
 $$
 
@@ -444,8 +414,7 @@ $$
 \left[
 \boldsymbol\omega_b\times
 (\boldsymbol\omega_b\times\mathbf r_b)
-\right]
-=
+\right] =
 [\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times.
 $$
 
@@ -461,8 +430,7 @@ Full matrix Jacobian：
 
 $$
 \frac{\partial\mathbf y}
-{\partial\operatorname{vec}(\mathbf M)}
-=
+{\partial\operatorname{vec}(\mathbf M)} =
 \begin{bmatrix}
 x_1\mathbf I_3&
 x_2\mathbf I_3&
