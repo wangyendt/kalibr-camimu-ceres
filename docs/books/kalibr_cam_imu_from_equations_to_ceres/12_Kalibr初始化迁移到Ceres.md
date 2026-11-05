@@ -287,13 +287,13 @@ t_b =
 t_c+\Delta_{c}^{\rm prior}+\delta_c,
 $$
 
-其中 $\Delta_{c}^{\rm prior}$ 是互相关初始化得到的 camera-to-IMU prior，$\delta_c$ 是 `cameraTimeToImuTimeDv`。Ceres 没有把这两项拆成两个参数块，而是把总和存在 camera time-shift block 里。多 IMU residual 还有非参考 IMU 的时钟对齐量
+其中 $\Delta_{c}^{\rm prior}$ 是互相关初始化得到的 camera-to-IMU prior， $\delta_c$ 是 `cameraTimeToImuTimeDv`。Ceres 没有把这两项拆成两个参数块，而是把总和存在 camera time-shift block 里。多 IMU residual 还有非参考 IMU 的时钟对齐量
 
 $$
 t_b=t_i+\delta_i,\qquad \delta_0=0,\quad i>0.
 $$
 
-Kalibr 主优化里，$\delta_i$ 不是 design variable。`IccImu.findOrientationPrior()` 或 `--imu-delay-by-correlation` 会先估出 `self.timeOffset`，随后 IMU residual 用 `tk = stamp + self.timeOffset` 查询 spline；`IccImu.addDesignVariables()` 只加入 bias spline、`q_i_b` 和 `r_b`，没有把 `timeOffset` 加入 problem。因此 Kalibr-aligned 默认应把非参考 IMU time offset 当固定 correction，而不是主优化变量。Ceres 仍保留显式扩展：只有传 `--optimize-imu-time-offsets` 时，$\delta_i$ 才进入 Ceres problem。
+Kalibr 主优化里， $\delta_i$ 不是 design variable。`IccImu.findOrientationPrior()` 或 `--imu-delay-by-correlation` 会先估出 `self.timeOffset`，随后 IMU residual 用 `tk = stamp + self.timeOffset` 查询 spline；`IccImu.addDesignVariables()` 只加入 bias spline、`q_i_b` 和 `r_b`，没有把 `timeOffset` 加入 problem。因此 Kalibr-aligned 默认应把非参考 IMU time offset 当固定 correction，而不是主优化变量。Ceres 仍保留显式扩展：只有传 `--optimize-imu-time-offsets` 时， $\delta_i$ 才进入 Ceres problem。
 
 因此 `stage-free` 里的 `t` 首先表示 camera time shift；在显式开启 per-IMU time-offset optimization 时，它也表示所有会改变 IMU 测量查询时刻的变量。Ceres staged options 现在按这个 active set 构造：
 

@@ -18,7 +18,7 @@ $$
 \mathbf H,\mathbf b_{\mathrm{rhs}}.
 $$
 
-其中 $\mathbf c$ 是一整条 spline 的控制点堆叠向量，$\mathbf Q$ 是由 knot、basis、导数阶数和权重矩阵离线算出来的稀疏二次型矩阵。与普通 camera / IMU residual 不同，Kalibr 的 `BSplineMotionError` 不显式构造每个采样时刻的 residual 和 Jacobian，而是直接把 $\mathbf Q$ 加到 Hessian 里。
+其中 $\mathbf c$ 是一整条 spline 的控制点堆叠向量， $\mathbf Q$ 是由 knot、basis、导数阶数和权重矩阵离线算出来的稀疏二次型矩阵。与普通 camera / IMU residual 不同，Kalibr 的 `BSplineMotionError` 不显式构造每个采样时刻的 residual 和 Jacobian，而是直接把 $\mathbf Q$ 加到 Hessian 里。
 
 ## 9.1 本章依赖顺序
 
@@ -45,7 +45,7 @@ $$
 \mathbf b_a(t)\in\mathbb R^3.
 $$
 
-其中 $\mathbf b_g(t)$ 是 gyro bias，单位通常是 rad/s；$\mathbf b_a(t)$ 是 accelerometer bias，单位通常是 m/s$^2$。
+其中 $\mathbf b_g(t)$ 是 gyro bias，单位通常是 rad/s； $\mathbf b_a(t)$ 是 accelerometer bias，单位通常是 m/s$^2$。
 
 为了和 pose spline 的控制点区分，本章记 gyro bias 控制点为：
 
@@ -169,7 +169,7 @@ $$
 \mathcal N(\mathbf 0,\boldsymbol\Sigma_{wa}).
 $$
 
-如果某段时间里 bias 变化很快，$\dot{\mathbf b}(t)$ 很大，就应该被惩罚。把这个想法写成连续时间代价：
+如果某段时间里 bias 变化很快， $\dot{\mathbf b}(t)$ 很大，就应该被惩罚。把这个想法写成连续时间代价：
 
 $$
 \boxed{
@@ -671,9 +671,9 @@ $$
 
 同一个代价 $E=\mathbf c^\top\mathbf Q\mathbf c$ 有三种装配方式。它们在数学上完全等价，但工程上适用的场合完全不同。要把这一章迁移到 Ceres，必须先分清这三者。
 
-**装配 A：全局平方根。** 取 $\mathbf Q=\mathbf S^\top\mathbf S$，令 $\mathbf e=\mathbf S\mathbf c$、$\mathbf J=\mathbf S$。这就是 9.5.1 的虚拟 residual 视角，形式最干净，也是理解“二次型就是 residual 的平方和”最直接的桥。
+**装配 A：全局平方根。** 取 $\mathbf Q=\mathbf S^\top\mathbf S$，令 $\mathbf e=\mathbf S\mathbf c$、 $\mathbf J=\mathbf S$。这就是 9.5.1 的虚拟 residual 视角，形式最干净，也是理解“二次型就是 residual 的平方和”最直接的桥。
 
-它的问题不在数学而在工程。$\mathbf Q$ 是全局矩阵，维度是 $DN\times DN$：$N$ 是整条 spline 的控制点总数。一条 $200\ \mathrm s$、knot 间隔 $0.05\ \mathrm s$ 的 bias spline 就有 $N\approx4000$，$DN\approx12000$。
+它的问题不在数学而在工程。 $\mathbf Q$ 是全局矩阵，维度是 $DN\times DN$： $N$ 是整条 spline 的控制点总数。一条 $200\ \mathrm s$、knot 间隔 $0.05\ \mathrm s$ 的 bias spline 就有 $N\approx4000$， $DN\approx12000$。
 
 先澄清两个容易想当然、但都站不住的理由。
 
@@ -681,13 +681,13 @@ $$
 
 **其二，秩亏也不会逼着人放弃稀疏。** 全局 $\mathbf Q$ 确实只是半正定（本节稍后给出每个 segment 上 $\operatorname{rank}\mathbf G_s^{(r)}=q-r$），无 pivot 的 Cholesky 会在某些主元上遇到 $0$。但处理奇异只需要换成能容忍零主元的带状变体——带状 $\mathbf L\mathbf D\mathbf L^\top$，或在主元低于阈值时把该行整行置零——它们同样保持带宽。半正定与稀疏并不冲突。
 
-结论是：$\mathbf S$ 本身就是带状的，它的每一行只碰到某个带内的 $O(q)$ 个控制点。按行分组之后，$\mathbf e=\mathbf S\mathbf c$ 完全可以拆成许多只挂少数控制点的局部 residual block 喂给 Ceres；分解代价也不是 $O((DN)^3)$，带状 Cholesky 是 $O\!\left(DN(qD)^2\right)$，对 $N$ 线性。**装配 A 是一条可行路线，不是一条数学上被堵死的路线。**
+结论是： $\mathbf S$ 本身就是带状的，它的每一行只碰到某个带内的 $O(q)$ 个控制点。按行分组之后， $\mathbf e=\mathbf S\mathbf c$ 完全可以拆成许多只挂少数控制点的局部 residual block 喂给 Ceres；分解代价也不是 $O((DN)^3)$，带状 Cholesky 是 $O\!\left(DN(qD)^2\right)$，对 $N$ 线性。**装配 A 是一条可行路线，不是一条数学上被堵死的路线。**
 
 它的缺点是工程上的：
 
 **第一，它需要一趟全局装配加一趟全局分解。** 必须先把整条 spline 的 $\mathbf Q$ 显式拼出来，整体分解一次拿到 $\mathbf S$，再把 $\mathbf S$ 的行切回局部 block。三步都是全局操作，而下面装配 C 从头到尾只在单个 segment 内部进行。
 
-**第二，$\mathbf S$ 绑死在 knot 布局上。** knot 间隔、spline 阶数、时间区间任何一处改动，$\mathbf Q$ 的维度和带宽都跟着变，整个 $\mathbf S$ 必须从头重算。标定流程里 knot 布局是要随数据长度和 IMU 频率调整的，把一趟全局分解放进这个循环并不划算。
+**第二， $\mathbf S$ 绑死在 knot 布局上。** knot 间隔、spline 阶数、时间区间任何一处改动， $\mathbf Q$ 的维度和带宽都跟着变，整个 $\mathbf S$ 必须从头重算。标定流程里 knot 布局是要随数据长度和 IMU 频率调整的，把一趟全局分解放进这个循环并不划算。
 
 **第三，如果偷懒不做行分组，直接把 $\mathbf e=\mathbf S\mathbf c$ 当成一个 residual block 交给 Ceres，那才真正出事。** Ceres 的 `CostFunction` 接口是 per-residual-block 的：一个 block 必须在 `AddResidualBlock` 时显式列出它依赖的所有 parameter block，并在 `Evaluate` 里逐个填对应的 Jacobian 块。把 $4000$ 个控制点挂进同一个 block，意味着 $4000$ 个 parameter block 和一个名义上 $12000\times12000$ 的 Jacobian——即使 $\mathbf S$ 数值上是带状的，接口层面也没有地方声明这个带状性。带状性必须靠“按行拆 block”显式表达出来才能被 Ceres 利用。
 
@@ -719,7 +719,7 @@ $$
 }
 $$
 
-$\mathbf G_s^{(r)}$ 只有 $q\times q$，$q=6$ 时就是一个 $6\times6$ 矩阵。对它做对称特征分解 $\mathbf G_s^{(r)}=\mathbf V\boldsymbol\Lambda\mathbf V^\top$，取
+$\mathbf G_s^{(r)}$ 只有 $q\times q$， $q=6$ 时就是一个 $6\times6$ 矩阵。对它做对称特征分解 $\mathbf G_s^{(r)}=\mathbf V\boldsymbol\Lambda\mathbf V^\top$，取
 
 $$
 \boxed{
@@ -745,7 +745,7 @@ $$
 }
 $$
 
-Kronecker 的左右顺序由 $\mathbf c^{(s)}$ 的堆叠约定决定：9.4 把 $\mathbf c^{(s)}$ 按控制点分块、每块 $D$ 维，所以 **控制点索引在外、维度索引在内**，$\mathbf S_{\mathrm{seg}}$ 必须写在左边。写反了会得到一个维度相同但数值全错的矩阵，而且 residual 范数依然“看起来合理”，很难在调试时发现。
+Kronecker 的左右顺序由 $\mathbf c^{(s)}$ 的堆叠约定决定：9.4 把 $\mathbf c^{(s)}$ 按控制点分块、每块 $D$ 维，所以 **控制点索引在外、维度索引在内**， $\mathbf S_{\mathrm{seg}}$ 必须写在左边。写反了会得到一个维度相同但数值全错的矩阵，而且 residual 范数依然“看起来合理”，很难在调试时发现。
 
 验证它确实等价，只要把范数展开：
 
@@ -766,7 +766,7 @@ $$
 E_s.
 $$
 
-Jacobian 更省事：$\mathbf e^{(s)}$ 对 $\mathbf c^{(s)}$ 是线性的，所以
+Jacobian 更省事： $\mathbf e^{(s)}$ 对 $\mathbf c^{(s)}$ 是线性的，所以
 
 $$
 \boxed{
@@ -781,7 +781,7 @@ $$
 
 是一个 **常数矩阵**，不依赖控制点当前值，也不需要在每次迭代重算。
 
-本仓库 `include/ceres_cam_imu/residuals/spline_motion_prior.h` 的 `EuclideanSplineMotionPriorCost<Dimension>` 就是这个模板：它是一个 `SizedCostFunction<6*Dimension, Dimension, ..., Dimension>`，$6$ 个参数块正好是该 segment 的 $q=6$ 个 active 控制点。`src/residuals/bias_motion_prior.cpp` 用 `Dimension=3`、$r=1$、$\mathbf W^{1/2}=\mathbf I_3/\sigma_w$，得到 **$18$ 维 residual**；`src/residuals/pose_motion_prior.cpp` 用 `Dimension=6`，得到 $36$ 维 residual。`optimizer/calibration_problem.cpp` 对 spline 的每个 segment 各添加一个这样的 residual block，于是全局 $\mathbf Q$ 从来没有被显式构造过，稀疏性天然由“每个 block 只挂 $6$ 个参数块”保证。
+本仓库 `include/ceres_cam_imu/residuals/spline_motion_prior.h` 的 `EuclideanSplineMotionPriorCost<Dimension>` 就是这个模板：它是一个 `SizedCostFunction<6*Dimension, Dimension, ..., Dimension>`， $6$ 个参数块正好是该 segment 的 $q=6$ 个 active 控制点。`src/residuals/bias_motion_prior.cpp` 用 `Dimension=3`、 $r=1$、 $\mathbf W^{1/2}=\mathbf I_3/\sigma_w$，得到 **$18$ 维 residual**；`src/residuals/pose_motion_prior.cpp` 用 `Dimension=6`，得到 $36$ 维 residual。`optimizer/calibration_problem.cpp` 对 spline 的每个 segment 各添加一个这样的 residual block，于是全局 $\mathbf Q$ 从来没有被显式构造过，稀疏性天然由“每个 block 只挂 $6$ 个参数块”保证。
 
 | | 是否需要分解 | 分解规模 | 是否保稀疏 | 适用 |
 |---|---|---|---|---|
@@ -789,7 +789,7 @@ $$
 | B 装 Hessian | 否 | — | 是 | Kalibr `aslam_backend` |
 | C 逐 segment residual | 是 | $q\times q$ | 是 | Ceres |
 
-**一个必须知道的秩亏细节。** $\mathbf G_s^{(r)}$ 不是满秩的。$r$ 阶导数会把次数小于 $r$ 的多项式打成零，而一个 segment 上的曲线恰好张成次数不超过 $q-1$ 的多项式空间，所以
+**一个必须知道的秩亏细节。** $\mathbf G_s^{(r)}$ 不是满秩的。 $r$ 阶导数会把次数小于 $r$ 的多项式打成零，而一个 segment 上的曲线恰好张成次数不超过 $q-1$ 的多项式空间，所以
 
 $$
 \boxed{
@@ -798,7 +798,7 @@ q-r.
 }
 $$
 
-$q=6$、$r=1$ 时秩是 $5$，$r=2$ 时是 $4$。这正是“常值 bias 不被一阶 motion prior 惩罚”这句直觉的矩阵版本。后果有两个：第一，$\boldsymbol\Lambda$ 里会出现精确的零，以及浮点意义下的极小负数，开方前必须截断；第二，$18$ 维 bias residual 里只有 $15$ 个分量线性无关，$\mathbf S_{\mathrm{seg}}$ 有一整行是零。这不影响 Ceres——它只要求 $\mathbf J^\top\mathbf J$ 半正定——但做秩检查时看到亏秩不要当成 bug。
+$q=6$、 $r=1$ 时秩是 $5$， $r=2$ 时是 $4$。这正是“常值 bias 不被一阶 motion prior 惩罚”这句直觉的矩阵版本。后果有两个：第一， $\boldsymbol\Lambda$ 里会出现精确的零，以及浮点意义下的极小负数，开方前必须截断；第二， $18$ 维 bias residual 里只有 $15$ 个分量线性无关， $\mathbf S_{\mathrm{seg}}$ 有一整行是零。这不影响 Ceres——它只要求 $\mathbf J^\top\mathbf J$ 半正定——但做秩检查时看到亏秩不要当成 bug。
 
 源码里的截断是相对阈值而不是绝对阈值：
 
@@ -807,7 +807,7 @@ const double max_eigenvalue = std::max(0.0, eig.eigenvalues().maxCoeff());
 const double threshold = std::max(1e-18, 1e-12 * max_eigenvalue);
 ```
 
-之所以要用相对阈值，是因为 $\mathbf G_s^{(r)}$ 的条件数很大。以 $q=6$、$r=1$、$\Delta t=1$ 为例，六个特征值大致是 $0,\ 4.3\times10^{-7},\ 1.1\times10^{-5},\ 3.3\times10^{-3},\ 5.8\times10^{-2},\ 3.1\times10^{-1}$：$4.3\times10^{-7}$ 是真实的非零特征值，如果用一个绝对阈值（比如 $10^{-6}$）去截断，就会把一个真实约束方向误杀掉。
+之所以要用相对阈值，是因为 $\mathbf G_s^{(r)}$ 的条件数很大。以 $q=6$、 $r=1$、 $\Delta t=1$ 为例，六个特征值大致是 $0,\ 4.3\times10^{-7},\ 1.1\times10^{-5},\ 3.3\times10^{-3},\ 5.8\times10^{-2},\ 3.1\times10^{-1}$： $4.3\times10^{-7}$ 是真实的非零特征值，如果用一个绝对阈值（比如 $10^{-6}$）去截断，就会把一个真实约束方向误杀掉。
 
 ### 9.8.2 $\mathbf G_s^{(r)}$ 的闭式与 $\Delta t$ 缩放
 
@@ -819,7 +819,7 @@ $$
 \Delta t=\tau_{s+1}-\tau_s,
 $$
 
-则第 $a$ 个 active 基函数在这一段上是一个多项式，$\mathbf B$ 的第 $i$ 行第 $a$ 列就是它的 $\bar u^i$ 次项系数：
+则第 $a$ 个 active 基函数在这一段上是一个多项式， $\mathbf B$ 的第 $i$ 行第 $a$ 列就是它的 $\bar u^i$ 次项系数：
 
 $$
 \mu_a^{(0)}(t) =
@@ -838,7 +838,7 @@ B_{ia}
 \bar u^{\,i-r}.
 $$
 
-代进积分，并用 $dt=\Delta t\,d\bar u$ 换元、$\int_0^1\bar u^{\,i+j-2r}d\bar u=\frac{1}{i+j-2r+1}$，就得到：
+代进积分，并用 $dt=\Delta t\,d\bar u$ 换元、 $\int_0^1\bar u^{\,i+j-2r}d\bar u=\frac{1}{i+j-2r+1}$，就得到：
 
 $$
 \boxed{
@@ -855,7 +855,7 @@ $$
 
 **最容易写错的就是那个指数 $1-2r$。** 记法是把它拆成 $\Delta t^{-r}\cdot\Delta t^{-r}\cdot\Delta t$：两个 $r$ 阶导数各贡献一个 $\Delta t^{-r}$，换元的 $dt$ 贡献一个 $\Delta t$。写成 $\Delta t^{-2r}$（漏掉换元）或 $\Delta t^{1-r}$（只算一次求导）都会让 prior 的强度随 knot 密度错误缩放，而且因为整体只是一个正的比例因子，优化仍然会收敛，只是 bias 的平滑程度和 `gyroRandomWalk` 对不上——这类错误极难通过“跑通了”发现。
 
-对 $r=1$，指数是 $-1$：knot 越密，$\Delta t$ 越小，同一个 segment 的 prior 权重越大。这是对的——一阶 motion prior 近似的是 random walk，segment 变短意味着允许的 bias 变化量也应该变小。
+对 $r=1$，指数是 $-1$：knot 越密， $\Delta t$ 越小，同一个 segment 的 prior 权重越大。这是对的——一阶 motion prior 近似的是 random walk，segment 变短意味着允许的 bias 变化量也应该变小。
 
 `src/residuals/spline_motion_prior.cpp` 的 `segmentWeightDerivativeIntegral` 就是这个公式的逐字翻译：`dt_scale = pow(segment.dt_s, 1 - 2*derivative_order)`，两重循环从 `derivative_order` 起跳，`derivativeMultiplier(i, r)` 返回 $i!/(i-r)!$，分母是 `i_power + j_power + 1`。最后的 `0.5 * (integral + integral.transpose())` 只是对称化，抵消浮点求和顺序带来的不对称。
 
@@ -891,7 +891,7 @@ def quadrature(B, r, dt, n=800001):
                      for a in range(q)])
 ```
 
-对 $q=6$、$r\in\{1,2\}$、$\Delta t\in\{0.05,0.37,1.0\}$，两者的最大相对误差约 $10^{-12}$，即完全由梯形积分的离散误差主导。顺手把 `np.linalg.matrix_rank(closed_form(B, r, dt))` 打出来，会看到 $q-r$，正好复现上一节的秩亏结论。
+对 $q=6$、 $r\in\{1,2\}$、 $\Delta t\in\{0.05,0.37,1.0\}$，两者的最大相对误差约 $10^{-12}$，即完全由梯形积分的离散误差主导。顺手把 `np.linalg.matrix_rank(closed_form(B, r, dt))` 打出来，会看到 $q-r$，正好复现上一节的秩亏结论。
 
 ## 9.9 速查表
 
@@ -946,7 +946,7 @@ Kalibr 实现选择直接使用 $\mathbf Q$，因为这样避免显式构造一�
 | Kalibr 装 Hessian | 无 | 无（直接 $\mathbf H+\!\!=\mathbf Q$） | 不需要 |
 | Ceres 逐 segment | $\mathbf e^{(s)}=(\mathbf S_{\mathrm{seg}}\otimes\mathbf W^{1/2})\mathbf c^{(s)}\in\mathbb R^{qD}$ | $[\mathbf S_{\mathrm{seg}}]_{:,\ell}\otimes\mathbf W^{1/2}$（常数） | $q\times q$ |
 
-其中 $\mathbf S_{\mathrm{seg}}^\top\mathbf S_{\mathrm{seg}}=\mathbf G_s^{(r)}$，$\left[\mathbf G_s^{(r)}\right]_{ab}=\int_{\tau_s}^{\tau_{s+1}}\mu_a^{(r)}\mu_b^{(r)}dt$，闭式见 9.8.2。bias prior 取 $D=3$、$q=6$，residual 是 $18$ 维；pose prior 取 $D=6$，residual 是 $36$ 维。
+其中 $\mathbf S_{\mathrm{seg}}^\top\mathbf S_{\mathrm{seg}}=\mathbf G_s^{(r)}$， $\left[\mathbf G_s^{(r)}\right]_{ab}=\int_{\tau_s}^{\tau_{s+1}}\mu_a^{(r)}\mu_b^{(r)}dt$，闭式见 9.8.2。bias prior 取 $D=3$、 $q=6$，residual 是 $18$ 维；pose prior 取 $D=6$，residual 是 $36$ 维。
 
 ## 9.10 常见混淆
 
@@ -970,6 +970,6 @@ $$
 
 对任意 Euclidean B-spline，导数积分都可以折成控制点二次型 $\mathbf c^\top\mathbf Q\mathbf c$。Kalibr 的 `BSplineMotionError` 直接把 $\mathbf Q$ 加到 Hessian，把 $-\mathbf Q\mathbf c$ 加到 RHS；等价地，它可以被看成一个虚拟 residual $\mathbf e=\mathbf S\mathbf c$，其中 $\mathbf Q=\mathbf S^\top\mathbf S$。
 
-Ceres 走的是第三条路：不对全局 $\mathbf Q$ 开方，而是把 $\mathbf Q_s^{(r)}$ 拆成 $\mathbf G_s^{(r)}\otimes\mathbf W$，只对 $q\times q$ 的标量矩阵 $\mathbf G_s^{(r)}$ 做特征值分解，得到常数 residual $\mathbf e^{(s)}=(\mathbf S_{\mathrm{seg}}\otimes\mathbf W^{1/2})\mathbf c^{(s)}$ 和常数 Jacobian。$\mathbf G_s^{(r)}$ 本身有闭式，$\Delta t$ 的指数是 $1-2r$；它的秩是 $q-r$，所以 residual 天然亏秩，开方前需要按相对阈值截断特征值。
+Ceres 走的是第三条路：不对全局 $\mathbf Q$ 开方，而是把 $\mathbf Q_s^{(r)}$ 拆成 $\mathbf G_s^{(r)}\otimes\mathbf W$，只对 $q\times q$ 的标量矩阵 $\mathbf G_s^{(r)}$ 做特征值分解，得到常数 residual $\mathbf e^{(s)}=(\mathbf S_{\mathrm{seg}}\otimes\mathbf W^{1/2})\mathbf c^{(s)}$ 和常数 Jacobian。 $\mathbf G_s^{(r)}$ 本身有闭式， $\Delta t$ 的指数是 $1-2r$；它的秩是 $q-r$，所以 residual 天然亏秩，开方前需要按相对阈值截断特征值。
 
 第 10 章会转向扩展 IMU 模型：scale、misalignment、size-effect 和 acceleration sensitivity。那些参数不是平滑 prior，而是真正进入 gyro / accelerometer 前向预测的传感器模型参数。

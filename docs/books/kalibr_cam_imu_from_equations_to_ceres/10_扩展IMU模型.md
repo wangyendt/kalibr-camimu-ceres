@@ -190,7 +190,7 @@ for (size_t row = 0; row < UpdatePattern.rows(); ++row) {          // 外层：�
 | 扫描 mask（外层 row、内层 col） | **行优先** | 每个 active 元素拿到第几号切空间坐标，即 $\mathbf B$ 的第几 **列** |
 | 写入行号 `col * 3 + row` | **列优先** | 该坐标落在 $\operatorname{vec}(\mathbf M)$ 的第几个位置，即 $\mathbf B$ 的第几 **行** |
 
-换句话说：$\mathbf B$ 的第 $k$ 列只有一个 $1$，位置是 `col * 3 + row`，而 $(row,col)$ 是行优先扫描命中的第 $k$ 个 active 元素。两套顺序不一致，所以 $\mathbf B$ **既选列又换序**。
+换句话说： $\mathbf B$ 的第 $k$ 列只有一个 $1$，位置是 `col * 3 + row`，而 $(row,col)$ 是行优先扫描命中的第 $k$ 个 active 元素。两套顺序不一致，所以 $\mathbf B$ **既选列又换序**。
 
 **下三角 mask。** 行优先扫描依次命中 $(0,0),(1,0),(1,1),(2,0),(2,1),(2,2)$，对应的列优先 $\operatorname{vec}$ 位置是
 
@@ -203,7 +203,7 @@ $$
 
 若按“自然顺序挑 $6$ 列”写成 $[0,1,2,4,5,8]$，得到的切空间顺序会变成 $(m_{00},m_{10},m_{20},m_{11},m_{21},m_{22})$，与 Kalibr 的 $(m_{00},m_{10},m_{11},m_{20},m_{21},m_{22})$ 相比把 $m_{20}$ 和 $m_{11}$ 换了位置。第 6、7 章的 accel/gyro 版本（7.15.5、6.13.4）已经把这个 $3\times6$ 结果写出来了，本节只补一般机制。
 
-**满 mask 更容易漏。** 直觉上“$9$ 个元素全部 active”就等于“不做任何选择”，于是 $\mathbf B=\mathbf I_9$。事实不是这样。行优先扫描给出的切空间顺序是 row-major，而 $\operatorname{vec}$ 是 col-major，两者差一个转置。逐个代进 `col * 3 + row`：
+**满 mask 更容易漏。** 直觉上“ $9$ 个元素全部 active”就等于“不做任何选择”，于是 $\mathbf B=\mathbf I_9$。事实不是这样。行优先扫描给出的切空间顺序是 row-major，而 $\operatorname{vec}$ 是 col-major，两者差一个转置。逐个代进 `col * 3 + row`：
 
 $$
 \boxed{
@@ -213,7 +213,7 @@ $$
 }
 $$
 
-这是一个 **$9\times9$ 置换阵，不是单位阵**。它恰好就是 $3\times3$ 的 commutation matrix $\mathbf K_{3,3}$，即满足 $\operatorname{vec}(\mathbf M^\top)=\mathbf K_{3,3}\operatorname{vec}(\mathbf M)$ 的那个矩阵；它对称且自逆，$\mathbf K_{3,3}^2=\mathbf I_9$。
+这是一个 **$9\times9$ 置换阵，不是单位阵**。它恰好就是 $3\times3$ 的 commutation matrix $\mathbf K_{3,3}$，即满足 $\operatorname{vec}(\mathbf M^\top)=\mathbf K_{3,3}\operatorname{vec}(\mathbf M)$ 的那个矩阵；它对称且自逆， $\mathbf K_{3,3}^2=\mathbf I_9$。
 
 对 $\mathbf A_g$ 来说这一步不能省。把 10.4.1 的 full Jacobian 记成 Kronecker 形式：
 
@@ -242,11 +242,11 @@ $$
 }
 $$
 
-两个矩阵的元素集合一样，排布完全不同：$\mathbf a_g^\top\otimes\mathbf I_3$ 是三个对角块并排，$\mathbf I_3\otimes\mathbf a_g^\top$ 是三个行向量沿对角摆开。前者对应 $\delta\mathbf a$ 按 **列优先** 排，后者对应按 **行优先** 排。
+两个矩阵的元素集合一样，排布完全不同： $\mathbf a_g^\top\otimes\mathbf I_3$ 是三个对角块并排， $\mathbf I_3\otimes\mathbf a_g^\top$ 是三个行向量沿对角摆开。前者对应 $\delta\mathbf a$ 按 **列优先** 排，后者对应按 **行优先** 排。
 
-**写错的后果不是“转置”，而是 Jacobian 与更新规则不自洽。** 一个常见的误解是：既然两者差一个 $\mathbf K_{3,3}$，那么用错的那个只会让 $\mathbf A_g$ 收敛到自己的转置。这是不对的。Jacobian 和 `updateImplementation` 是一对必须匹配的约定：更新那一侧按行优先把 $\delta\mathbf a$ 铺回矩阵（下面马上验证），如果 Jacobian 却按列优先写，那么求解器解出的 $\delta\mathbf a$ 是“在列优先假设下的下降方向”，却被按行优先的规则用掉了。结果是每一步都沿着一个和真实梯度不一致的方向走，$\|\mathbf J\delta\mathbf a\|$ 与实际代价下降量对不上。典型症状是 trust region 反复收缩、cost 停在某个值不动，或者干脆发散；即使勉强收敛，收敛到的也只是一个被错误线性化拖到的错误估计，而不是真值的转置。真值的转置只有在“Jacobian 和更新规则同时都用另一套约定”时才会出现，而错写一处不会给你这种整齐的错误。
+**写错的后果不是“转置”，而是 Jacobian 与更新规则不自洽。** 一个常见的误解是：既然两者差一个 $\mathbf K_{3,3}$，那么用错的那个只会让 $\mathbf A_g$ 收敛到自己的转置。这是不对的。Jacobian 和 `updateImplementation` 是一对必须匹配的约定：更新那一侧按行优先把 $\delta\mathbf a$ 铺回矩阵（下面马上验证），如果 Jacobian 却按列优先写，那么求解器解出的 $\delta\mathbf a$ 是“在列优先假设下的下降方向”，却被按行优先的规则用掉了。结果是每一步都沿着一个和真实梯度不一致的方向走， $\|\mathbf J\delta\mathbf a\|$ 与实际代价下降量对不上。典型症状是 trust region 反复收缩、cost 停在某个值不动，或者干脆发散；即使勉强收敛，收敛到的也只是一个被错误线性化拖到的错误估计，而不是真值的转置。真值的转置只有在“Jacobian 和更新规则同时都用另一套约定”时才会出现，而错写一处不会给你这种整齐的错误。
 
-有一个特例值得记住：当 $\delta\mathbf A_g$ 恰好对称时，两种铺法给出同一个矩阵，$\mathbf K_{3,3}$ 作用在对称矩阵的 $\operatorname{vec}$ 上是恒等。所以如果单元测试的 ground truth $\mathbf A_g$ 取成了对称阵（例如对角阵，或随便一个 $\mathbf X+\mathbf X^\top$），这个 bug 会被完全掩盖：测试全绿，真实数据上却收不动。写这一处的测试时，ground truth 必须显式取一个 **非对称** 的 $\mathbf A_g$。
+有一个特例值得记住：当 $\delta\mathbf A_g$ 恰好对称时，两种铺法给出同一个矩阵， $\mathbf K_{3,3}$ 作用在对称矩阵的 $\operatorname{vec}$ 上是恒等。所以如果单元测试的 ground truth $\mathbf A_g$ 取成了对称阵（例如对角阵，或随便一个 $\mathbf X+\mathbf X^\top$），这个 bug 会被完全掩盖：测试全绿，真实数据上却收不动。写这一处的测试时，ground truth 必须显式取一个 **非对称** 的 $\mathbf A_g$。
 
 同一件事在更新那一侧也成立。`updateImplementation` 做的是
 
@@ -266,7 +266,7 @@ $$
 \end{bmatrix},
 $$
 
-也就是说 $\mathbf d$ 是 **按行铺进矩阵的**。$\mathbf B$ 正是把行优先的切空间坐标翻译成列优先的 `Map` 所期待的排列。
+也就是说 $\mathbf d$ 是 **按行铺进矩阵的**。 $\mathbf B$ 正是把行优先的切空间坐标翻译成列优先的 `Map` 所期待的排列。
 
 **读者自查。** 这十行完全可以在 numpy 里重建，不需要编译 Kalibr：
 
@@ -292,7 +292,7 @@ print(np.allclose(build_B(full), np.eye(9)))           # False
 print((build_B(full) @ np.arange(1., 10.)).reshape(3, 3, order='F'))  # 1..9 按行排
 ```
 
-再取一个随机 $\mathbf x$，比较 `J_full @ build_B(lower)` 和“按升序取 $[0,1,2,4,5,8]$ 列”，会看到第 $2$、$3$ 列互换——这就是 7.15.5 那个 $3\times6$ 矩阵里 $x_{i,2}$ 落在第 $3$ 列而不是第 $4$ 列的原因。
+再取一个随机 $\mathbf x$，比较 `J_full @ build_B(lower)` 和“按升序取 $[0,1,2,4,5,8]$ 列”，会看到第 $2$、 $3$ 列互换——这就是 7.15.5 那个 $3\times6$ 矩阵里 $x_{i,2}$ 落在第 $3$ 列而不是第 $4$ 列的原因。
 
 本章后面凡是写“按 mask 取 active 列”，都指 $\mathbf J_{\mathrm{full}}\mathbf B$ 这个完整操作。
 
@@ -327,14 +327,14 @@ a = M * (C_i_b * (...))
 aerr = EuclideanError(im.alpha, ..., a + b_i)
 ```
 
-按第 6、7 章的习惯，先写这个扩展模型的 variation 母式，下面两个小节都只是从母式取分支。令 $\mathbf x_i=\mathbf R_{ib}\mathbf u_b$，则预测量是 $\hat{\mathbf a}=\mathbf M_{\mathrm{acc}}\mathbf x_i+\mathbf b_a$。$\mathbf M_{\mathrm{acc}}$ 是普通欧式矩阵参数，扰动就是逐元素相加；$\mathbf x_i$ 的扰动 $\delta\mathbf x_i$ 已经由 7.6 节的母式给出——pose、gravity、外参旋转、lever arm 的全部贡献都汇在它里面。特别是 $\mathbf u_b$ 内部仍然沿用第 7 章的分解：
+按第 6、7 章的习惯，先写这个扩展模型的 variation 母式，下面两个小节都只是从母式取分支。令 $\mathbf x_i=\mathbf R_{ib}\mathbf u_b$，则预测量是 $\hat{\mathbf a}=\mathbf M_{\mathrm{acc}}\mathbf x_i+\mathbf b_a$。 $\mathbf M_{\mathrm{acc}}$ 是普通欧式矩阵参数，扰动就是逐元素相加； $\mathbf x_i$ 的扰动 $\delta\mathbf x_i$ 已经由 7.6 节的母式给出——pose、gravity、外参旋转、lever arm 的全部贡献都汇在它里面。特别是 $\mathbf u_b$ 内部仍然沿用第 7 章的分解：
 
 $$
 \delta\mathbf u_b =
 \delta\mathbf h_b+\delta\boldsymbol\ell_b,
 $$
 
-其中 $\delta\mathbf h_b$ 给出 specific-force 分支，$\delta\boldsymbol\ell_b$ 给出 lever-arm 分支。第 10 章不会重新展开这两支，只在它们外面再乘 IMU scale/misalignment、sensing rotation 或 acceleration sensitivity 矩阵。
+其中 $\delta\mathbf h_b$ 给出 specific-force 分支， $\delta\boldsymbol\ell_b$ 给出 lever-arm 分支。第 10 章不会重新展开这两支，只在它们外面再乘 IMU scale/misalignment、sensing rotation 或 acceleration sensitivity 矩阵。
 
 对乘积 $\mathbf M_{\mathrm{acc}}\mathbf x_i$ 用乘积法则：
 
@@ -436,7 +436,7 @@ x_{i,3}\mathbf I_3
 }
 $$
 
-实际进入线性系统的是 $\mathbf J_{\mathrm{dv}}=\mathbf J_{\mathrm{full}}\mathbf B$。对 $\mathbf M_{\mathrm{acc}}$ 的下三角 mask，$\mathbf B\in\mathbb R^{9\times6}$ 按 10.2.1 的规则取出 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列——注意不是升序，切空间顺序是 $(m_{00},m_{10},m_{11},m_{20},m_{21},m_{22})$。展开后的 $3\times6$ 形式见 7.15.5。
+实际进入线性系统的是 $\mathbf J_{\mathrm{dv}}=\mathbf J_{\mathrm{full}}\mathbf B$。对 $\mathbf M_{\mathrm{acc}}$ 的下三角 mask， $\mathbf B\in\mathbb R^{9\times6}$ 按 10.2.1 的规则取出 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列——注意不是升序，切空间顺序是 $(m_{00},m_{10},m_{11},m_{20},m_{21},m_{22})$。展开后的 $3\times6$ 形式见 7.15.5。
 
 ## 10.4 扩展 gyro 模型
 
@@ -491,7 +491,7 @@ w = M * (C_gyro_b * w_b) + Ma * (C_gyro_b * a_b)
 
 这里源码变量 `Ma` 对应本章的 $\mathbf A_g$，不是 accelerometer scale matrix $\mathbf M_{\mathrm{acc}}$。
 
-和 10.3 一样，先写 variation 母式。预测量 $\hat{\boldsymbol\omega}=\mathbf M_g\boldsymbol\omega_g+\mathbf A_g\mathbf a_g+\mathbf b_g$ 有五个会变的输入：$\mathbf M_g$、$\mathbf A_g$ 是欧式矩阵参数；$\boldsymbol\omega_g$、$\mathbf a_g$ 是复合中间量，它们的扰动再由 $\mathbf R_{gi}$、$\mathbf R_{ib}$、pose 控制点和 lever arm 诱导；$\mathbf b_g$ 是 bias spline 值。对两个乘积分别用乘积法则，再把所有项相加：
+和 10.3 一样，先写 variation 母式。预测量 $\hat{\boldsymbol\omega}=\mathbf M_g\boldsymbol\omega_g+\mathbf A_g\mathbf a_g+\mathbf b_g$ 有五个会变的输入： $\mathbf M_g$、 $\mathbf A_g$ 是欧式矩阵参数； $\boldsymbol\omega_g$、 $\mathbf a_g$ 是复合中间量，它们的扰动再由 $\mathbf R_{gi}$、 $\mathbf R_{ib}$、pose 控制点和 lever arm 诱导； $\mathbf b_g$ 是 bias spline 值。对两个乘积分别用乘积法则，再把所有项相加：
 
 $$
 \boxed{
@@ -508,7 +508,7 @@ $$
 }
 $$
 
-这正是 6.13 节预告过的式子。后面四个小节按变量块把它拆开：10.4.1 取 $\delta\mathbf M_g$、$\delta\mathbf A_g$ 两个矩阵分支；10.4.2 把 $\delta\boldsymbol\omega_g$、$\delta\mathbf a_g$ 沿 $\mathbf R_{gi}$ 展开；10.4.3 沿 $\mathbf R_{ib}$ 展开；10.4.4 沿 pose 控制点、lever arm 和 bias 展开。每个小节求偏导时，其余变量块固定。
+这正是 6.13 节预告过的式子。后面四个小节按变量块把它拆开：10.4.1 取 $\delta\mathbf M_g$、 $\delta\mathbf A_g$ 两个矩阵分支；10.4.2 把 $\delta\boldsymbol\omega_g$、 $\delta\mathbf a_g$ 沿 $\mathbf R_{gi}$ 展开；10.4.3 沿 $\mathbf R_{ib}$ 展开；10.4.4 沿 pose 控制点、lever arm 和 bias 展开。每个小节求偏导时，其余变量块固定。
 
 ### 10.4.1 对 $\mathbf M_g$ 和 $\mathbf A_g$
 
@@ -554,7 +554,7 @@ a_{g,3}\mathbf I_3
 }
 $$
 
-同样，这两个 $3\times9$ 都还要右乘各自的 $\mathbf B$。$\mathbf M_g$ 用下三角 mask，$\mathbf B\in\mathbb R^{9\times6}$，取 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列。$\mathbf A_g$ 用满 mask，$\mathbf B\in\mathbb R^{9\times9}$——**但这不意味着 $\mathbf B=\mathbf I_9$**：满 mask 下 $\mathbf B$ 是 commutation matrix $\mathbf K_{3,3}$，一个非平凡置换阵，作用是把行优先的切空间坐标接到列优先的 $\operatorname{vec}$ 上。所以 $\mathbf A_g$ 真正进入线性系统的 Jacobian 是
+同样，这两个 $3\times9$ 都还要右乘各自的 $\mathbf B$。 $\mathbf M_g$ 用下三角 mask， $\mathbf B\in\mathbb R^{9\times6}$，取 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列。 $\mathbf A_g$ 用满 mask， $\mathbf B\in\mathbb R^{9\times9}$——**但这不意味着 $\mathbf B=\mathbf I_9$**：满 mask 下 $\mathbf B$ 是 commutation matrix $\mathbf K_{3,3}$，一个非平凡置换阵，作用是把行优先的切空间坐标接到列优先的 $\operatorname{vec}$ 上。所以 $\mathbf A_g$ 真正进入线性系统的 Jacobian 是
 
 $$
 \boxed{
@@ -632,7 +632,7 @@ $$
 
 ### 10.4.3 对 IMU 外参旋转 $\mathbf R_{ib}$
 
-现在扰动 $\mathbf R_{ib}$，保持 $\mathbf R_{gi}$、$\mathbf M_g$、$\mathbf A_g$、$\boldsymbol\omega_b$、$\mathbf u_b$ 不变。令：
+现在扰动 $\mathbf R_{ib}$，保持 $\mathbf R_{gi}$、 $\mathbf M_g$、 $\mathbf A_g$、 $\boldsymbol\omega_b$、 $\mathbf u_b$ 不变。令：
 
 $$
 \boldsymbol\omega_i=\mathbf R_{ib}\boldsymbol\omega_b,
@@ -677,7 +677,7 @@ $$
 }
 $$
 
-这个式子是第 8 章普通 gyro 外参旋转 Jacobian 的扩展版。若 $\mathbf M_g=\mathbf I$、$\mathbf R_{gi}=\mathbf I$、$\mathbf A_g=\mathbf 0$，它退化为：
+这个式子是第 8 章普通 gyro 外参旋转 Jacobian 的扩展版。若 $\mathbf M_g=\mathbf I$、 $\mathbf R_{gi}=\mathbf I$、 $\mathbf A_g=\mathbf 0$，它退化为：
 
 $$
 [\mathbf R_{ib}\boldsymbol\omega_b]_\times.
@@ -929,7 +929,7 @@ Size-effect 新增的不是 base lever arm Jacobian 的形式，而是三条 axi
 
 ### 10.5.3 对 IMU 外参旋转的额外项
 
-Size-effect 下，$\mathbf R_{ib}$ 出现了两次：
+Size-effect 下， $\mathbf R_{ib}$ 出现了两次：
 
 1. 直接把 body-frame 向量旋到 IMU frame。
 2. 通过 $\mathbf R_{ib}^{-1}\mathbf r_j^i$ 改变 axis-specific lever arm 的 body-frame 表达。
@@ -1023,13 +1023,13 @@ $$
 
 本节把 axis 下标固定写成 $j\in\{x,y,z\}$，pose 控制点记为 $\mathbf c_k\in\mathbb R^6$，避免和 axis 下标撞字母。
 
-对 $\mathbf c_k$ 求偏导时，$\mathbf g_w$、$\mathbf M_{\mathrm{acc}}$、$\mathbf R_{ib}$、$\mathbf r_b$、$\mathbf r_j^i$ 和 accel bias 全部固定。于是 $\mathbf r_j^b=\mathbf r_b+\mathbf R_{ib}^{-1}\mathbf r_j^i$ 也固定：
+对 $\mathbf c_k$ 求偏导时， $\mathbf g_w$、 $\mathbf M_{\mathrm{acc}}$、 $\mathbf R_{ib}$、 $\mathbf r_b$、 $\mathbf r_j^i$ 和 accel bias 全部固定。于是 $\mathbf r_j^b=\mathbf r_b+\mathbf R_{ib}^{-1}\mathbf r_j^i$ 也固定：
 
 $$
 \left.\delta\mathbf r_j^b\right|_{\delta\mathbf c_k}=\mathbf 0.
 $$
 
-pose 控制点只通过四个中间量进入：$\mathbf a_w$、$\mathbf R_{bw}$、$\boldsymbol\omega_b$、$\boldsymbol\alpha_b$。
+pose 控制点只通过四个中间量进入： $\mathbf a_w$、 $\mathbf R_{bw}$、 $\boldsymbol\omega_b$、 $\boldsymbol\alpha_b$。
 
 **specific-force 分支** 与 size-effect 无关，和 7.8.1 逐字相同：
 
@@ -1041,7 +1041,7 @@ $$
 \mathbf J_{\mathbf R_{bw},\mathbf c_k}^{\mathrm{rot}}.
 $$
 
-**lever-arm 分支** 是新的部分。第 7 章的 $\mathbf A_\alpha$、$\mathbf A_\omega$ 当时是在唯一的 $\mathbf r_b$ 上算的；size-effect 下要在三个不同的点上各算一次，所以把 lever-arm 点写成显式参数：
+**lever-arm 分支** 是新的部分。第 7 章的 $\mathbf A_\alpha$、 $\mathbf A_\omega$ 当时是在唯一的 $\mathbf r_b$ 上算的；size-effect 下要在三个不同的点上各算一次，所以把 lever-arm 点写成显式参数：
 
 $$
 \boxed{
@@ -1054,7 +1054,7 @@ $$
 }
 $$
 
-这和 10.5.1 的 $\mathbf A_r$ 形成对照：$\mathbf A_r=[\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times$ **不** 依赖 $\mathbf r$，所以三根轴共用一个；而 $\mathbf A_\alpha$、$\mathbf A_\omega$ 依赖 $\mathbf r$，必须逐轴分别求值。这一点是 size-effect pose Jacobian 唯一的“新意”，也是最容易写错的地方——若图省事只在 $\mathbf r_b$ 上算一次 $\mathbf A_\alpha,\mathbf A_\omega$ 再乘 $\sum_j\mathbf I_j=\mathbf I_3$，得到的就是普通模型的 Jacobian，size-effect 对轨迹的全部贡献都被抹掉了。
+这和 10.5.1 的 $\mathbf A_r$ 形成对照： $\mathbf A_r=[\boldsymbol\alpha_b]_\times+[\boldsymbol\omega_b]_\times[\boldsymbol\omega_b]_\times$ **不** 依赖 $\mathbf r$，所以三根轴共用一个；而 $\mathbf A_\alpha$、 $\mathbf A_\omega$ 依赖 $\mathbf r$，必须逐轴分别求值。这一点是 size-effect pose Jacobian 唯一的“新意”，也是最容易写错的地方——若图省事只在 $\mathbf r_b$ 上算一次 $\mathbf A_\alpha,\mathbf A_\omega$ 再乘 $\sum_j\mathbf I_j=\mathbf I_3$，得到的就是普通模型的 Jacobian，size-effect 对轨迹的全部贡献都被抹掉了。
 
 于是第 $j$ 条轴的 lever-arm 加速度变化是：
 
@@ -1092,7 +1092,7 @@ $$
 }
 $$
 
-其中 $\mathbf J_{\boldsymbol\omega_b,\mathbf c_k}$、$\mathbf J_{\boldsymbol\alpha_b,\mathbf c_k}$、$\mathbf J_{\mathbf a_w,\mathbf c_k}$、$\mathbf J^{\mathrm{rot}}_{\mathbf R_{bw},\mathbf c_k}$ 都是第 5 章的 spline Jacobian，size-effect 一个都没改。（$\boldsymbol\alpha_b$ 在第 7 章记为 $\boldsymbol\alpha_b^K$，指的是同一个源码接口量 `angularAccelerationBodyFrame`。）
+其中 $\mathbf J_{\boldsymbol\omega_b,\mathbf c_k}$、 $\mathbf J_{\boldsymbol\alpha_b,\mathbf c_k}$、 $\mathbf J_{\mathbf a_w,\mathbf c_k}$、 $\mathbf J^{\mathrm{rot}}_{\mathbf R_{bw},\mathbf c_k}$ 都是第 5 章的 spline Jacobian，size-effect 一个都没改。（ $\boldsymbol\alpha_b$ 在第 7 章记为 $\boldsymbol\alpha_b^K$，指的是同一个源码接口量 `angularAccelerationBodyFrame`。）
 
 **selector 不能提出求和号。** 注意 $\mathbf I_j$ 夹在 $\mathbf M_{\mathrm{acc}}$ 和 $\mathbf R_{ib}$ 之间，而不是在 $\mathbf R_{ib}$ 里面，所以
 
@@ -1114,7 +1114,7 @@ $$
 
 也就是说 size-effect 模型是 **逐行** 的：输出的第 $p$ 个分量只看得见第 $p$ 根 sensing axis 的 lever arm。三根轴之间不串扰，串扰只由后面的 $\mathbf M_{\mathrm{acc}}$ 引入。
 
-**退化检查。** 若 $\mathbf r_x^i=\mathbf r_y^i=\mathbf r_z^i=\mathbf 0$，则 $\mathbf r_j^b=\mathbf r_b$ 对三根轴相同，$\mathbf A_\alpha$、$\mathbf A_\omega$ 也相同，可以提到求和号外，再用 $\sum_j\mathbf I_j=\mathbf I_3$：
+**退化检查。** 若 $\mathbf r_x^i=\mathbf r_y^i=\mathbf r_z^i=\mathbf 0$，则 $\mathbf r_j^b=\mathbf r_b$ 对三根轴相同， $\mathbf A_\alpha$、 $\mathbf A_\omega$ 也相同，可以提到求和号外，再用 $\sum_j\mathbf I_j=\mathbf I_3$：
 
 $$
 \mathbf J_{\mathbf e^a,\mathbf c_k}
@@ -1166,7 +1166,7 @@ for (int axis = 0; axis < 3; ++axis) {
 | $\mathbf r_x^i,\mathbf r_y^i,\mathbf r_z^i$ | `rx_i_Dv`, `ry_i_Dv`, `rz_i_Dv` | size-effect axis offsets |
 | $\mathbf I_x,\mathbf I_y,\mathbf I_z$ | `Ix_Dv`, `Iy_Dv`, `Iz_Dv` | fixed selectors |
 
-第 10 章所有 matrix 参数的 Jacobian 先按 full $3\times3$ 写，再右乘 10.2.1 的选择矩阵 $\mathbf B$。读优化矩阵时，如果发现列数不是 $9$，先看该 matrix design variable 的 active mask；即使列数正好是 $9$（$\mathbf A_g$ 就是这种情况），也不要假定 $\mathbf B=\mathbf I_9$。
+第 10 章所有 matrix 参数的 Jacobian 先按 full $3\times3$ 写，再右乘 10.2.1 的选择矩阵 $\mathbf B$。读优化矩阵时，如果发现列数不是 $9$，先看该 matrix design variable 的 active mask；即使列数正好是 $9$（ $\mathbf A_g$ 就是这种情况），也不要假定 $\mathbf B=\mathbf I_9$。
 
 ### 10.6.1 Ceres 实现映射
 
@@ -1184,7 +1184,7 @@ for (int axis = 0; axis < 3; ++axis) {
 | `scale-misalignment` | 本章 10.3 和 10.4，对应 `IccScaledMisalignedImu` |
 | `scale-misalignment-size-effect` | 10.3、10.4、10.5 全部打开，对应 `IccScaledMisalignedSizeEffectImu` |
 
-矩阵参数在 Ceres 中有两个约定。$\mathbf M_{\mathrm{acc}}$ 和 $\mathbf M_g$ 用 6 维下三角块存储，展开顺序是
+矩阵参数在 Ceres 中有两个约定。 $\mathbf M_{\mathrm{acc}}$ 和 $\mathbf M_g$ 用 6 维下三角块存储，展开顺序是
 
 $$
 [m_{00},m_{10},m_{11},m_{20},m_{21},m_{22}]
@@ -1213,7 +1213,7 @@ void writeFullMatrixProductJacobian(const Vec3 &vector, const double scale,
 }
 ```
 
-写的就是 $\mathbf I_3\otimes\mathbf a_g^\top$：第 `row` 行只在第 `row*3 + col` 列有值。旁边的 `writeLowerTriangularProductJacobian` 是 $\mathbf M_{\mathrm{acc}}$、$\mathbf M_g$ 的 $3\times6$ 版本，非零位置 $(0,0),(1,1),(1,2),(2,3),(2,4),(2,5)$ 与 7.15.5 逐格对应。两个函数放在一起读，就能看出下三角和满 mask 走的是同一条 $\mathbf J_{\mathrm{full}}\mathbf B$ 规则，只是 $\mathbf B$ 不同。
+写的就是 $\mathbf I_3\otimes\mathbf a_g^\top$：第 `row` 行只在第 `row*3 + col` 列有值。旁边的 `writeLowerTriangularProductJacobian` 是 $\mathbf M_{\mathrm{acc}}$、 $\mathbf M_g$ 的 $3\times6$ 版本，非零位置 $(0,0),(1,1),(1,2),(2,3),(2,4),(2,5)$ 与 7.15.5 逐格对应。两个函数放在一起读，就能看出下三角和满 mask 走的是同一条 $\mathbf J_{\mathrm{full}}\mathbf B$ 规则，只是 $\mathbf B$ 不同。
 
 $\mathbf R_{gi}$ 用 3 维旋转向量存储，预测时通过 $\operatorname{Exp}$ 变成旋转矩阵。Size-effect 的 $\mathbf r_x^i,\mathbf r_y^i,\mathbf r_z^i$ 是三个 3 维向量；默认固定 $\mathbf r_x^i$，只释放后两根轴，避免 size-effect gauge 过早污染普通外参平移。
 
@@ -1258,9 +1258,9 @@ $$
 | IMU 外参旋转 $\mathbf R_{ib}$ | $\mathbf M_{\mathrm{acc}}[\mathbf x_i]_\times$ |
 | lever arm $\mathbf r_b$ | $\mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf A_r$ |
 | accel bias 控制点 | $\nu_\ell^{(0)}\mathbf I_3$ |
-| $\mathbf M_{\mathrm{acc}}$ 切空间（下三角 mask，$k=6$） | $[x_{i,1}\mathbf I_3\ x_{i,2}\mathbf I_3\ x_{i,3}\mathbf I_3]\,\mathbf B_{\mathrm{tril}}$，$\mathbf B_{\mathrm{tril}}\in\mathbb R^{9\times6}$ 取 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列 |
+| $\mathbf M_{\mathrm{acc}}$ 切空间（下三角 mask， $k=6$） | $[x_{i,1}\mathbf I_3\ x_{i,2}\mathbf I_3\ x_{i,3}\mathbf I_3]\,\mathbf B_{\mathrm{tril}}$， $\mathbf B_{\mathrm{tril}}\in\mathbb R^{9\times6}$ 取 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列 |
 
-> 最后一行写的是 **真正进入线性系统** 的 $\mathbf J_{\mathrm{dv}}=\mathbf J_{\mathrm{full}}\mathbf B$，其中 $\mathbf J_{\mathrm{full}}=[x_{i,1}\mathbf I_3\ x_{i,2}\mathbf I_3\ x_{i,3}\mathbf I_3]=\mathbf x_i^\top\otimes\mathbf I_3$ 是 full $3\times9$ 形式。$\mathbf M_{\mathrm{acc}}$ 和 $\mathbf M_g$ 一样是下三角参数化：代码里 `accel_M` 与 `gyro_M` 同为 `LowerTriangularMatrixBlock`，`kSize = 6`，按 $[m_{00},m_{10},m_{11},m_{20},m_{21},m_{22}]$ 行优先存放，所以两者共用同一个 $\mathbf B_{\mathrm{tril}}$，而不是满 mask 的 $\mathbf K_{3,3}$。$\mathbf B$ 的定义与列序见 10.2.1。
+> 最后一行写的是 **真正进入线性系统** 的 $\mathbf J_{\mathrm{dv}}=\mathbf J_{\mathrm{full}}\mathbf B$，其中 $\mathbf J_{\mathrm{full}}=[x_{i,1}\mathbf I_3\ x_{i,2}\mathbf I_3\ x_{i,3}\mathbf I_3]=\mathbf x_i^\top\otimes\mathbf I_3$ 是 full $3\times9$ 形式。 $\mathbf M_{\mathrm{acc}}$ 和 $\mathbf M_g$ 一样是下三角参数化：代码里 `accel_M` 与 `gyro_M` 同为 `LowerTriangularMatrixBlock`，`kSize = 6`，按 $[m_{00},m_{10},m_{11},m_{20},m_{21},m_{22}]$ 行优先存放，所以两者共用同一个 $\mathbf B_{\mathrm{tril}}$，而不是满 mask 的 $\mathbf K_{3,3}$。 $\mathbf B$ 的定义与列序见 10.2.1。
 
 ### 10.7.2 Extended gyro
 
@@ -1275,13 +1275,13 @@ $$
 | 变量块 | Jacobian |
 |---|---|
 | pose 控制点 $\mathbf c_j$ | $\mathbf M_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\boldsymbol\omega_b,\mathbf c_j}+\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf J_{\mathbf u_b,\mathbf c_j}$ |
-| gravity $\mathbf g_w$ | $-\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf R_{bw}$（$\mathbf A_g=\mathbf 0$ 时为 $\mathbf 0$，见 10.4.4） |
+| gravity $\mathbf g_w$ | $-\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf R_{bw}$（ $\mathbf A_g=\mathbf 0$ 时为 $\mathbf 0$，见 10.4.4） |
 | IMU 外参旋转 $\mathbf R_{ib}$ | $\mathbf M_g\mathbf R_{gi}[\mathbf R_{ib}\boldsymbol\omega_b]_\times+\mathbf A_g\mathbf R_{gi}[\mathbf R_{ib}\mathbf u_b]_\times$ |
 | gyro sensing rotation $\mathbf R_{gi}$ | $\mathbf M_g[\boldsymbol\omega_g]_\times+\mathbf A_g[\mathbf a_g]_\times$ |
 | lever arm $\mathbf r_b$ | $\mathbf A_g\mathbf R_{gi}\mathbf R_{ib}\mathbf A_r$ |
 | gyro bias 控制点 | $\mu_\ell^{(0)}\mathbf I_3$ |
-| $\mathbf M_g$ 切空间（下三角 mask，$k=6$） | $[\omega_{g,1}\mathbf I_3\ \omega_{g,2}\mathbf I_3\ \omega_{g,3}\mathbf I_3]\,\mathbf B_{\mathrm{tril}}$，$\mathbf B_{\mathrm{tril}}\in\mathbb R^{9\times6}$ 取 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列 |
-| $\mathbf A_g$ 切空间（满 mask，$k=9$） | $[a_{g,1}\mathbf I_3\ a_{g,2}\mathbf I_3\ a_{g,3}\mathbf I_3]\,\mathbf K_{3,3}=\mathbf I_3\otimes\mathbf a_g^\top$，注意 $\mathbf B_{\text{full}}=\mathbf K_{3,3}\neq\mathbf I_9$ |
+| $\mathbf M_g$ 切空间（下三角 mask， $k=6$） | $[\omega_{g,1}\mathbf I_3\ \omega_{g,2}\mathbf I_3\ \omega_{g,3}\mathbf I_3]\,\mathbf B_{\mathrm{tril}}$， $\mathbf B_{\mathrm{tril}}\in\mathbb R^{9\times6}$ 取 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列 |
+| $\mathbf A_g$ 切空间（满 mask， $k=9$） | $[a_{g,1}\mathbf I_3\ a_{g,2}\mathbf I_3\ a_{g,3}\mathbf I_3]\,\mathbf K_{3,3}=\mathbf I_3\otimes\mathbf a_g^\top$，注意 $\mathbf B_{\text{full}}=\mathbf K_{3,3}\neq\mathbf I_9$ |
 
 > 表中最后两行写的是 **真正进入线性系统** 的 $\mathbf J_{\mathrm{dv}}=\mathbf J_{\mathrm{full}}\mathbf B$，而不是 full $3\times9$ 的 $\partial\mathbf e^\omega/\partial\operatorname{vec}(\cdot)$。选择/置换矩阵 $\mathbf B$ 的定义、它“既选列又换序”的双重作用，以及下三角与满 mask 两种情形的列序，见 10.2.1；对 $\mathbf A_g$ 直接用 $\mathbf I_9$ 代替 $\mathbf B$ 是本章最容易犯的错，参见 10.4.1。
 
@@ -1315,19 +1315,19 @@ pose 控制点在本表记为 $\mathbf c_k$，以免和 axis 下标 $j$ 混淆�
 | base lever arm $\mathbf r_b$ | $\mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf A_r$ |
 | IMU 外参旋转 $\mathbf R_{ib}$ | 见 10.5.3 的展开式 |
 | accel bias 控制点 | $\nu_\ell^{(0)}\mathbf I_3$ |
-| $\mathbf M_{\mathrm{acc}}$ 切空间（下三角 mask，$k=6$） | $[n_{i,1}\mathbf I_3\ n_{i,2}\mathbf I_3\ n_{i,3}\mathbf I_3]\,\mathbf B_{\mathrm{tril}}$，$\mathbf n_i=\mathbf R_{ib}\mathbf h_b+\sum_j\mathbf I_j\mathbf R_{ib}\boldsymbol\ell_j$ |
+| $\mathbf M_{\mathrm{acc}}$ 切空间（下三角 mask， $k=6$） | $[n_{i,1}\mathbf I_3\ n_{i,2}\mathbf I_3\ n_{i,3}\mathbf I_3]\,\mathbf B_{\mathrm{tril}}$， $\mathbf n_i=\mathbf R_{ib}\mathbf h_b+\sum_j\mathbf I_j\mathbf R_{ib}\boldsymbol\ell_j$ |
 
-> 同 10.7.1，最后一行是 $\mathbf J_{\mathrm{dv}}=\mathbf J_{\mathrm{full}}\mathbf B_{\mathrm{tril}}$，full 形式为 $\mathbf J_{\mathrm{full}}=\mathbf n_i^\top\otimes\mathbf I_3$。size-effect 只改变代入的向量（把 $\mathbf x_i$ 换成 $\mathbf n_i$），不改变 mask：$\mathbf M_{\mathrm{acc}}$ 仍是 6 维下三角块，$\mathbf B_{\mathrm{tril}}\in\mathbb R^{9\times6}$ 取 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列。
+> 同 10.7.1，最后一行是 $\mathbf J_{\mathrm{dv}}=\mathbf J_{\mathrm{full}}\mathbf B_{\mathrm{tril}}$，full 形式为 $\mathbf J_{\mathrm{full}}=\mathbf n_i^\top\otimes\mathbf I_3$。size-effect 只改变代入的向量（把 $\mathbf x_i$ 换成 $\mathbf n_i$），不改变 mask： $\mathbf M_{\mathrm{acc}}$ 仍是 6 维下三角块， $\mathbf B_{\mathrm{tril}}\in\mathbb R^{9\times6}$ 取 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列。
 
-pose 控制点这一行有三个易错点：$\mathbf A_\alpha$、$\mathbf A_\omega$ 必须在 **逐轴不同** 的 $\mathbf r_j^b$ 上求值；$\mathbf I_j$ 在 $\mathbf R_{ib}$ 左边、不能提出求和号；$\mathbf J_{\mathbf h_b,\mathbf c_k}$ 那一支与 size-effect 无关，仍是 7.8.1 的原式。详见 10.5.4。
+pose 控制点这一行有三个易错点： $\mathbf A_\alpha$、 $\mathbf A_\omega$ 必须在 **逐轴不同** 的 $\mathbf r_j^b$ 上求值； $\mathbf I_j$ 在 $\mathbf R_{ib}$ 左边、不能提出求和号； $\mathbf J_{\mathbf h_b,\mathbf c_k}$ 那一支与 size-effect 无关，仍是 7.8.1 的原式。详见 10.5.4。
 
 ## 10.8 常见混淆
 
 第一，源码里的 `Ma` 不是 accelerometer scale matrix。它是 gyro acceleration sensitivity matrix，本章记为 $\mathbf A_g$。Accelerometer scale/misalignment 本章记为 $\mathbf M_{\mathrm{acc}}$。
 
-第二，scale/misalignment matrix 的 full Jacobian 是 $3\times9$，实际进入线性系统的是 $\mathbf J_{\mathrm{full}}\mathbf B$。$\mathbf B$ 不是简单的“取子集”：mask 是行优先扫的，$\operatorname{vec}$ 是列优先排的，所以它同时换序。下三角 mask 取到的是 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列；满 mask 的 $\mathbf B$ 是 $9\times9$ 置换阵 $\mathbf K_{3,3}$，不是 $\mathbf I_9$。
+第二，scale/misalignment matrix 的 full Jacobian 是 $3\times9$，实际进入线性系统的是 $\mathbf J_{\mathrm{full}}\mathbf B$。 $\mathbf B$ 不是简单的“取子集”：mask 是行优先扫的， $\operatorname{vec}$ 是列优先排的，所以它同时换序。下三角 mask 取到的是 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列；满 mask 的 $\mathbf B$ 是 $9\times9$ 置换阵 $\mathbf K_{3,3}$，不是 $\mathbf I_9$。
 
-第三，$\mathbf R_{gi}$ 和 $\mathbf R_{ib}$ 是不同旋转。$\mathbf R_{ib}$ 是 body 到 IMU，属于 sensor extrinsic；$\mathbf R_{gi}$ 是 IMU 到 gyro sensing frame，属于 gyro 内参模型。
+第三， $\mathbf R_{gi}$ 和 $\mathbf R_{ib}$ 是不同旋转。 $\mathbf R_{ib}$ 是 body 到 IMU，属于 sensor extrinsic； $\mathbf R_{gi}$ 是 IMU 到 gyro sensing frame，属于 gyro 内参模型。
 
 第四，size-effect 的 $\mathbf r_x^i,\mathbf r_y^i,\mathbf r_z^i$ 表达在 IMU frame，不是 body frame。进入刚体加速度公式前要先变成 $\mathbf R_{ib}^{-1}\mathbf r_j^i$，再加到 $\mathbf r_b$ 上。
 
@@ -1347,8 +1347,8 @@ x_3\mathbf I_3
 \end{bmatrix}.
 $$
 
-但这个 $3\times9$ 不是最终形态：它还要右乘 mask 生成的选择矩阵 $\mathbf B$，而 $\mathbf B$ 由行优先扫描生成、按列优先位置写入，所以它既选列又换序。下三角 mask 取到 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列；满 mask 的 $\mathbf B$ 是置换阵 $\mathbf K_{3,3}$ 而不是 $\mathbf I_9$，$\mathbf A_g$ 真正进入线性系统的 Jacobian 因此是 $\mathbf I_3\otimes\mathbf a_g^\top$，增量按行优先铺回矩阵。
+但这个 $3\times9$ 不是最终形态：它还要右乘 mask 生成的选择矩阵 $\mathbf B$，而 $\mathbf B$ 由行优先扫描生成、按列优先位置写入，所以它既选列又换序。下三角 mask 取到 $\operatorname{vec}$ 的第 $[0,1,4,2,5,8]$ 列；满 mask 的 $\mathbf B$ 是置换阵 $\mathbf K_{3,3}$ 而不是 $\mathbf I_9$， $\mathbf A_g$ 真正进入线性系统的 Jacobian 因此是 $\mathbf I_3\otimes\mathbf a_g^\top$，增量按行优先铺回矩阵。
 
-Accelerometer scale/misalignment 会把第 7 章所有 raw accelerometer 分支左乘 $\mathbf M_{\mathrm{acc}}$，并新增对 $\mathbf M_{\mathrm{acc}}$ 的 matrix Jacobian。扩展 gyro 模型把 angular velocity 分支和 acceleration sensitivity 分支相加，因此对 pose、gravity、外参旋转、lever arm 和 matrix 参数的 Jacobian 都是两条链路的和。Size-effect 则把一个 lever arm 拆成三根 axis-specific lever arm，额外引入 $\mathbf r_x^i,\mathbf r_y^i,\mathbf r_z^i$ 以及 $\mathbf R_{ib}^{-1}$ 带来的间接旋转项；更重要的是，它通过 $\boldsymbol\alpha_b$、$\boldsymbol\omega_b$ 改写了对 pose 控制点的 Jacobian——$\mathbf A_\alpha$、$\mathbf A_\omega$ 必须在逐轴不同的 $\mathbf r_j^b$ 上求值，且 selector $\mathbf I_j$ 作用在 IMU frame，使整个模型变成逐行的。
+Accelerometer scale/misalignment 会把第 7 章所有 raw accelerometer 分支左乘 $\mathbf M_{\mathrm{acc}}$，并新增对 $\mathbf M_{\mathrm{acc}}$ 的 matrix Jacobian。扩展 gyro 模型把 angular velocity 分支和 acceleration sensitivity 分支相加，因此对 pose、gravity、外参旋转、lever arm 和 matrix 参数的 Jacobian 都是两条链路的和。Size-effect 则把一个 lever arm 拆成三根 axis-specific lever arm，额外引入 $\mathbf r_x^i,\mathbf r_y^i,\mathbf r_z^i$ 以及 $\mathbf R_{ib}^{-1}$ 带来的间接旋转项；更重要的是，它通过 $\boldsymbol\alpha_b$、 $\boldsymbol\omega_b$ 改写了对 pose 控制点的 Jacobian—— $\mathbf A_\alpha$、 $\mathbf A_\omega$ 必须在逐轴不同的 $\mathbf r_j^b$ 上求值，且 selector $\mathbf I_j$ 作用在 IMU frame，使整个模型变成逐行的。
 
 下一章会从公式回到实现：Kalibr expression graph 如何把这些局部节点组合成完整 error term，优化器又如何收集 design variable 和 Jacobian block。

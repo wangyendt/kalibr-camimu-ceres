@@ -174,7 +174,7 @@ $$
 \end{bmatrix}.
 $$
 
-令 $(\mathbf T^p_{c_i c_0})^{-1}=[\mathbf A,\mathbf b]$，$\mathbf T_{c_0b}=[\mathbf R_0,\mathbf t_0]$，$\mathbf T_{c_ib}=[\mathbf R_i,\mathbf t_i]$，$\mathbf q_0=\mathbf R_0^\top\mathbf t_0$，则：
+令 $(\mathbf T^p_{c_i c_0})^{-1}=[\mathbf A,\mathbf b]$， $\mathbf T_{c_0b}=[\mathbf R_0,\mathbf t_0]$， $\mathbf T_{c_ib}=[\mathbf R_i,\mathbf t_i]$， $\mathbf q_0=\mathbf R_0^\top\mathbf t_0$，则：
 
 $$
 \mathbf R_\Delta=\mathbf A\mathbf R_i\mathbf R_0^\top,
@@ -217,7 +217,7 @@ $$
 | gyro bias control $\mathbf d^g_{j+\ell}$ | $\mu_\ell^{(0)}(t_k)\mathbf I_3$ | $3\times3$ |
 | optional IMU time offset $\Delta t_i$ | $\mathbf R_{ib}\dot{\boldsymbol\omega}_b(t_k)+\dot{\mathbf b}_g(t_k)$ | $3\times1$ |
 
-推导出处：母式与变量块 6.6-6.9 节；$\mathbf J_{\boldsymbol\omega_b,\mathbf c_j}$ 闭式 5.13.1 节；time offset 6.11.3、8.3.2 节；lever arm 为零的原因 6.2、8.8.1 节（刚体上所有点角速度相同）。
+推导出处：母式与变量块 6.6-6.9 节； $\mathbf J_{\boldsymbol\omega_b,\mathbf c_j}$ 闭式 5.13.1 节；time offset 6.11.3、8.3.2 节；lever arm 为零的原因 6.2、8.8.1 节（刚体上所有点角速度相同）。
 
 Ordinary gyro residual 对 camera 参数、accel bias、gravity、accelerometer scale/misalignment 的直接 Jacobian 为零。
 
@@ -351,7 +351,7 @@ $$
 | gyro matrix $\operatorname{vec}(\mathbf M_g)$ | $[\omega_{g,1}\mathbf I_3\ \omega_{g,2}\mathbf I_3\ \omega_{g,3}\mathbf I_3]$ | $3\times9$ before mask |
 | accel sensitivity $\operatorname{vec}(\mathbf A_g)$ | $[a_{g,1}\mathbf I_3\ a_{g,2}\mathbf I_3\ a_{g,3}\mathbf I_3]$ | $3\times9$ |
 
-三条退化检查：$\mathbf M_g=\mathbf I$、$\mathbf R_{gi}=\mathbf I$、$\mathbf A_g=\mathbf 0$ 时外参旋转行退回 $[\mathbf R_{ib}\boldsymbol\omega_b]_\times$（10.4.3 节）；lever arm 行只来自 acceleration sensitivity 分支——普通 gyro 对 $\mathbf r_b$ 仍是零（10.4.4 节）；**gravity 行同理**，$\mathbf A_g=\mathbf 0$ 时为零，但只要 $\mathbf A_g\ne\mathbf 0$，gyro residual 就参与约束重力方向，这一行最容易整块漏掉（10.4.4 节；代码对照 `gyroscope_residual.cpp:533-535`）。
+三条退化检查： $\mathbf M_g=\mathbf I$、 $\mathbf R_{gi}=\mathbf I$、 $\mathbf A_g=\mathbf 0$ 时外参旋转行退回 $[\mathbf R_{ib}\boldsymbol\omega_b]_\times$（10.4.3 节）；lever arm 行只来自 acceleration sensitivity 分支——普通 gyro 对 $\mathbf r_b$ 仍是零（10.4.4 节）；**gravity 行同理**， $\mathbf A_g=\mathbf 0$ 时为零，但只要 $\mathbf A_g\ne\mathbf 0$，gyro residual 就参与约束重力方向，这一行最容易整块漏掉（10.4.4 节；代码对照 `gyroscope_residual.cpp:533-535`）。
 
 推导出处：10.4 节全部小节。
 
@@ -392,7 +392,7 @@ $$
 | base lever arm $\mathbf r_b$ | $\mathbf M_{\mathrm{acc}}\mathbf R_{ib}\mathbf A_r$ | $3\times3$ |
 | IMU 外参旋转 $\mathbf R_{ib}$ | $\mathbf M_{\mathrm{acc}}\left([\mathbf R_{ib}\mathbf h_b]_\times+\sum_j\mathbf I_j\left([\mathbf R_{ib}\boldsymbol\ell_j]_\times-\mathbf R_{ib}\mathbf A_r\mathbf R_{ib}^{-1}[\mathbf r_j^i]_\times\right)\right)$ | $3\times3$ |
 
-其他 pose、gravity、bias、matrix 分支沿用 C.7，只是把 $\mathbf u_b$ 换成 bracket 内部表达。注意 $\mathbf R_{ib}$ 行的间接项：size-effect 下 $\mathbf R_{ib}$ 同时通过“旋到 IMU frame”和“$\mathbf R_{ib}^{-1}\mathbf r_j^i$ 改变 body-frame lever arm”两条链路进入。
+其他 pose、gravity、bias、matrix 分支沿用 C.7，只是把 $\mathbf u_b$ 换成 bracket 内部表达。注意 $\mathbf R_{ib}$ 行的间接项：size-effect 下 $\mathbf R_{ib}$ 同时通过“旋到 IMU frame”和“ $\mathbf R_{ib}^{-1}\mathbf r_j^i$ 改变 body-frame lever arm”两条链路进入。
 
 推导出处：10.5 节；源码默认 `rx_i_Dv` inactive、`ry_i_Dv` / `rz_i_Dv` active（10.5.1 节）。
 
@@ -429,7 +429,7 @@ $$
 \mathbf J=\mathbf S.
 $$
 
-推导出处：$\mathbf Q$ 的导数积分构造 9.4 节；bias prior 9.5 节；pose prior 9.6 节；为什么源码 `evaluateJacobiansImplementation` 抛异常 9.8、11.8 节。
+推导出处： $\mathbf Q$ 的导数积分构造 9.4 节；bias prior 9.5 节；pose prior 9.6 节；为什么源码 `evaluateJacobiansImplementation` 抛异常 9.8、11.8 节。
 
 ## C.11 零 block 总览
 
@@ -455,9 +455,9 @@ $$
 | residual | 非零 block | 典型零 block |
 |---|---|---|
 | camera $n$ reprojection | active pose controls、camera $n$ 的 $\Delta t_n$、intrinsics、distortion、完整 $\mathbf T_{c_nb}$ 或通往 $n$ 的 camera-chain links | 其他 camera 的私有 intrinsics/time shift、所有 IMU bias、IMU 内参、IMU lever arm、gravity |
-| ordinary gyro, IMU $m$ | active pose controls、$\mathbf R_{i_mb}$、gyro bias spline $\mathbf b^g_m$、optional IMU time offset $\Delta t^i_m$ | camera 参数、其他 IMU 的 bias/内参、gravity、$\mathbf r_{b,m}$ |
-| ordinary accel, IMU $m$ | active pose controls、gravity、$\mathbf R_{i_mb}$、$\mathbf r_{b,m}$、accel bias spline $\mathbf b^a_m$、optional IMU time offset $\Delta t^i_m$ | camera 参数、gyro bias、其他 IMU 的 bias/内参 |
-| extended gyro, IMU $m$ | ordinary gyro blocks，加 $\mathbf M_{g,m}$、$\mathbf A_{g,m}$、$\mathbf R_{g_mi_m}$；若有 acceleration sensitivity 分支，则 gravity 和 $\mathbf r_{b,m}$ 也可能非零 | camera 参数、其他 IMU 的 bias/内参 |
+| ordinary gyro, IMU $m$ | active pose controls、 $\mathbf R_{i_mb}$、gyro bias spline $\mathbf b^g_m$、optional IMU time offset $\Delta t^i_m$ | camera 参数、其他 IMU 的 bias/内参、gravity、 $\mathbf r_{b,m}$ |
+| ordinary accel, IMU $m$ | active pose controls、gravity、 $\mathbf R_{i_mb}$、 $\mathbf r_{b,m}$、accel bias spline $\mathbf b^a_m$、optional IMU time offset $\Delta t^i_m$ | camera 参数、gyro bias、其他 IMU 的 bias/内参 |
+| extended gyro, IMU $m$ | ordinary gyro blocks，加 $\mathbf M_{g,m}$、 $\mathbf A_{g,m}$、 $\mathbf R_{g_mi_m}$；若有 acceleration sensitivity 分支，则 gravity 和 $\mathbf r_{b,m}$ 也可能非零 | camera 参数、其他 IMU 的 bias/内参 |
 | extended accel, IMU $m$ | ordinary accel blocks，加 $\mathbf M_{a,m}$ 和 size-effect 相关 lever arm | camera 参数、其他 IMU 的 bias/内参 |
 | bias motion prior, IMU $m$ | IMU $m$ 自己的 gyro 或 accel bias control points | pose、camera 参数、其他 IMU bias、IMU 外参 |
 | pose motion prior | pose spline control points | camera 参数、IMU bias、IMU 内参、gravity |
@@ -488,7 +488,7 @@ $$
 | IMU rotation $\mathbf R_{i_mb}$ | $\mathbf R_{i_mb}^+=\mathrm{Exp}(-\delta\boldsymbol\phi_{m,K})\mathbf R_{i_mb}$ |
 | IMU lever arm $\mathbf r_{b,m}$ | $\mathbf r_{b,m}^+=\mathbf r_{b,m}+\delta\mathbf r_{b,m}$ |
 | IMU bias control point | 只更新对应 IMU 的 bias spline control point |
-| IMU matrices $\mathbf M_{a,m}$、$\mathbf M_{g,m}$、$\mathbf A_{g,m}$ | 按 active mask 做欧式加法 |
+| IMU matrices $\mathbf M_{a,m}$、 $\mathbf M_{g,m}$、 $\mathbf A_{g,m}$ | 按 active mask 做欧式加法 |
 | gyro sensing rotation $\mathbf R_{g_mi_m}$ | 按 rotation design variable 更新 |
 
 最后提醒一句：这张表的每个结论都可以用附录 B 的 finite-difference 框架数值验证。如果某个 block 和你的数值对不上，先按 C.2 的第 4 步排查两类符号来源，再检查是不是把 whitened Jacobian 当成了几何 Jacobian（C.1），再检查是不是把 residual 连到了错误的 sensor index（第 13 章）。

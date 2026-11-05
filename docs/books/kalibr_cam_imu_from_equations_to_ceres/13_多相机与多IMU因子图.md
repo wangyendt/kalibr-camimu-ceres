@@ -27,8 +27,8 @@ $$
 |---|---|---|
 | body trajectory | 全局共享 | pose spline control points $\mathbf c_j$ |
 | gravity | 全局共享 | $\mathbf g_w$ |
-| camera 参数 | camera 私有 | $\mathbf T_{c_nb}$、$\Delta t_n$、intrinsics、distortion |
-| IMU 参数 | IMU 私有 | $\mathbf R_{i_mb}$、$\mathbf r_{b,m}$、bias splines、$\mathbf M_{a,m}$、$\mathbf M_{g,m}$、$\mathbf A_{g,m}$、$\mathbf R_{g_mi_m}$ |
+| camera 参数 | camera 私有 | $\mathbf T_{c_nb}$、 $\Delta t_n$、intrinsics、distortion |
+| IMU 参数 | IMU 私有 | $\mathbf R_{i_mb}$、 $\mathbf r_{b,m}$、bias splines、 $\mathbf M_{a,m}$、 $\mathbf M_{g,m}$、 $\mathbf A_{g,m}$、 $\mathbf R_{g_mi_m}$ |
 | motion prior | 按变量族作用 | pose prior 作用在公共 pose spline，bias prior 作用在对应 IMU 的 bias spline |
 
 这里的“私有”不是说它们不参与联合优化，而是说第 $n$ 个 camera 的 residual 不会直接对第 $q\ne n$ 个 camera 的 intrinsics 求导；第 $m$ 个 IMU 的 residual 不会直接对第 $r\ne m$ 个 IMU 的 bias 求导。它们仍然会通过共享的 pose spline 和 gravity 间接耦合。
@@ -86,7 +86,7 @@ t^{\mathrm{imu}}_{m,k}
 \Delta t^i_m.
 $$
 
-如果 IMU time offset 不作为优化变量，$\Delta t^i_m$ 就只是构造 residual 时的常量偏移；如果它作为 design variable，则第 8.3 节的 time-offset Jacobian 直接带上 index $m$。
+如果 IMU time offset 不作为优化变量， $\Delta t^i_m$ 就只是构造 residual 时的常量偏移；如果它作为 design variable，则第 8.3 节的 time-offset Jacobian 直接带上 index $m$。
 
 普通 gyro residual 变成：
 
@@ -132,7 +132,7 @@ $$
 | accel bias spline | 每个 IMU 一条 $\mathbf b^a_m(t)$ |
 | IMU 外参旋转 | 非 reference IMU 有自己的 $\mathbf R_{i_mb}$ |
 | IMU lever arm | 非 reference IMU 有自己的 $\mathbf r_{b,m}$ |
-| 扩展 IMU 参数 | 每个 IMU 一套 $\mathbf M_{a,m}$、$\mathbf M_{g,m}$、$\mathbf A_{g,m}$、$\mathbf R_{g_mi_m}$ |
+| 扩展 IMU 参数 | 每个 IMU 一套 $\mathbf M_{a,m}$、 $\mathbf M_{g,m}$、 $\mathbf A_{g,m}$、 $\mathbf R_{g_mi_m}$ |
 
 Reference IMU 需要单独看。若 body frame 被定义为 reference IMU frame，则：
 
@@ -176,7 +176,7 @@ $$
 \mathbf R_{g_mi_m}\mathbf R_{i_mb}\mathbf u_{b,m}.
 $$
 
-所以多 IMU 并不要求重新推 $\mathbf M_a$、$\mathbf M_g$、$\mathbf A_g$ 或 $\mathbf R_{gi}$ 的 Jacobian；只要把“当前 IMU 的参数”接到“当前 IMU 的 residual”上，局部公式就是第 10 章那一套。
+所以多 IMU 并不要求重新推 $\mathbf M_a$、 $\mathbf M_g$、 $\mathbf A_g$ 或 $\mathbf R_{gi}$ 的 Jacobian；只要把“当前 IMU 的参数”接到“当前 IMU 的 residual”上，局部公式就是第 10 章那一套。
 
 ## 13.4 Jacobian 的变化：从公式变成 block 选择
 
@@ -210,9 +210,9 @@ $$
 
 | residual | 非零 block | 典型零 block |
 |---|---|---|
-| ordinary gyro | active pose controls、$\mathbf R_{i_mb}$、$\mathbf b^g_m$、optional $\Delta t^i_m$ | camera 参数、其他 IMU bias、gravity、$\mathbf r_{b,m}$ |
-| ordinary accel | active pose controls、gravity、$\mathbf R_{i_mb}$、$\mathbf r_{b,m}$、$\mathbf b^a_m$、optional $\Delta t^i_m$ | camera 参数、gyro bias、其他 IMU bias |
-| extended gyro | ordinary gyro blocks，加 $\mathbf M_{g,m}$、$\mathbf A_{g,m}$、$\mathbf R_{g_mi_m}$；若有 $\mathbf A_g\mathbf a_g$ 分支，则 gravity 和 $\mathbf r_{b,m}$ 也可能非零 | camera 参数、其他 IMU 的内参和 bias |
+| ordinary gyro | active pose controls、 $\mathbf R_{i_mb}$、 $\mathbf b^g_m$、optional $\Delta t^i_m$ | camera 参数、其他 IMU bias、gravity、 $\mathbf r_{b,m}$ |
+| ordinary accel | active pose controls、gravity、 $\mathbf R_{i_mb}$、 $\mathbf r_{b,m}$、 $\mathbf b^a_m$、optional $\Delta t^i_m$ | camera 参数、gyro bias、其他 IMU bias |
+| extended gyro | ordinary gyro blocks，加 $\mathbf M_{g,m}$、 $\mathbf A_{g,m}$、 $\mathbf R_{g_mi_m}$；若有 $\mathbf A_g\mathbf a_g$ 分支，则 gravity 和 $\mathbf r_{b,m}$ 也可能非零 | camera 参数、其他 IMU 的内参和 bias |
 | extended accel | ordinary accel blocks，加 $\mathbf M_{a,m}$ 和 size-effect 相关 lever arm | camera 参数、其他 IMU 的内参和 bias |
 
 这张表体现一个实用原则：**先问 residual 的 forward expression 里有没有这个变量；没有就直接是零 block。** 不要因为“同在一个优化问题里”就把所有传感器变量都连起来。传感器之间的耦合主要通过公共 pose spline 和 gravity 发生，而不是通过彼此的私有参数直接发生。
@@ -375,14 +375,14 @@ $$
 \theta=\|\boldsymbol\varphi\|,\ \mathbf a=\boldsymbol\varphi/\theta.
 $$
 
-注意这是**负号指数**：$\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)=\exp([\boldsymbol\varphi]_\times)^\top$。整套左 Jacobian（`leftJacobianSO3`）和下面所有推导都建立在这个约定上：
+注意这是**负号指数**： $\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)=\exp([\boldsymbol\varphi]_\times)^\top$。整套左 Jacobian（`leftJacobianSO3`）和下面所有推导都建立在这个约定上：
 
 $$
 \mathbf J_l(\boldsymbol\varphi) =
 \mathbf I+\frac{1-\cos\theta}{\theta^2}[\boldsymbol\varphi]_\times+\frac{\theta-\sin\theta}{\theta^3}[\boldsymbol\varphi]_\times^2.
 $$
 
-**核心扰动引理（本章后续 Jacobian 的唯一来源）。** 设旋转用最小坐标 $\boldsymbol\varphi$ 表示、采用欧式更新 $\boldsymbol\varphi\to\boldsymbol\varphi+\boldsymbol\delta$，$\mathbf v$ 与 $\boldsymbol\varphi$ 无关，则在 $\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)$ 约定下：
+**核心扰动引理（本章后续 Jacobian 的唯一来源）。** 设旋转用最小坐标 $\boldsymbol\varphi$ 表示、采用欧式更新 $\boldsymbol\varphi\to\boldsymbol\varphi+\boldsymbol\delta$， $\mathbf v$ 与 $\boldsymbol\varphi$ 无关，则在 $\mathbf C(\boldsymbol\varphi)=\exp(-[\boldsymbol\varphi]_\times)$ 约定下：
 
 $$
 \boxed{
@@ -391,7 +391,7 @@ $$
 }
 $$
 
-推导：用 BCH 一阶式 $\exp([\mathbf a+\mathrm d\mathbf a]_\times)\approx\exp([\mathbf a]_\times)\exp\big([\mathbf J_r(\mathbf a)\,\mathrm d\mathbf a]_\times\big)$，取 $\mathbf a=-\boldsymbol\varphi$、$\mathrm d\mathbf a=-\boldsymbol\delta$：
+推导：用 BCH 一阶式 $\exp([\mathbf a+\mathrm d\mathbf a]_\times)\approx\exp([\mathbf a]_\times)\exp\big([\mathbf J_r(\mathbf a)\,\mathrm d\mathbf a]_\times\big)$，取 $\mathbf a=-\boldsymbol\varphi$、 $\mathrm d\mathbf a=-\boldsymbol\delta$：
 
 $$
 \mathbf C(\boldsymbol\varphi+\boldsymbol\delta) =
@@ -422,7 +422,7 @@ $$
 \mathbf u_{b,m}=\mathbf h_b+\underbrace{\boldsymbol\alpha_b\times\mathbf r_{b,m}+\boldsymbol\omega_b\times(\boldsymbol\omega_b\times\mathbf r_{b,m})}_{\text{杠杆臂输运项 }\boldsymbol\ell_m}.
 $$
 
-普通（calibrated）模型的预测量与残差（$\sigma_g,\sigma_a$ 为离散噪声标准差，各向同性白化）：
+普通（calibrated）模型的预测量与残差（ $\sigma_g,\sigma_a$ 为离散噪声标准差，各向同性白化）：
 
 $$
 \hat{\mathbf z}^\omega_m=\mathbf R_{i_mb}\boldsymbol\omega_b+\mathbf b^g_m,
@@ -436,7 +436,7 @@ $$
 \mathbf e^a_m=\tfrac1{\sigma_a}(\hat{\mathbf z}^a_m-\mathbf z^a_m).
 $$
 
-scale-misalignment 模型在外层包内参（$\mathbf M_a$ 下三角、$\mathbf M_g$ 下三角、$\mathbf A_g$ 满阵、$\mathbf R_{g_mi_m}$ sensing 旋转）：
+scale-misalignment 模型在外层包内参（ $\mathbf M_a$ 下三角、 $\mathbf M_g$ 下三角、 $\mathbf A_g$ 满阵、 $\mathbf R_{g_mi_m}$ sensing 旋转）：
 
 $$
 \hat{\mathbf z}^a_m=\mathbf M_a\big(\mathbf R_{i_mb}\mathbf u_{b,m}\big)+\mathbf b^a_m,
@@ -502,7 +502,7 @@ $$
 \Big),
 $$
 
-对照 `gyroscope_residual.cpp` 的 `d_residual_d_r_i_b`（两项分别带 $\mathbf M_g$ 与 $\mathbf A_g$）。sensing 旋转 $\mathbf R_{g_mi_m}=\mathbf C(\boldsymbol\varphi_{g})$ 的 Jacobian 同样套引理，但 $\mathbf v$ 换成已经过 $\mathbf R_{i_mb}$ 的量：$\mathbf R_{g_mi_m}[\mathbf R_{i_mb}\boldsymbol\omega_b]_\times\mathbf J_l(\boldsymbol\varphi_g)$，与代码 `d_residual_d_r_gyro_i` 一致。
+对照 `gyroscope_residual.cpp` 的 `d_residual_d_r_i_b`（两项分别带 $\mathbf M_g$ 与 $\mathbf A_g$）。sensing 旋转 $\mathbf R_{g_mi_m}=\mathbf C(\boldsymbol\varphi_{g})$ 的 Jacobian 同样套引理，但 $\mathbf v$ 换成已经过 $\mathbf R_{i_mb}$ 的量： $\mathbf R_{g_mi_m}[\mathbf R_{i_mb}\boldsymbol\omega_b]_\times\mathbf J_l(\boldsymbol\varphi_g)$，与代码 `d_residual_d_r_gyro_i` 一致。
 
 ### 13.9.4 block 布局与共享
 
@@ -517,7 +517,7 @@ reference IMU 的这个 block 存在但不 active，装配时不进 Hessian—�
 
 ## 13.10 IMU-IMU 初始化：冷启动的关键先验
 
-13.9 的 Jacobian 保证“给定初值后能正确下降”，但不解决“初值从哪来”。非参考 IMU 的 $\boldsymbol\varphi_m$ 若从单位阵起步、$\mathbf r_{b,m}$ 从零起步，再叠加相机/time 一起放开，冷启动很容易掉进局部极小（实验记录里 4-IMU joint 冷启动 reprojection 一度到 $54.76$ px）。Kalibr 用 `IccImu.findOrientationPrior(referenceImu)` 给每个非参考 IMU 算两个先验，再进 bundle：
+13.9 的 Jacobian 保证“给定初值后能正确下降”，但不解决“初值从哪来”。非参考 IMU 的 $\boldsymbol\varphi_m$ 若从单位阵起步、 $\mathbf r_{b,m}$ 从零起步，再叠加相机/time 一起放开，冷启动很容易掉进局部极小（实验记录里 4-IMU joint 冷启动 reprojection 一度到 $54.76$ px）。Kalibr 用 `IccImu.findOrientationPrior(referenceImu)` 给每个非参考 IMU 算两个先验，再进 bundle：
 
 **第一阶段——时间对齐。** 先用 reference IMU 的陀螺拟合一条自由 body 角速度 spline $\boldsymbol\omega_{\mathrm{ref}}(t)$（同时估一个常值 ref gyro bias）。然后对两路陀螺模长做互相关：
 
@@ -546,7 +546,7 @@ $$
 > 即初值偏离真值 $2\Delta t$，多 IMU 初始化质量明显变差（是否收敛还取决于真实延迟大小、
 > 搜索范围、运动激励和其它先验）。
 
-离散峰值再用 `scipy.optimize.fmin` 在连续域细化（仅当 `estimateTimedelay` 且非 reference 时）。这个 $\Delta t^i_m$ **不是** bundle 设计变量，而是查询共享 spline 时的常量偏移：$t_{\text{query}}=t^{\mathrm{imu}}_{m,k}+\Delta t^i_m$（对照 `addAccelerometer/GyroscopeErrorTerms` 里 `tk = im.stamp.toSec() + self.timeOffset`）。
+离散峰值再用 `scipy.optimize.fmin` 在连续域细化（仅当 `estimateTimedelay` 且非 reference 时）。这个 $\Delta t^i_m$ **不是** bundle 设计变量，而是查询共享 spline 时的常量偏移： $t_{\text{query}}=t^{\mathrm{imu}}_{m,k}+\Delta t^i_m$（对照 `addAccelerometer/GyroscopeErrorTerms` 里 `tk = im.stamp.toSec() + self.timeOffset`）。
 
 **第二阶段——相对旋转先验。** 用对齐后的时间，建陀螺残差 $\mathbf z^\omega_m\approx\mathbf C(\boldsymbol\varphi_m)\boldsymbol\omega_{\mathrm{ref}}(t)+\mathbf b$，优化得到 $\boldsymbol\varphi_m$ 的初值 `q_i_b_prior`。
 
@@ -600,7 +600,7 @@ if ((sq_norm == 0.0) || (rho[2] <= 0.0)) {
 }
 ```
 
-Triggs 修正只在 $\rho''>0$ 时才启用。Cauchy 和 Huber 都是凹函数，$\rho''\le0$ 恒成立——Cauchy 严格小于零，Huber 在阈值内 $\rho_0(s)=s$ 是仿射的、$\rho''=0$，阈值外才严格小于零——两种情形都落进 `rho[2] <= 0.0` 这条短路，于是它每次都命中，Ceres 实际做的就是"$\sqrt{\rho'}$ 同时缩放残差和 Jacobian"——**和 Kalibr 的 IRLS 逐字相同**。所以把 $\rho''$ 显式置零并不改变任何数值：
+Triggs 修正只在 $\rho''>0$ 时才启用。Cauchy 和 Huber 都是凹函数， $\rho''\le0$ 恒成立——Cauchy 严格小于零，Huber 在阈值内 $\rho_0(s)=s$ 是仿射的、 $\rho''=0$，阈值外才严格小于零——两种情形都落进 `rho[2] <= 0.0` 这条短路，于是它每次都命中，Ceres 实际做的就是"$\sqrt{\rho'}$ 同时缩放残差和 Jacobian"——**和 Kalibr 的 IRLS 逐字相同**。所以把 $\rho''$ 显式置零并不改变任何数值：
 
 $$
 \rho'(s)=w(s),\qquad \rho''(s)=0 \quad(\text{与真实 }\rho''\le0\text{ 等效}),
@@ -610,7 +610,7 @@ $$
 
 结论因此是反直觉的：**在 Ceres 当前的求解路径上，自定义的 Kalibr-style loss 与 `ceres::CauchyLoss(\sqrt{\text{width}})`、`ceres::HuberLoss(\text{width})` 数值等价。** `2025_03_14_00_10_18` 热启动 `pbg,pbegt` 口径下三者实测 reprojection 均值同为 `0.309145562193544 px`。
 
-这个等价性依赖两件本身并不由我们控制的事，引用时要连着说清楚：一是 $\rho_0,\rho_1$ 解析相同——这一条 `tests/test_math.cpp` 已经逐点比对锁住；二是 `Corrector` 对 $\rho''\le0$ 短路——这是 Ceres 的实现细节，我们只在本机的 Ceres 2.1 上验证过，构建系统也没有把 Ceres 版本钉死。若将来换用一个**凸**的 $\rho$，或 Ceres 改掉这条短路，$\rho_2$ 的取值就会重新变得重要。保留自定义 loss 的价值也正在这里：显式表达 IRLS 语义，以及为接入 Ceres 没有内置的权重函数（Geman-McClure、Blake-Zisserman）留出位置。宽度换算见 `MEstimatorPolicies.cpp:46`，Kalibr 的 `_sigma2` 已是平方误差的分母，对应 `CauchyLoss` 的 $a=\sqrt{\sigma^2}$。
+这个等价性依赖两件本身并不由我们控制的事，引用时要连着说清楚：一是 $\rho_0,\rho_1$ 解析相同——这一条 `tests/test_math.cpp` 已经逐点比对锁住；二是 `Corrector` 对 $\rho''\le0$ 短路——这是 Ceres 的实现细节，我们只在本机的 Ceres 2.1 上验证过，构建系统也没有把 Ceres 版本钉死。若将来换用一个**凸**的 $\rho$，或 Ceres 改掉这条短路， $\rho_2$ 的取值就会重新变得重要。保留自定义 loss 的价值也正在这里：显式表达 IRLS 语义，以及为接入 Ceres 没有内置的权重函数（Geman-McClure、Blake-Zisserman）留出位置。宽度换算见 `MEstimatorPolicies.cpp:46`，Kalibr 的 `_sigma2` 已是平方误差的分母，对应 `CauchyLoss` 的 $a=\sqrt{\sigma^2}$。
 
 ## 13.12 与 Ceres 实现的逐项对照与证据边界
 
@@ -627,7 +627,7 @@ $$
 | 项目 | 当前状态 | 边界 / 后续关注点 |
 |---|---|---|
 | 非参考 IMU 冷启动初值 | 已实现 13.10 的 gyro-norm 互相关 time offset + 相对旋转先验，生产默认走一次 Kalibr-style 初始化和一次 joint solve | 真实数据分别覆盖 1cam+4imu 和 2cam+1imu；完整 Mcam+Nimu 组合目前依靠合成 2cam+2imu 端到端回归 |
-| 鲁棒核线性化 | 无缺口：对 Cauchy/Huber，标准 Ceres loss 与 Kalibr IRLS 等价（13.11） | 保持 13.11 的 Kalibr-style M-estimator（$\rho_0=\int_0^s w,\ \rho'=w,\ \rho''=0$），按 model 分配 Cauchy/Huber；若将来引入 Ceres 无内置的权重函数，此处才有实质工作 |
+| 鲁棒核线性化 | 无缺口：对 Cauchy/Huber，标准 Ceres loss 与 Kalibr IRLS 等价（13.11） | 保持 13.11 的 Kalibr-style M-estimator（ $\rho_0=\int_0^s w,\ \rho'=w,\ \rho''=0$），按 model 分配 Cauchy/Huber；若将来引入 Ceres 无内置的权重函数，此处才有实质工作 |
 | per-IMU time offset | 初始化器估计 applied offset，先用它创建对齐后的 spline 时间域，再接入各路 IMU residual 查询；默认按 Kalibr 语义固定 | 只有显式 `--optimize-imu-time-offsets` 才作为优化变量；两种模式都必须保持同一 applied-offset 符号约定 |
 | 杠杆臂可观性 | 弱可观，joint 平移 tail 仍大于 single | 这不是初始化缺失；报告时应按 per-IMU 输出，不平均掩盖最差项 |
 
@@ -635,7 +635,7 @@ $$
 
 ## 13.13 本章小结
 
-多相机 / 多 IMU 不改变第 4-10 章的局部物理模型。Camera residual 仍然是 measurement minus projection；gyro 和 accel residual 仍然是 prediction minus measurement；扩展 IMU 的 $\mathbf M_a$、$\mathbf M_g$、$\mathbf A_g$ 和 sensing-frame rotation 仍然按第 10 章的链式法则求 Jacobian。
+多相机 / 多 IMU 不改变第 4-10 章的局部物理模型。Camera residual 仍然是 measurement minus projection；gyro 和 accel residual 仍然是 prediction minus measurement；扩展 IMU 的 $\mathbf M_a$、 $\mathbf M_g$、 $\mathbf A_g$ 和 sensing-frame rotation 仍然按第 10 章的链式法则求 Jacobian。
 
 单相机多 IMU 真正新增的，是 13.8-13.12 这几节：非参考 IMU 的外参旋转 $\mathbf R_{i_mb}$ 和杠杆臂 $\mathbf r_{b,m}$ 的精确 Jacobian（单 IMU 章节没推过）、冷启动初始化先验、以及 Kalibr IRLS 鲁棒核语义。
 
